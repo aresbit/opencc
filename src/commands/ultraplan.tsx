@@ -464,7 +464,7 @@ export default {
   name: 'ultraplan',
   description: `~10–30 min · Claude Code on the web drafts an advanced plan you can edit and approve. See ${CCR_TERMS_URL}`,
   argumentHint: '<prompt>',
-  isEnabled: () => ("external" as string) === 'ant',
+  isEnabled: () => true,
   load: () => Promise.resolve({
     call
   })
