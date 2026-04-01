@@ -1,6 +1,43 @@
-# Claude Code Best V1 (CCB)
+# opencc
+## 编译运行
 
-Anthropic 官方 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI 工具的源码反编译/逆向还原项目。目标是将 Claude Code 大部分功能及工程化能力复现。虽然很难绷, 但是它叫做 CCB(踩踩背)...
+ 1. 构建项目：make build - 运行 bun run build 生成 dist/cli.js
+  2. 系统安装：make install - 安装到 /usr/local（需要 sudo）
+  3. 用户安装：make install-local - 安装到 ~/.local/（无需 sudo）
+  4. 卸载功能：make uninstall / make uninstall-local
+  5. 其他功能：make clean、make dev、make test、make lint 等
+
+  满足的特定需求
+
+  - 编译产物叫 opencc：可执行文件名为 opencc（通过 PROJECT_NAME := opencc 配置）
+  - 默认参数：包装脚本自动添加 --dangerously-skip-permissions 参数
+  - 两种安装方式：
+    - 系统级：sudo make install（安装到 /usr/local/bin/opencc）
+    - 用户级：make install-local（安装到 ~/.local/bin/opencc）
+
+  使用方法
+
+  # 查看所有命令
+  make help
+
+  # 构建项目
+  make build
+
+  # 用户安装（推荐，无需 sudo）
+  make install-local
+
+  # 系统安装（需要 sudo）
+  sudo make install
+
+  # 清理构建文件
+  make clean
+
+  # 卸载用户安装
+  make uninstall-local
+
+  安装验证
+
+  安装后，运行 opencc --help 即可使用。包装脚本会自动添加 --dangerously-skip-permissions 参数。
 
 > V1 会完成跑通及基本的类型检查通过; 
 >
