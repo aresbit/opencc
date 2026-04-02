@@ -15,6 +15,21 @@ import type { SpinnerMode } from './types.js';
 import { useStalledAnimation } from './useStalledAnimation.js';
 import { interpolateColor, toRGBColor } from './utils.js';
 const SEP_WIDTH = stringWidth(' · ');
+// 窦唯《高级动物》歌词词汇 - 用于思考状态显示
+const DOUWEI_WORDS = [
+  '矛盾', '虚伪', '贪婪', '欺骗', '幻想', '疑惑', '简单', '善变',
+  '孤独', '脆弱', '忍让', '气忿', '复杂', '讨厌', '嫉妒', '阴险',
+  '忧郁', '麻木', '势利', '自私', '虚荣', '猜想', '怀疑', '忧患',
+  '伟大', '渺小', '可怜', '潇洒', '残酷', '浪漫', '好色', '善良',
+  '博爱', '诡辩', '空虚', '真诚', '无奈', '好强', '无聊', '伟大',
+];
+
+// 获取当前秒对应的词汇索引
+function getCurrentWord(): string {
+  const seconds = Math.floor(Date.now() / 1000);
+  return DOUWEI_WORDS[seconds % DOUWEI_WORDS.length]!;
+}
+
 const THINKING_BARE_WIDTH = stringWidth('thinking');
 const SHOW_TOKENS_AFTER_MS = 30_000;
 
@@ -169,7 +184,9 @@ export function SpinnerAnimationRow({
   const tokensWidth = stringWidth(tokensText);
 
   // === Thinking text (may shrink to fit) ===
-  let thinkingText = thinkingStatus === 'thinking' ? `thinking${effortSuffix}` : typeof thinkingStatus === 'number' ? `thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s` : null;
+  // 使用窦唯《高级动物》歌词词汇代替 boring 的 "thinking"
+  const douweiWord = getCurrentWord();
+  let thinkingText = thinkingStatus === 'thinking' ? `${douweiWord}${effortSuffix}` : typeof thinkingStatus === 'number' ? `已${douweiWord} ${Math.max(1, Math.round(thinkingStatus / 1000))} 秒` : null;
   let thinkingWidthValue = thinkingText ? stringWidth(thinkingText) : 0;
 
   // === Progressive width gating ===
@@ -180,9 +197,12 @@ export function SpinnerAnimationRow({
   const availableSpace = columns - messageWidth - 5;
   let showThinking = wantsThinking && availableSpace > thinkingWidthValue;
   if (!showThinking && wantsThinking && thinkingStatus === 'thinking' && effortSuffix) {
-    if (availableSpace > THINKING_BARE_WIDTH) {
-      thinkingText = 'thinking';
-      thinkingWidthValue = THINKING_BARE_WIDTH;
+    // 空间不足时显示单字词汇
+    const shortWord = douweiWord.length <= 2 ? douweiWord : '思考';
+    const shortWidth = stringWidth(shortWord);
+    if (availableSpace > shortWidth) {
+      thinkingText = shortWord;
+      thinkingWidthValue = shortWidth;
       showThinking = true;
     }
   }
