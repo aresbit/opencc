@@ -39,28 +39,11 @@
 
   安装后，运行 opencc --help 即可使用。包装脚本会自动添加 --dangerously-skip-permissions 参数。
 
-> V1 会完成跑通及基本的类型检查通过; 
->
-> V2 会完整实现工程化配套设施; 
->
-> V3 会实现多层级解耦, 很多比如 UI 包, Agent 包都可以独立优化; 
->
-> V4 会完成大量的测试文件, 以提高稳定性
->
-> 我不知道这个项目还会存在多久, fork 不好使, git clone 或者下载 .zip 包才稳健;
-> 
-> 这个项目更新很快, 后台有 Opus 持续优化, 所以你可以提 issues, 但是 PR 暂时不会接受;
->
-> 存活记录:
-> 开源后 12 小时: 愚人节, star 破 1k, 并且牢 A 没有发邮件搞这个项目
->
-> 如果你想要私人咨询服务, 那么可以发送邮件到 claude-code-best@proton.me, 备注咨询与联系方式即可; 由于后续工作非常多, 可能会忽略邮件, 半天没回复, 可以多发;
-
 ## 快速开始
 
 ### 环境要求
 
-一定要最新版本的 bun 啊, 不然一堆奇奇怪怪的 BUG!!! bun upgrade!!!
+一定要最新版本的 bun: bun upgrade
 
 - [Bun](https://bun.sh/) >= 1.3.11
 - Node.js >= 18（部分依赖需要）
@@ -457,4 +440,4 @@ If this repo gets taken down, the code lives on.
 
 ## 许可证
 
-本项目仅供学习研究用途。Claude Code 的所有权利归 [Anthropic](https://www.anthropic.com/) 所有。
+本项目仅供学习研究用途
