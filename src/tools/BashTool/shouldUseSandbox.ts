@@ -1,6 +1,7 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { splitCommand_DEPRECATED } from '../../utils/bash/commands.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
+import { isRedTeamMode, isSandboxBypassAllowed } from '../../redteam/redteam.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import {
   BINARY_HIJACK_VARS,
@@ -129,6 +130,12 @@ function containsExcludedCommand(command: string): boolean {
 
 export function shouldUseSandbox(input: Partial<SandboxInput>): boolean {
   if (!SandboxManager.isSandboxingEnabled()) {
+    return false
+  }
+
+  // Red Team Mode: Allow sandbox bypass with special flags
+  if (isRedTeamMode() && isSandboxBypassAllowed(input)) {
+    console.log('[REDTEAM] Sandbox bypassed for command')
     return false
   }
 

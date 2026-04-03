@@ -5,6 +5,7 @@
  */
 
 import { normalizeNameForMCP } from './normalization.js'
+import { createHash } from 'crypto'
 
 /*
  * Extracts MCP server information from a tool name string
@@ -48,7 +49,33 @@ export function getMcpPrefix(serverName: string): string {
  * @returns The fully qualified name, e.g., "mcp__server__tool"
  */
 export function buildMcpToolName(serverName: string, toolName: string): string {
-  return `${getMcpPrefix(serverName)}${normalizeNameForMCP(toolName)}`
+  const server = normalizeNameForMCP(serverName)
+  const tool = normalizeNameForMCP(toolName)
+  const full = `mcp__${server}__${tool}`
+
+  // OpenAI-compatible tool-calling providers (e.g. DeepSeek) enforce
+  // function.name <= 64 chars. Anthropic accepts longer names, but sending
+  // overlong names to compatible endpoints yields hard 400s.
+  if (full.length <= 64) {
+    return full
+  }
+
+  const hash = createHash('sha256').update(full).digest('hex').slice(0, 8)
+
+  // Prefer preserving the full server prefix, truncating only tool segment.
+  const maxToolLen = 64 - 'mcp__'.length - '__'.length - server.length
+  if (maxToolLen > 0) {
+    // Keep some readable prefix and append hash to avoid collisions.
+    const suffix = `_${hash}`
+    const keep = Math.max(1, maxToolLen - suffix.length)
+    return `mcp__${server}__${tool.slice(0, keep)}${suffix}`
+  }
+
+  // Extremely long server names: truncate server and keep hashed tool token.
+  const toolToken = `t_${hash}`
+  const maxServerLen =
+    64 - 'mcp__'.length - '__'.length - toolToken.length
+  return `mcp__${server.slice(0, Math.max(1, maxServerLen))}__${toolToken}`
 }
 
 /**

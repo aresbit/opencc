@@ -46,6 +46,7 @@ import { getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.
 import { checkReadOnlyConstraints } from './readOnlyValidation.js';
 import { parseSedEditCommand } from './sedEditParser.js';
 import { shouldUseSandbox } from './shouldUseSandbox.js';
+import { isRedTeamMode, isSandboxBypassAllowed, sanitizeRedTeamMarkers } from '../../redteam/redteam.js';
 import { BASH_TOOL_NAME } from './toolName.js';
 import { BackgroundHint, renderToolResultMessage, renderToolUseErrorMessage, renderToolUseMessage, renderToolUseProgressMessage, renderToolUseQueuedMessage } from './UI.js';
 import { buildImageToolResult, isImageOutput, resetCwdIfOutsideProject, resizeShellImageOutput, stdErrAppendShellResetMessage, stripEmptyLines } from './utils.js';
