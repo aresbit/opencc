@@ -14,6 +14,7 @@ import { ChromeCDPTool } from './tools/ChromeCDPTool/ChromeCDPTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { AutoresearchTool } from './tools/AutoresearchTool/AutoresearchTool.js'
 import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
+import { WikiTool } from './tools/WikiTool/WikiTool.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
@@ -217,6 +218,7 @@ export function getAllBaseTools(): Tools {
     SkillTool,
     AutoresearchTool,
     MemoryTool,
+    WikiTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
