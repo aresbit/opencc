@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, readdir, stat, unlink } from 'fs/promises'
 import { join, basename, dirname, relative, resolve } from 'path'
 import { existsSync } from 'fs'
 import { MEMORY_TYPES, type MemoryType } from '../../memdir/memoryTypes.js'
+import { getAutoMemPath } from '../../memdir/paths.js'
 
 export interface Memory {
   id: string
@@ -36,10 +37,8 @@ export class MemoryStore {
   }
 
   private getDefaultMemoryDir(): string {
-    // Try to get from environment or use fallback
-    const cwd = process.cwd()
-    // Simple fallback: .claude/memory in current directory
-    return join(cwd, '.claude', 'memory')
+    // Use the same auto-memory directory as the rest of the system
+    return getAutoMemPath()
   }
 
   private async ensureMemoryDir(): Promise<void> {
