@@ -73,6 +73,30 @@ Before writing code, read:
 Determine the `paper_slug` from the paper title (lowercase, underscores, no special chars).
 Generate all files under `{paper_slug}/` in the current working directory.
 
+### Stage 4.5 — Execution Verification
+Read and follow: `pipeline/04_code_generation.md#post-generation-verification-protocol`
+
+After Stage 4 completes, verify that the generated code actually runs. This stage catches pseudo-code, import errors, shape mismatches, and silent failures before the user ever sees them.
+
+Execution flow:
+1. Verify imports work: `python -c "import src.model"` (correct PYTHONPATH as needed)
+2. Run a minimal forward pass with random input — verify tensor shapes match paper dimensions
+3. If a training loop was generated, run one training step — verify loss decreases
+4. Failed executions enter the autoresearch:fix loop:
+   - Diagnose the error (read traceback, inspect the failing code)
+   - Fix the root cause (edit the relevant file — NOT a workaround)
+   - Re-run the verification step that failed
+   - Maximum 5 fix iterations per verification step
+5. If the code runs but outputs don't match paper claims (e.g., loss doesn't decrease, output shape wrong):
+   - Document the discrepancy in `REPRODUCTION_NOTES.md` under a new "Runtime Verification" section
+   - Note what was observed vs. what the paper claims
+   - Flag as `[VERIFICATION_NOTE]` — not an implementation error, but a noted divergence
+
+Stopping conditions for the fix loop:
+- Code passes verification → proceed to Stage 5
+- 5 iterations exhausted → document the remaining issue in `REPRODUCTION_NOTES.md`, continue to Stage 5
+- Error is a known limitation (missing dataset, GPU requirement, etc.) → document and continue
+
 ### Stage 5 — Walkthrough Notebook
 Read and follow: `pipeline/05_walkthrough_notebook.md`
 

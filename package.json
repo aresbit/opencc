@@ -48,7 +48,9 @@
     "health": "bun run scripts/health-check.ts",
     "docs:dev": "npx mintlify dev"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@llamaindex/liteparse": "^2.0.3"
+  },
   "devDependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
     "@ant/claude-for-chrome-mcp": "workspace:*",

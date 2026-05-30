@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "claude-code",
+      "dependencies": {
+        "@llamaindex/liteparse": "^2.0.3",
+      },
       "devDependencies": {
         "@alcalzone/ansi-tokenize": "^0.3.0",
         "@ant/claude-for-chrome-mcp": "workspace:*",
@@ -403,6 +406,16 @@
     "@inquirer/type": ["@inquirer/type@2.0.0", "https://registry.npmmirror.com/@inquirer/type/-/type-2.0.0.tgz", { "dependencies": { "mute-stream": "^1.0.0" } }, "sha512-XvJRx+2KR3YXyYtPUUy+qd9i7p+GO9Ko6VIIpWlBrpWwXDv8WLFeHTxz35CfQFUiBMLXlGHhGzys7lqit9gWag=="],
 
     "@js-sdsl/ordered-map": ["@js-sdsl/ordered-map@4.4.2", "https://registry.npmmirror.com/@js-sdsl/ordered-map/-/ordered-map-4.4.2.tgz", {}, "sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw=="],
+
+    "@llamaindex/liteparse": ["@llamaindex/liteparse@2.0.3", "", { "dependencies": { "commander": "^12.0.0" }, "optionalDependencies": { "@llamaindex/liteparse-darwin-arm64": "2.0.3", "@llamaindex/liteparse-linux-arm64-gnu": "2.0.3", "@llamaindex/liteparse-linux-x64-gnu": "2.0.3", "@llamaindex/liteparse-win32-x64-msvc": "2.0.3" }, "bin": { "lit": "dist/cli.js", "liteparse": "dist/cli.js" } }, "sha512-B5VyOqPbl+jnOwSG5ndUQzCqfYif2twn1OZrrul24CLKSXgw0pTKNRInq8e9AEbUq6cU4keyj2s5SiaMUH405g=="],
+
+    "@llamaindex/liteparse-darwin-arm64": ["@llamaindex/liteparse-darwin-arm64@2.0.3", "", { "os": "darwin", "cpu": "arm64" }, "sha512-z8CQr8q0n3OHXoWJBRrnQPFBXf+hJ8WjuWYTy5BXA6YQ21l53ZHAwrZiWqIOnqh9Ie4+trVDGx1jSds0Iy1VCg=="],
+
+    "@llamaindex/liteparse-linux-arm64-gnu": ["@llamaindex/liteparse-linux-arm64-gnu@2.0.3", "", { "os": "linux", "cpu": "arm64" }, "sha512-HPpmMRxuX6fdgGgNiPQz6wn8bOjBFKeQIe8TZ0miba9mNFCqa0r/OLMcDZxgS3rUTq0yFM+u9QBCIrT/f8LgmQ=="],
+
+    "@llamaindex/liteparse-linux-x64-gnu": ["@llamaindex/liteparse-linux-x64-gnu@2.0.3", "", { "os": "linux", "cpu": "x64" }, "sha512-0bQGYw7kXlZdn9aK3FVO772LNDeRkfzar3CBzASgdMyCTBAtCh9jJnNU/QE2pz51DLqrtbrbVYu8XG7K8yP7CQ=="],
+
+    "@llamaindex/liteparse-win32-x64-msvc": ["@llamaindex/liteparse-win32-x64-msvc@2.0.3", "", { "os": "win32", "cpu": "x64" }, "sha512-GZ/26YeOW+QSb4S2jPdH9e+ri6TqQiVX38BDHPU6Fp5rMw/xS/B6rweroocjleMUbCOEwjbxGm4zQWBZ7wSmag=="],
 
     "@mixmark-io/domino": ["@mixmark-io/domino@2.2.0", "https://registry.npmmirror.com/@mixmark-io/domino/-/domino-2.2.0.tgz", {}, "sha512-Y28PR25bHXUg88kCV7nivXrP2Nj2RueZ3/l/jdx6J9f8J4nsEGcgX0Qe6lt7Pa+J79+kPiJU3LguR6O/6zrLOw=="],
 
@@ -1545,6 +1558,8 @@
     "@inquirer/core/strip-ansi": ["strip-ansi@6.0.1", "https://registry.npmmirror.com/strip-ansi/-/strip-ansi-6.0.1.tgz", { "dependencies": { "ansi-regex": "^5.0.1" } }, "sha512-Y38VPSHcqkFrCpFnQ9vuSXmquuv5oXOKpGeT6aGrr3o3Gc9AlVa6JBfUSOCnbxGGZF+/0ooI7KrPuUSztUdU5A=="],
 
     "@inquirer/core/wrap-ansi": ["wrap-ansi@6.2.0", "https://registry.npmmirror.com/wrap-ansi/-/wrap-ansi-6.2.0.tgz", { "dependencies": { "ansi-styles": "^4.0.0", "string-width": "^4.1.0", "strip-ansi": "^6.0.0" } }, "sha512-r6lPcBGxZXlIcymEu7InxDMhdW0KDxpLgoFLcguasxCaJ/SOIZwINatK9KY/tf+ZrlywOKU0UDj3ATXUBfxJXA=="],
+
+    "@llamaindex/liteparse/commander": ["commander@12.1.0", "https://registry.npmmirror.com/commander/-/commander-12.1.0.tgz", {}, "sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA=="],
 
     "@smithy/config-resolver/@smithy/types": ["@smithy/types@4.13.1", "https://registry.npmmirror.com/@smithy/types/-/types-4.13.1.tgz", { "dependencies": { "tslib": "^2.6.2" } }, "sha512-787F3yzE2UiJIQ+wYW1CVg2odHjmaWLGksnKQHUrK/lYZSEcy1msuLVvxaR/sI2/aDe9U+TBuLsXnr3vod1g0g=="],
 

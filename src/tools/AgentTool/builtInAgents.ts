@@ -6,7 +6,9 @@ import { CLAUDE_CODE_GUIDE_AGENT } from './built-in/claudeCodeGuideAgent.js'
 import { EXPLORE_AGENT } from './built-in/exploreAgent.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { NOVA_AGENT } from './built-in/novaAgent.js'
+import { PAPER_AGENT } from './built-in/paperAgent.js'
 import { PLAN_AGENT } from './built-in/planAgent.js'
+import { QUANT_AGENT } from './built-in/quantAgent.js'
 import { STATUSLINE_SETUP_AGENT } from './built-in/statuslineSetup.js'
 import { VERIFICATION_AGENT } from './built-in/verificationAgent.js'
 import { VIRAL_WRITER_AGENT } from './built-in/viralWriterAgent.js'
@@ -48,6 +50,8 @@ export function getBuiltInAgents(): AgentDefinition[] {
     GENERAL_PURPOSE_AGENT,
     STATUSLINE_SETUP_AGENT,
     NOVA_AGENT,
+    PAPER_AGENT,
+    QUANT_AGENT,
     VIRAL_WRITER_AGENT,
   ]
 

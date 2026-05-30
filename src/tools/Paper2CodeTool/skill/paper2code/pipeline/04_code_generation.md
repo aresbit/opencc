@@ -312,3 +312,167 @@ Read this list before writing any code. If you find yourself about to write any 
 - Do NOT add CLI argument parsing beyond loading a config file.
 - Do NOT add visualization code unless visualization IS the contribution.
 - Do NOT add `if __name__ == "__main__"` blocks with complex logic — keep scripts minimal.
+
+---
+
+## Post-Generation Verification Protocol
+
+Once all files are generated, you MUST verify that the code actually runs. This is the difference between a paper reproduction and a paper-themed text file. **If the code doesn't run, it's not real code.**
+
+Before continuing to Stage 5, complete every applicable verification step. Do not skip steps because "the code looks correct" — runtime is the only truth.
+
+### Step 1: Import Verification
+
+Change into the output directory and verify every Python module imports without error:
+
+```bash
+cd {paper_slug}
+python -c "import sys; sys.path.insert(0, '.'); from src.model import *; print('model.py imports OK')"
+python -c "import sys; sys.path.insert(0, '.'); from src.loss import *; print('loss.py imports OK')"
+python -c "import sys; sys.path.insert(0, '.'); from src.utils import *; print('utils.py imports OK')"
+python -c "import sys; sys.path.insert(0, '.'); from src.data import *; print('data.py imports OK')"
+```
+
+If any import fails:
+- Read the traceback. Identify whether it's a missing dependency, a syntax error, or a circular import.
+- If missing dependency: add it to `requirements.txt` and `pip install` it via BashTool.
+- If syntax/name error: Edit the file to fix the root cause.
+- Re-run the failed import check.
+- Maximum 5 fix iterations for import errors collectively.
+
+### Step 2: Minimal Forward Pass (Shape Verification)
+
+The model must accept input tensors of the shape described in the paper and produce output tensors of the expected shape.
+
+Create and run a minimal inline test:
+
+```bash
+cd {paper_slug}
+python -c "
+import sys; sys.path.insert(0, '.')
+import torch
+from src.model import MainModel, ModelConfig
+
+# §X.Y — Use paper-stated dimensions for random input
+config = ModelConfig()
+model = MainModel(config)
+model.eval()
+
+# Create random input matching paper's input specification
+# Adjust batch_size, seq_len, etc. to match what the paper uses
+batch_size = 2
+# ... (use the paper's actual input dimensions here)
+
+with torch.no_grad():
+    output = model(input_tensor)
+    print(f'Forward pass OK — output shape: {output.shape}')
+    print(f'Expected output shape from paper: (batch, ...)')
+"
+```
+
+Success criteria:
+- No exceptions raised
+- Output shape matches the paper's stated output dimensions (or a derived batch version thereof)
+- No NaN or inf values in output (check with `torch.isnan(output).any()` / `torch.isinf(output).any()`)
+
+If this step fails:
+- If shape mismatch: the model architecture does not match the paper. Re-read the relevant paper section and fix the dimensions in model.py and/or configs/base.yaml.
+- If runtime error (e.g., dimension mismatch in matmul): trace the tensor operations using shape comments. Fix the offending operation.
+- Maximum 5 fix iterations for shape verification.
+
+### Step 3: One Training Step (Optimization Verification)
+
+If the contribution involves training (paper type b), verify the training loop can execute one step and that loss decreases:
+
+```bash
+cd {paper_slug}
+python -c "
+import sys; sys.path.insert(0, '.')
+import torch
+from src.model import MainModel, ModelConfig
+from src.loss import compute_loss
+from src.train import create_optimizer, create_lr_scheduler
+
+config = ModelConfig()
+model = MainModel(config)
+optimizer = create_optimizer(model, config)
+scheduler = create_lr_scheduler(optimizer, config)
+
+# Create random data matching paper's input spec
+# Run TWO forward-backward passes to check loss decreases
+model.train()
+optimizer.zero_grad()
+output1 = model(input_tensor)
+loss1 = compute_loss(output1, target_tensor)
+loss1.backward()
+optimizer.step()
+scheduler.step()
+
+optimizer.zero_grad()
+output2 = model(input_tensor)
+loss2 = compute_loss(output2, target_tensor)
+loss2.backward()
+optimizer.step()
+
+print(f'Loss step 1: {loss1.item():.6f}')
+print(f'Loss step 2: {loss2.item():.6f}')
+if loss2.item() < loss1.item():
+    print('OK — loss decreased after one training step')
+else:
+    print('WARNING — loss did not decrease. Documenting in REPRODUCTION_NOTES.md')
+"
+```
+
+Success criteria:
+- No exceptions during forward pass, loss computation, backward pass, or optimizer step
+- Ideally, loss decreases from step 1 to step 2 (on identical random data, the model should fit it)
+- If loss increases or is NaN: diagnose gradient flow, learning rate, or loss function implementation
+
+If this step fails:
+- NaN loss: check for division by zero, log of negative/zero, or exploding gradients. Add numerical stability guards.
+- Loss increases: check if optimizer hyperparameters match the paper. Check if loss function matches the paper's equation.
+- Gradients not flowing: check if any parameter is detached or if optimizer is configured correctly.
+- Maximum 5 fix iterations.
+
+### Step 4: Autoresearch Fix Loop Protocol
+
+When any verification step fails, use the following protocol:
+
+1. **Diagnose (do not guess):** Run the failing command again with `BashTool` and read the full traceback. Do not assume you know what's wrong — let the error message guide you.
+2. **Identify root cause:** Is it a syntax error? A missing import? A logic error in the model/loss/training code? A dimension mismatch? An incorrect assumption about the paper?
+3. **Fix the source file:** Use `Edit` to change the exact file with the bug. Do not add workarounds in a new file. Fix the root cause.
+4. **Re-verify:** Re-run the failing verification step. Do not proceed to the next step until this one passes or the fix loop is exhausted.
+5. **Track iterations:** Keep a mental count. After each fix, increment. At 5, stop and document.
+
+### Step 5: Documenting Remaining Issues
+
+After the fix loop (whether all steps passed or some were exhausted), add a "Runtime Verification" section to `REPRODUCTION_NOTES.md`:
+
+```markdown
+## Runtime Verification
+
+### Import Verification
+- [PASS / FAIL with N iterations] — All modules import successfully.
+
+### Forward Pass Verification
+- [PASS / FAIL with N iterations] — Model accepts input shape (batch, ...) and produces output shape (batch, ...).
+- Expected output shape per paper §X.Y: (...)
+- Observed output shape: (...)
+
+### Training Step Verification
+- [PASS / FAIL with N iterations] — Loss after step 1: X.XXXX, loss after step 2: X.XXXX.
+- Loss decreased: [YES / NO]
+
+### Unresolved Issues (if any)
+- {Description of any issue that could not be resolved within 5 iterations}
+- {Likely cause and suggested next steps for a human developer}
+```
+
+### Verification Complete Checklist
+
+Before proceeding to Stage 5:
+- [ ] All imports verified (or documented failures)
+- [ ] Forward pass produces correct shapes (or documented mismatch)
+- [ ] One training step executes (if applicable; or documented skip reason)
+- [ ] `REPRODUCTION_NOTES.md` has a completed "Runtime Verification" section
+- [ ] No pseudo-code remains — every function body is executable Python

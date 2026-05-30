@@ -5,7 +5,6 @@ import { posix, win32 } from 'path'
 import { z } from 'zod/v4'
 import {
   PDF_AT_MENTION_INLINE_THRESHOLD,
-  PDF_EXTRACT_SIZE_THRESHOLD,
   PDF_MAX_PAGES_PER_READ,
 } from '../../constants/apiLimits.js'
 import { hasBinaryExtension } from '../../constants/files.js'
@@ -58,10 +57,9 @@ import {
   readNotebook,
 } from '../../utils/notebook.js'
 import { expandPath } from '../../utils/path.js'
-import { extractPDFPages, getPDFPageCount, readPDF } from '../../utils/pdf.js'
+import { extractPDFPages, readPDF } from '../../utils/pdf.js'
 import {
   isPDFExtension,
-  isPDFSupported,
   parsePDFPageRange,
 } from '../../utils/pdfUtils.js'
 import {
@@ -307,7 +305,8 @@ const outputSchema = lazySchema(() => {
       type: z.literal('pdf'),
       file: z.object({
         filePath: z.string().describe('The path to the PDF file'),
-        base64: z.string().describe('Base64-encoded PDF data'),
+        text: z.string().describe('Extracted text content from the PDF'),
+        pageCount: z.number().describe('Number of pages in the PDF'),
         originalSize: z.number().describe('Original file size in bytes'),
       }),
     }),
@@ -670,11 +669,11 @@ export const FileReadTool = buildTool({
       case 'notebook':
         return mapNotebookCellsToToolResult(data.file.cells, toolUseID)
       case 'pdf':
-        // Return PDF metadata only - the actual content is sent as a supplemental DocumentBlockParam
+        // Return extracted PDF text content directly
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `PDF file read: ${data.file.filePath} (${formatFileSize(data.file.originalSize)})`,
+          content: data.file.text || `PDF file read: ${data.file.filePath} (${formatFileSize(data.file.originalSize)})`,
         }
       case 'parts':
         // Extracted page images are read and sent as image blocks in mapToolResultToAPIMessage
@@ -890,7 +889,7 @@ async function callInner(
     }
   }
 
-  // --- PDF ---
+  // --- PDF (powered by liteparse) ---
   if (isPDFExtension(ext)) {
     if (pages) {
       const parsedRange = parsePDFPageRange(pages)
@@ -914,7 +913,7 @@ async function callInner(
         content: `PDF pages ${pages}`,
       })
       const entries = await readdir(extractResult.data.file.outputDir)
-      const imageFiles = entries.filter(f => f.endsWith('.jpg')).sort()
+      const imageFiles = entries.filter(f => f.endsWith('.png')).sort()
       const imageBlocks = await Promise.all(
         imageFiles.map(async f => {
           const imgPath = path.join(extractResult.data.file.outputDir, f)
@@ -922,7 +921,7 @@ async function callInner(
           const resized = await maybeResizeAndDownsampleImageBuffer(
             imgBuffer,
             imgBuffer.length,
-            'jpeg',
+            'png',
           )
           return {
             type: 'image' as const,
@@ -945,75 +944,29 @@ async function callInner(
       }
     }
 
-    const pageCount = await getPDFPageCount(resolvedFilePath)
-    if (pageCount !== null && pageCount > PDF_AT_MENTION_INLINE_THRESHOLD) {
-      throw new Error(
-        `This PDF has ${pageCount} pages, which is too many to read at once. ` +
-          `Use the pages parameter to read specific page ranges (e.g., pages: "1-5"). ` +
-          `Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
-      )
-    }
-
-    const fs = getFsImplementation()
-    const stats = await fs.stat(resolvedFilePath)
-    const shouldExtractPages =
-      !isPDFSupported() || stats.size > PDF_EXTRACT_SIZE_THRESHOLD
-
-    if (shouldExtractPages) {
-      const extractResult = await extractPDFPages(resolvedFilePath)
-      if (extractResult.success) {
-        logEvent('tengu_pdf_page_extraction', {
-          success: true,
-          pageCount: extractResult.data.file.count,
-          fileSize: extractResult.data.file.originalSize,
-        })
-      } else {
-        logEvent('tengu_pdf_page_extraction', {
-          success: false,
-          available: (extractResult as any).error.reason !== 'unavailable',
-          fileSize: stats.size,
-        })
-      }
-    }
-
-    if (!isPDFSupported()) {
-      throw new Error(
-        'Reading full PDFs is not supported with this model. Use a newer model (Sonnet 3.5 v2 or later), ' +
-          `or use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
-          'Page extraction requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
-      )
-    }
-
+    // Full PDF read — liteparse extracts text natively, no external deps needed
     const readResult = await readPDF(resolvedFilePath)
     if (!readResult.success) {
       throw new Error((readResult as any).error.message)
     }
     const pdfData = readResult.data
+
+    if (pdfData.file.pageCount > PDF_AT_MENTION_INLINE_THRESHOLD) {
+      throw new Error(
+        `This PDF has ${pdfData.file.pageCount} pages, which is too many to read at once. ` +
+          `Use the pages parameter to read specific page ranges (e.g., pages: "1-5"). ` +
+          `Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
+      )
+    }
+
     logFileOperation({
       operation: 'read',
       tool: 'FileReadTool',
       filePath: fullFilePath,
-      content: pdfData.file.base64,
+      content: pdfData.file.text,
     })
 
-    return {
-      data: pdfData,
-      newMessages: [
-        createUserMessage({
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: pdfData.file.base64,
-              },
-            },
-          ],
-          isMeta: true,
-        }),
-      ],
-    }
+    return { data: pdfData }
   }
 
   // --- Text file (single async read via readFileInRange) ---

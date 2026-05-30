@@ -185,6 +185,71 @@ If official code exists:
 
 ---
 
+## Runtime Verification Protocol
+
+The ultimate hallucination detection mechanism is **execution**. Code that looks correct but doesn't run is pseudo-code — it is a hallucination, no matter how well-annotated or plausible. Conversely, code that runs and produces expected outputs has passed the strongest available reality check.
+
+### The Execution Principle
+
+**If the code doesn't run, it's not real code.** Static analysis (reading code, checking types, reviewing logic) can catch some errors, but only runtime execution catches the full class of problems: import errors, shape mismatches, API misuse, undefined references, logical errors that produce wrong outputs, and silently broken assumptions.
+
+This guardrail mandates that after every code generation stage, the generated code must be executed and its behavior verified. This is not optional — it is the difference between delivering a paper reproduction and delivering a paper-themed text file.
+
+### Verification Pipeline
+
+After Stage 4 (Code Generation), execute the Post-Generation Verification Protocol defined in `pipeline/04_code_generation.md#post-generation-verification-protocol`. The protocol has three tiers:
+
+1. **Import verification** — catches syntax errors, missing dependencies, circular imports, and undefined names. This is the shallowest check but catches the most common class of hallucinated code (imports of non-existent modules, typos in class names, etc.).
+
+2. **Forward pass verification** — catches architectural errors: shape mismatches, dimension errors, incorrect tensor operations. A model that can't perform a forward pass on random input with paper-stated dimensions is structurally wrong. The most common hallucination here: inventing layer names, using wrong tensor shapes, or misimplementing the attention/convolution/recurrence mechanism.
+
+3. **Training step verification** — catches optimization errors: loss function bugs, gradient issues, optimizer misconfiguration. A model that trains but doesn't learn (loss doesn't decrease) reveals a deeper problem with the loss function or training algorithm that static review would never catch. Common hallucinations: implementing a loss that looks like the paper's equation but computes the wrong thing, using the wrong reduction, or silently broadcasting where the paper doesn't.
+
+### The Autoresearch Fix Loop
+
+When verification fails, do not abandon the code. Enter the autoresearch:fix loop:
+
+1. **Run the failing test** — reproduce the error with a clean run. Read the full traceback.
+2. **Diagnose the root cause** — locate the exact line and file. Understand WHY it failed, not just what the error message says. A `TypeError` on line 47 may be caused by a wrong assumption on line 23.
+3. **Fix the root cause** — edit the source file. Fix the bug, don't add a workaround. If the model architecture is wrong, fix the architecture. If the loss function is wrong, fix the loss function.
+4. **Re-run verification** — confirm the fix works. Only count it as a fix if the verification step now passes.
+5. **Iterate** — maximum 5 iterations per verification step. If 5 iterations pass without resolution, the remaining issue is documented in `REPRODUCTION_NOTES.md` and the pipeline continues.
+
+### Why Static Review Is Not Enough
+
+Consider these examples where code "looks right" but is wrong:
+
+| Static appearance | Runtime reality | Detection method |
+|---|---|---|
+| `from src.model import Transformer` | `ModuleNotFoundError: No module named 'src.utils.attention'` (missing import in model.py) | Import verification |
+| `x = self.attn(q, k, v)` | `RuntimeError: expected mat1 and mat2 to have the same dtype` (float16 vs float32) | Forward pass |
+| `loss = -torch.log(pred)` | `loss = nan` after step 1 (pred <= 0 due to missing softmax) | Training step |
+| `self.ffn = nn.Sequential(nn.Linear(512, 2048), nn.ReLU(), nn.Linear(2048, 512))` | Output shape is (batch, 512) but paper expects (batch, vocab_size) | Forward pass |
+| Comment says "following Eq. 4" | Eq. 4 has a sum, code has a mean — output scale is wrong by factor N | Training step (loss scale wrong) |
+
+None of these would be caught by reading the code. All of them are caught by running it.
+
+### When Verification Is Incomplete
+
+Some verification steps may be impossible to complete (e.g., no CUDA GPU, missing dataset, paper requires proprietary data). In these cases:
+
+- Document the limitation in `REPRODUCTION_NOTES.md` under "Runtime Verification"
+- Note what was verified and what was skipped
+- Specify what resources would be needed to complete verification
+- Flag the code with `[VERIFICATION_INCOMPLETE]` comments at the relevant locations
+
+Skipping verification is always preferable to silently shipping broken code. Be honest about what was tested and what wasn't.
+
+### Integration with Other Guardrails
+
+Runtime verification works synergistically with the other guardrails in this file:
+
+- **Bright line rule**: Runtime errors often reveal UNSPECIFIED items that were incorrectly assumed. If the paper says "we use Adam" and the code fails because beta1/beta2 aren't set, those parameters need `[UNSPECIFIED]` flags.
+- **Equation ground truth**: If the loss doesn't decrease, re-check whether the code truly implements the equation — runtime reveals the gap between "looks like Eq. 4" and "is Eq. 4."
+- **Framework translation trap**: Import errors and dtype mismatches often reveal framework assumptions. A PyTorch-only implementation that imports tensorflow will fail at import time.
+- **Number precision trap**: NaN losses often trace back to silently changed numbers (e.g., epsilon too small, learning rate too large).
+- **Official code shortcut**: If official code exists and the generated code fails verification, compare against the official implementation — the paper may omit a critical detail that the authors' code reveals.
+
 ## Self-audit questions
 
 Before finishing any code generation, ask yourself:
@@ -192,3 +257,5 @@ Before finishing any code generation, ask yourself:
 2. Did I add any implementation detail from my own ML knowledge without checking if the paper says it? Flag it.
 3. Would the authors of this paper agree that my code matches their description? If I'm not sure, something needs a flag.
 4. Is there a single magic number anywhere without a citation or `[UNSPECIFIED]` comment? Find it and fix it.
+5. **Did I actually run the code?** Reading code is not verification. If the code hasn't been executed and its outputs validated, the generation is incomplete.
+6. **Did the verification pass?** If any verification step failed, did I fix it (up to 5 iterations) or document it? Unresolved failures without documentation are silent bugs shipped to the user.
