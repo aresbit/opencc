@@ -5,6 +5,7 @@ import { posix, win32 } from 'path'
 import { z } from 'zod/v4'
 import {
   PDF_AT_MENTION_INLINE_THRESHOLD,
+  PDF_EXTRACT_SIZE_THRESHOLD,
   PDF_MAX_PAGES_PER_READ,
 } from '../../constants/apiLimits.js'
 import { hasBinaryExtension } from '../../constants/files.js'
@@ -57,9 +58,10 @@ import {
   readNotebook,
 } from '../../utils/notebook.js'
 import { expandPath } from '../../utils/path.js'
-import { extractPDFPages, readPDF } from '../../utils/pdf.js'
+import { extractPDFPages, getPDFPageCount, isLiteParseAvailable, readPDF } from '../../utils/pdf.js'
 import {
   isPDFExtension,
+  isPDFSupported,
   parsePDFPageRange,
 } from '../../utils/pdfUtils.js'
 import {
@@ -889,8 +891,13 @@ async function callInner(
     }
   }
 
-  // --- PDF (powered by liteparse) ---
+  // --- PDF ---
+  // Uses liteparse for native text/screenshot extraction when available.
+  // Gracefully degrades to old code path (base64 document blocks + poppler-utils)
+  // on platforms where liteparse has no native binary (e.g. darwin-x64).
   if (isPDFExtension(ext)) {
+    const lpAvailable = await isLiteParseAvailable()
+
     if (pages) {
       const parsedRange = parsePDFPageRange(pages)
       const extractResult = await extractPDFPages(
@@ -902,7 +909,7 @@ async function callInner(
       }
       logEvent('tengu_pdf_page_extraction', {
         success: true,
-        pageCount: (extractResult as any).data.file.count,
+        pageCount: extractResult.data.file.count,
         fileSize: extractResult.data.file.originalSize,
         hasPageRange: true,
       })
@@ -913,7 +920,11 @@ async function callInner(
         content: `PDF pages ${pages}`,
       })
       const entries = await readdir(extractResult.data.file.outputDir)
-      const imageFiles = entries.filter(f => f.endsWith('.png')).sort()
+      // Handle both .png (liteparse) and .jpg (pdftoppm fallback)
+      const imageFiles = entries
+        .filter(f => f.endsWith('.png') || f.endsWith('.jpg'))
+        .sort()
+      const imageFormat = extractResult.data.file.imageFormat ?? 'png'
       const imageBlocks = await Promise.all(
         imageFiles.map(async f => {
           const imgPath = path.join(extractResult.data.file.outputDir, f)
@@ -921,7 +932,7 @@ async function callInner(
           const resized = await maybeResizeAndDownsampleImageBuffer(
             imgBuffer,
             imgBuffer.length,
-            'png',
+            imageFormat === 'jpg' ? 'jpeg' : 'png',
           )
           return {
             type: 'image' as const,
@@ -944,13 +955,85 @@ async function callInner(
       }
     }
 
-    // Full PDF read — liteparse extracts text natively, no external deps needed
+    // Without liteparse, check whether the model supports PDF document blocks
+    // and whether the file is small enough to send inline.
+    if (!lpAvailable) {
+      const fs = getFsImplementation()
+      const fileStats = await fs.stat(resolvedFilePath)
+      const shouldExtractPages =
+        !isPDFSupported() || fileStats.size > PDF_EXTRACT_SIZE_THRESHOLD
+
+      if (shouldExtractPages) {
+        const extractResult = await extractPDFPages(resolvedFilePath)
+        if (extractResult.success) {
+          logEvent('tengu_pdf_page_extraction', {
+            success: true,
+            pageCount: extractResult.data.file.count,
+            fileSize: extractResult.data.file.originalSize,
+          })
+          const entries = await readdir(extractResult.data.file.outputDir)
+          const imageFiles = entries
+            .filter(f => f.endsWith('.png') || f.endsWith('.jpg'))
+            .sort()
+          const imgFormat = extractResult.data.file.imageFormat ?? 'jpg'
+          const imageBlocks = await Promise.all(
+            imageFiles.map(async f => {
+              const imgPath = path.join(
+                extractResult.data.file.outputDir,
+                f,
+              )
+              const imgBuffer = await readFileAsync(imgPath)
+              const resized = await maybeResizeAndDownsampleImageBuffer(
+                imgBuffer,
+                imgBuffer.length,
+                imgFormat === 'jpg' ? 'jpeg' : 'png',
+              )
+              return {
+                type: 'image' as const,
+                source: {
+                  type: 'base64' as const,
+                  media_type:
+                    `image/${resized.mediaType}` as Base64ImageSource['media_type'],
+                  data: resized.buffer.toString('base64'),
+                },
+              }
+            }),
+          )
+          return {
+            data: extractResult.data,
+            ...(imageBlocks.length > 0 && {
+              newMessages: [
+                createUserMessage({ content: imageBlocks, isMeta: true }),
+              ],
+            }),
+          }
+        } else {
+          logEvent('tengu_pdf_page_extraction', {
+            success: false,
+            available:
+              (extractResult as any).error.reason !== 'unavailable',
+            fileSize: fileStats.size,
+          })
+        }
+      }
+
+      if (!isPDFSupported()) {
+        throw new Error(
+          'Reading full PDFs is not supported with this model. Use a newer model (Sonnet 3.5 v2 or later), ' +
+            `or use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
+            'Page extraction requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
+        )
+      }
+    }
+
+    // Full PDF read — liteparse text extraction with base64 document block fallback
     const readResult = await readPDF(resolvedFilePath)
     if (!readResult.success) {
       throw new Error((readResult as any).error.message)
     }
     const pdfData = readResult.data
 
+    // Page count check — only when liteparse provided a meaningful count
     if (pdfData.file.pageCount > PDF_AT_MENTION_INLINE_THRESHOLD) {
       throw new Error(
         `This PDF has ${pdfData.file.pageCount} pages, which is too many to read at once. ` +
@@ -963,8 +1046,31 @@ async function callInner(
       operation: 'read',
       tool: 'FileReadTool',
       filePath: fullFilePath,
-      content: pdfData.file.text,
+      content: pdfData.file.text || pdfData.file.base64 || '',
     })
+
+    // When liteparse is unavailable, the PDF was read as base64 — send it as
+    // a document block (the old code path) rather than as inline text.
+    if (pdfData.file.base64) {
+      return {
+        data: pdfData,
+        newMessages: [
+          createUserMessage({
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: pdfData.file.base64,
+                },
+              },
+            ],
+            isMeta: true,
+          }),
+        ],
+      }
+    }
 
     return { data: pdfData }
   }
