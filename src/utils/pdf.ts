@@ -1,4 +1,3 @@
-import { LiteParse } from '@llamaindex/liteparse'
 import { randomUUID } from 'crypto'
 import { mkdir, readdir, writeFile } from 'fs/promises'
 import { join } from 'path'
@@ -11,6 +10,30 @@ import { errorMessage } from './errors.js'
 import { formatFileSize } from './format.js'
 import { getFsImplementation } from './fsOperations.js'
 import { getToolResultsDir } from './toolResultStorage.js'
+
+// Lazy-load liteparse — the native module is not available on all platforms
+// (e.g. darwin-x64 has no prebuilt binary). A top-level import crashes the
+// entire CLI at module-eval time. Dynamic import confines the failure to PDF
+// operations so the CLI remains usable.
+type LiteParseClass = new (...args: any[]) => {
+  parse(input: string | Buffer): Promise<{ pages: any[]; text: string }>
+  screenshot(filePath: string, pageNumbers: number[]): Promise<Array<{ pageNum: number; imageBuffer: Buffer }>>
+}
+let _LiteParse: LiteParseClass | null = null
+let _liteParseLoadError: Error | null = null
+
+async function getLiteParse(): Promise<LiteParseClass> {
+  if (_liteParseLoadError) throw _liteParseLoadError
+  if (_LiteParse) return _LiteParse
+  try {
+    const mod = await import('@llamaindex/liteparse')
+    _LiteParse = mod.LiteParse
+    return _LiteParse
+  } catch (e) {
+    _liteParseLoadError = e instanceof Error ? e : new Error(String(e))
+    throw _liteParseLoadError
+  }
+}
 
 export type PDFError = {
   reason:
@@ -67,7 +90,8 @@ export async function readPDF(filePath: string): Promise<
       }
     }
 
-    const parser = new LiteParse({
+    const LP = await getLiteParse()
+    const parser = new LP({
       ocrEnabled: false,
       quiet: true,
     })
@@ -124,7 +148,8 @@ export async function getPDFPageCount(
   filePath: string,
 ): Promise<number | null> {
   try {
-    const parser = new LiteParse({
+    const LP = await getLiteParse()
+    const parser = new LP({
       ocrEnabled: false,
       quiet: true,
     })
@@ -164,7 +189,8 @@ export function resetPdftoppmCache(): void {
 export async function isPdftoppmAvailable(): Promise<boolean> {
   if (liteparseAvailable !== undefined) return liteparseAvailable
   try {
-    const parser = new LiteParse({ quiet: true, maxPages: 1, ocrEnabled: false })
+    const LP = await getLiteParse()
+    const parser = new LP({ quiet: true, maxPages: 1, ocrEnabled: false })
     liteparseAvailable = true
     return true
   } catch {
@@ -207,7 +233,8 @@ export async function extractPDFPages(
       }
     }
 
-    const parser = new LiteParse({ quiet: true, ocrEnabled: false })
+    const LP = await getLiteParse()
+    const parser = new LP({ quiet: true, ocrEnabled: false })
 
     // Resolve the page window. parsePDFPageRange may return lastPage: Infinity
     // for open-ended ranges like "5-". Without bounding we'd allocate an infinite
