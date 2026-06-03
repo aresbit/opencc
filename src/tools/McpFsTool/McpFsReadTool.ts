@@ -3,7 +3,10 @@ import { readFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { discoverTools, getMcpFsBaseDir } from '../../utils/mcpFilesystem.js'
+import {
+  discoverToolsCached,
+  getMcpFsBaseDir,
+} from '../../utils/mcpFilesystem.js'
 import { join } from 'path'
 
 const MCP_FS_READ_TOOL_NAME = 'mcpfs_read'
@@ -42,7 +45,7 @@ export const McpFsReadTool = buildTool({
   isReadOnly() { return true },
   renderToolUseMessage() { return null },
   async call({ tool }, _context) {
-    const entries = await discoverTools()
+    const entries = await discoverToolsCached()
     const entry = entries.find(e => `${e.server}/${e.toolName}` === tool || e.toolName === tool)
 
     if (!entry || !existsSync(entry.tsFilePath)) {

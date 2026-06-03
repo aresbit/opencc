@@ -8,7 +8,12 @@ import {
   clearGoal,
   goalResponseText,
   validateGoalObjective,
+  advanceGoalPhase,
+  type GoalPhase,
 } from '../../tools/GoalTool/utils.js'
+import { onUserOrToolActivity } from '../../utils/goalContinuation.js'
+
+const VALID_PHASES: readonly GoalPhase[] = ['planning', 'executing', 'verifying']
 
 export const call: LocalCommandCall = async (args, _context) => {
   const trimmedArgs = args.trim()
@@ -36,7 +41,9 @@ export const call: LocalCommandCall = async (args, _context) => {
     return { type: 'text', value: 'Failed to pause goal.\n' }
   }
 
-  // /goal resume
+  // /goal resume — re-arm continuation and trigger a query turn so the
+  // agent picks up the goal immediately instead of waiting for the next
+  // user message.
   if (trimmedArgs === 'resume') {
     const goal = await getGoal()
     if (!goal) {
@@ -45,11 +52,84 @@ export const call: LocalCommandCall = async (args, _context) => {
     if (goal.status === 'active') {
       return { type: 'text', value: `Goal is already active: "${goal.objective}"\n` }
     }
+    if (goal.status === 'complete') {
+      return { type: 'text', value: `Goal is already complete: "${goal.objective}". Use /goal clear to remove it.\n` }
+    }
     const updated = await resumeGoal()
     if (updated) {
-      return { type: 'text', value: `Goal resumed: "${updated.objective}"\n` }
+      // Reset the per-goal continuation guard so the auto-continuation loop
+      // fires this turn instead of being blocked by the "same goalId" check.
+      onUserOrToolActivity()
+      return {
+        type: 'text',
+        value: `Goal resumed: "${updated.objective}" — picking it up now.\n`,
+        shouldQuery: true,
+      }
     }
     return { type: 'text', value: 'Failed to resume goal.\n' }
+  }
+
+  // /goal phase <planning|executing|verifying>
+  if (trimmedArgs.startsWith('phase')) {
+    const rest = trimmedArgs.slice('phase'.length).trim()
+    const goal = await getGoal()
+    if (!goal) {
+      return { type: 'text', value: 'No goal is currently set. Use /goal <objective> to create one.\n' }
+    }
+    if (!rest) {
+      const current = goal.phase ?? '(no phase)'
+      return {
+        type: 'text',
+        value: `Current phase: ${current}\nUsage: /goal phase ${VALID_PHASES.join('|')}\n`,
+      }
+    }
+    if (!VALID_PHASES.includes(rest as GoalPhase)) {
+      return {
+        type: 'text',
+        value: `Invalid phase "${rest}". Expected one of: ${VALID_PHASES.join(', ')}.\n`,
+      }
+    }
+    if (goal.status !== 'active') {
+      return {
+        type: 'text',
+        value: `Cannot advance phase: goal is ${goal.status}. Use /goal resume first.\n`,
+      }
+    }
+    const updated = await advanceGoalPhase(rest as GoalPhase)
+    if (updated) {
+      return {
+        type: 'text',
+        value: `Goal phase set to ${rest}: "${updated.objective}"\n`,
+      }
+    }
+    return { type: 'text', value: 'Failed to advance phase.\n' }
+  }
+
+  // /goal subgoals
+  if (trimmedArgs === 'subgoals' || trimmedArgs === 'sub') {
+    const goal = await getGoal()
+    if (!goal) {
+      return { type: 'text', value: 'No goal is currently set.\n' }
+    }
+    const sgs = goal.subgoals ?? []
+    if (sgs.length === 0) {
+      return {
+        type: 'text',
+        value: `No subgoals dispatched for "${goal.objective}".\nThe agent records subgoals via update_goal({subgoal_add}).\n`,
+      }
+    }
+    const lines = [`Subgoals for "${goal.objective}":`]
+    for (const sg of sgs) {
+      const marker =
+        sg.status === 'in_flight'
+          ? '⋯'
+          : sg.status === 'completed'
+            ? '✓'
+            : '✗'
+      lines.push(`  ${marker} ${sg.id} → ${sg.dispatchedTo}: ${sg.description}`)
+      if (sg.result) lines.push(`      result: ${sg.result}`)
+    }
+    return { type: 'text', value: lines.join('\n') + '\n' }
   }
 
   // /goal clear
@@ -84,7 +164,7 @@ export const call: LocalCommandCall = async (args, _context) => {
 
   return {
     type: 'text',
-    value: `Goal created and active: "${goal.objective}"\nToken budget: ${goal.tokenBudget !== null ? goal.tokenBudget.toLocaleString() : 'none'}\n\nCommands: /goal pause | /goal resume | /goal clear | /goal\n`,
+    value: `Goal created and active: "${goal.objective}" (phase: ${goal.phase ?? 'planning'})\nToken budget: ${goal.tokenBudget !== null ? goal.tokenBudget.toLocaleString() : 'none'}\n\nCommands: /goal | /goal phase ${VALID_PHASES.join('|')} | /goal subgoals | /goal pause | /goal resume | /goal clear\n`,
     shouldQuery: true,
   }
 }

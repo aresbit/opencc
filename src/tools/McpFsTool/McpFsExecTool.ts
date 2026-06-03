@@ -1,7 +1,10 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { executeCode, discoverTools } from '../../utils/mcpFilesystem.js'
+import {
+  executeCode,
+  discoverToolsCached,
+} from '../../utils/mcpFilesystem.js'
 
 const MCP_FS_EXEC_TOOL_NAME = 'mcpfs_exec'
 
@@ -26,7 +29,7 @@ export const McpFsExecTool = buildTool({
   searchHint: 'execute typescript code sandbox import tools call mcp',
   maxResultSizeChars: 500_000,
   async description() {
-    const entries = await discoverTools()
+    const entries = await discoverToolsCached()
     const servers = [...new Set(entries.map(e => e.server))]
     const imports = servers.map(s => `import * as ${toCamelCase(s)} from './servers/${s}/index.js';`).join('\n')
 
@@ -37,7 +40,7 @@ export const McpFsExecTool = buildTool({
     return `Execute TypeScript code that imports and calls MCP tools from the filesystem.\n\nAvailable servers: ${servers.join(', ')} (${entries.length} tools)\n\nImport pattern:\n\`\`\`typescript\n${imports}\n\`\`\`\n\nOnly console.log() output reaches the model. Use mcpfs_read to inspect individual tool interfaces.`
   },
   async prompt() {
-    const entries = await discoverTools()
+    const entries = await discoverToolsCached()
     const servers = [...new Set(entries.map(e => e.server))]
     return `Execute agent-written TypeScript code in a sandbox. Servers: ${servers.join(', ')}. Import tools from ./servers/<server>/<tool>.js. The sandbox runs your code and returns ONLY console.log() output — all intermediate tool results stay in the sandbox and save tokens.`
   },

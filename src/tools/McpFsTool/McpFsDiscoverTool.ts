@@ -4,6 +4,8 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import {
   discoverAndGenerate,
   discoverTools,
+  discoverToolsCached,
+  invalidateDiscoverToolsCache,
   getMcpFsBaseDir,
 } from '../../utils/mcpFilesystem.js'
 
@@ -35,7 +37,7 @@ export const McpFsDiscoverTool = buildTool({
   searchHint: 'discover tools from filesystem mcp-fs servers directory',
   maxResultSizeChars: 100_000,
   async description() {
-    const entries = await discoverTools({ probeMcpServers: false })
+    const entries = await discoverToolsCached({ probeMcpServers: false })
     if (entries.length === 0) {
       return `Discover MCP tools from the filesystem. Scans ${getMcpFsBaseDir()}/servers/ for tool definitions (.ts files and manifest.json). Also scans traditional MCP server configs (.mcp.json, settings.json) — use regenerate=true to probe.`
     }
@@ -53,10 +55,17 @@ export const McpFsDiscoverTool = buildTool({
   async call({ regenerate }, _context) {
     let entries, filesWritten
     if (regenerate) {
+      // Explicit regenerate path: bust stale cache, do the full scan + write,
+      // then the downstream cached reads will see fresh entries.
+      invalidateDiscoverToolsCache()
       const result = await discoverAndGenerate()
       entries = result.entries
       filesWritten = result.filesWritten
     } else {
+      // Non-regenerate: invalidate first so we don't serve a stale TTL cache
+      // from a previous call, then re-scan and persist. Using the raw scan
+      // (not the cached wrapper) because this IS the authoritative refresh.
+      invalidateDiscoverToolsCache()
       entries = await discoverTools()
       const { filesWritten: fw } = await import('../../utils/mcpFilesystem.js').then(m => m.generateToolFiles(entries))
       filesWritten = fw
@@ -82,11 +91,26 @@ export const McpFsDiscoverTool = buildTool({
   mapToolResultToToolResultBlockParam(content, toolUseID) {
     const out = content as { tools: Array<{ name: string; description: string; readOnly: boolean }>; count: number; baseDir: string; filesGenerated?: number }
     if (out.count === 0) {
-      return {
-        tool_use_id: toolUseID,
-        type: 'tool_result',
-        content: `No tools discovered in ${out.baseDir}/servers/.\n\nUse scaffold=true to create example tools, or place manifest.json files in ${out.baseDir}/servers/<server-name>/.`,
-      }
+      const serversDir = `${out.baseDir}/servers/`
+      const lines = [
+        `No tools discovered in ${serversDir}.`,
+        '',
+        'To register tools, choose one of:',
+        '',
+        '1. Place manifest.json files:',
+        `   mkdir -p ${serversDir}<server-name>`,
+        `   # Add manifest.json with "server", "version", "tools" fields`,
+        '',
+        '2. Auto-bridge from .mcp.json (put in project root or ~/.claude/settings.json):',
+        '   { "mcpServers": { "my-server": { "command": "npx", "args": ["-y", "@scope/server"] } } }',
+        '',
+        '3. Import from ChatWise:',
+        '   bun run scripts/chatwise-to-mcpfs.ts',
+        '',
+        'Then run mcpfs_discover again.',
+        out.filesGenerated ? `\n${out.filesGenerated} wrapper files generated (0 tools found).` : '',
+      ]
+      return { tool_use_id: toolUseID, type: 'tool_result', content: lines.join('\n') }
     }
     const lines = [
       `Discovered ${out.count} tools in ${out.baseDir}/servers/:`,

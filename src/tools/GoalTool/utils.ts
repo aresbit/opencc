@@ -6,16 +6,73 @@ import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 
 export type GoalStatus = 'active' | 'paused' | 'budget_limited' | 'complete'
 
+/**
+ * Sub-state within `active`. Models the Codex-style turn loop so the agent
+ * (and the user) sees *where* in the pursuit of the goal we currently are,
+ * not just "active". Ignored when status !== 'active'.
+ */
+export type GoalPhase = 'planning' | 'executing' | 'verifying'
+
+export type GoalTransitionReason =
+  | 'created'
+  | 'user_pause'
+  | 'user_resume'
+  | 'interrupt_pause'
+  | 'budget_exhausted'
+  | 'model_complete'
+  | 'phase_advance'
+  | 'subgoal_dispatched'
+  | 'subgoal_resolved'
+  | 'system'
+
+export interface GoalTransition {
+  from: GoalStatus | null
+  to: GoalStatus
+  reason: GoalTransitionReason
+  at: number
+  /** Optional phase context captured at transition time. */
+  phase?: GoalPhase | null
+  /** Optional short note describing the transition (e.g. subgoal id). */
+  note?: string
+}
+
+export type SubgoalStatus = 'in_flight' | 'completed' | 'failed'
+
+export interface Subgoal {
+  id: string
+  description: string
+  /** What it was dispatched to — agent type, skill name, or free-form. */
+  dispatchedTo: string
+  status: SubgoalStatus
+  result?: string
+  createdAt: number
+  resolvedAt?: number
+}
+
+/** Keep the last N transitions to bound storage. */
+const MAX_TRANSITION_HISTORY = 12
+
 export interface Goal {
   threadId: string
   goalId: string
   objective: string
   status: GoalStatus
+  phase?: GoalPhase
   tokenBudget: number | null
   tokensUsed: number
   timeUsedSeconds: number
   createdAt: number
   updatedAt: number
+  /**
+   * Most recent state-machine transition. Drives transition-aware prompts and
+   * one-shot system-visible info messages (so UI/model see edge events, not
+   * just polled state).
+   */
+  lastTransition?: GoalTransition
+  /** Bounded history of recent transitions (newest first). */
+  transitionHistory?: GoalTransition[]
+  /** Subgoals dispatched to subagents/skills, with status tracking. */
+  subgoals?: Subgoal[]
 }
 
 let goalIdCounter = 0
@@ -65,19 +122,233 @@ export async function deleteGoal(threadId?: string): Promise<boolean> {
   }
 }
 
-export function createGoal(objective: string, tokenBudget?: number | null, threadId?: string): Goal {
+export function createGoal(
+  objective: string,
+  tokenBudget?: number | null,
+  threadId?: string,
+  initialPhase: GoalPhase = 'planning',
+): Goal {
   const now = Date.now()
+  const initialTransition: GoalTransition = {
+    from: null,
+    to: 'active',
+    reason: 'created',
+    at: now,
+    phase: initialPhase,
+  }
   return {
     threadId: threadId || getSessionId(),
     goalId: generateGoalId(),
     objective,
     status: 'active',
+    phase: initialPhase,
     tokenBudget: tokenBudget ?? null,
     tokensUsed: 0,
     timeUsedSeconds: 0,
     createdAt: now,
     updatedAt: now,
+    lastTransition: initialTransition,
+    transitionHistory: [initialTransition],
+    subgoals: [],
   }
+}
+
+/**
+ * Central state-machine transition. All status mutations should go through
+ * here so the new state, the prior state, and the reason are recorded on the
+ * goal record. Returns the persisted goal, or null if no goal exists.
+ *
+ * No-op (no save, no transition record) when the goal is already in `toStatus`.
+ */
+export async function transitionGoal(
+  toStatus: GoalStatus,
+  reason: GoalTransitionReason,
+  threadId?: string,
+  note?: string,
+): Promise<Goal | null> {
+  const goal = await getGoal(threadId)
+  if (!goal) return null
+  if (goal.status === toStatus) return goal
+
+  const now = Date.now()
+  const from = goal.status
+  const transition: GoalTransition = {
+    from,
+    to: toStatus,
+    reason,
+    at: now,
+    phase: goal.phase ?? null,
+    note,
+  }
+  goal.status = toStatus
+  goal.updatedAt = now
+  goal.lastTransition = transition
+  goal.transitionHistory = pushBoundedHistory(goal.transitionHistory, transition)
+  // When transitioning out of `active`, the phase becomes meaningless.
+  if (toStatus !== 'active') {
+    delete goal.phase
+  }
+  await saveGoal(goal)
+  return goal
+}
+
+function pushBoundedHistory(
+  history: GoalTransition[] | undefined,
+  next: GoalTransition,
+): GoalTransition[] {
+  const list = history ? [...history] : []
+  list.unshift(next)
+  return list.slice(0, MAX_TRANSITION_HISTORY)
+}
+
+/**
+ * Advance the active goal's phase (planning → executing → verifying, or any
+ * model-chosen transition). No-op for non-active goals, and no-op when the
+ * phase is unchanged. Records a phase_advance transition for visibility even
+ * though the high-level status doesn't change.
+ */
+export async function advanceGoalPhase(
+  toPhase: GoalPhase,
+  threadId?: string,
+  note?: string,
+): Promise<Goal | null> {
+  const goal = await getGoal(threadId)
+  if (!goal) return null
+  if (goal.status !== 'active') return goal
+  if (goal.phase === toPhase) return goal
+
+  const now = Date.now()
+  const transition: GoalTransition = {
+    from: goal.status,
+    to: goal.status,
+    reason: 'phase_advance',
+    at: now,
+    phase: toPhase,
+    note: note ?? `phase: ${goal.phase ?? 'unset'} → ${toPhase}`,
+  }
+  goal.phase = toPhase
+  goal.updatedAt = now
+  goal.lastTransition = transition
+  goal.transitionHistory = pushBoundedHistory(goal.transitionHistory, transition)
+  await saveGoal(goal)
+  return goal
+}
+
+let subgoalCounter = 0
+function generateSubgoalId(): string {
+  subgoalCounter++
+  return `sg_${Date.now().toString(36)}_${subgoalCounter}`
+}
+
+/**
+ * Record that a subgoal was dispatched. Returns the created Subgoal, or null
+ * if no active goal exists. Records a subgoal_dispatched transition so the
+ * coordination edge is visible to user + model.
+ */
+export async function addSubgoal(
+  description: string,
+  dispatchedTo: string,
+  threadId?: string,
+): Promise<{ goal: Goal; subgoal: Subgoal } | null> {
+  const goal = await getGoal(threadId)
+  if (!goal) return null
+
+  const now = Date.now()
+  const subgoal: Subgoal = {
+    id: generateSubgoalId(),
+    description,
+    dispatchedTo,
+    status: 'in_flight',
+    createdAt: now,
+  }
+  goal.subgoals = [...(goal.subgoals ?? []), subgoal]
+  const transition: GoalTransition = {
+    from: goal.status,
+    to: goal.status,
+    reason: 'subgoal_dispatched',
+    at: now,
+    phase: goal.phase ?? null,
+    note: `${subgoal.id} → ${dispatchedTo}`,
+  }
+  goal.lastTransition = transition
+  goal.transitionHistory = pushBoundedHistory(goal.transitionHistory, transition)
+  goal.updatedAt = now
+  await saveGoal(goal)
+  return { goal, subgoal }
+}
+
+/**
+ * Resolve a previously-dispatched subgoal. status must be 'completed' or
+ * 'failed'. Returns the updated goal + subgoal, or null when the goal or
+ * subgoal id doesn't exist.
+ */
+export async function resolveSubgoal(
+  subgoalId: string,
+  status: Exclude<SubgoalStatus, 'in_flight'>,
+  result?: string,
+  threadId?: string,
+): Promise<{ goal: Goal; subgoal: Subgoal } | null> {
+  const goal = await getGoal(threadId)
+  if (!goal || !goal.subgoals) return null
+  const idx = goal.subgoals.findIndex(sg => sg.id === subgoalId)
+  if (idx === -1) return null
+
+  const now = Date.now()
+  const subgoal = { ...goal.subgoals[idx]!, status, result, resolvedAt: now }
+  goal.subgoals = [...goal.subgoals]
+  goal.subgoals[idx] = subgoal
+  const transition: GoalTransition = {
+    from: goal.status,
+    to: goal.status,
+    reason: 'subgoal_resolved',
+    at: now,
+    phase: goal.phase ?? null,
+    note: `${subgoal.id} (${status})`,
+  }
+  goal.lastTransition = transition
+  goal.transitionHistory = pushBoundedHistory(goal.transitionHistory, transition)
+  goal.updatedAt = now
+  await saveGoal(goal)
+  return { goal, subgoal }
+}
+
+/**
+ * Consume the most recent transition (read-and-clear). Returns null if no
+ * unseen transition is recorded. Callers use this to emit one-shot info
+ * messages without re-firing on subsequent reads.
+ */
+export async function consumeGoalTransition(
+  threadId?: string,
+): Promise<{ goal: Goal; transition: GoalTransition } | null> {
+  const goal = await getGoal(threadId)
+  if (!goal || !goal.lastTransition) return null
+  const transition = goal.lastTransition
+  delete goal.lastTransition
+  await saveGoal(goal)
+  return { goal, transition }
+}
+
+export function formatTransitionLine(t: GoalTransition): string {
+  const fromTxt = t.from ?? 'none'
+  const reasonTxt = ({
+    created: 'goal created',
+    user_pause: 'paused by user',
+    user_resume: 'resumed by user',
+    interrupt_pause: 'paused by interrupt',
+    budget_exhausted: 'token budget exhausted',
+    model_complete: 'marked complete by model',
+    phase_advance: 'phase advanced',
+    subgoal_dispatched: 'subgoal dispatched',
+    subgoal_resolved: 'subgoal resolved',
+    system: 'system transition',
+  } satisfies Record<GoalTransitionReason, string>)[t.reason]
+  // Phase-advance keeps high-level status so render only the phase delta.
+  const head =
+    t.reason === 'phase_advance'
+      ? `goal phase → ${t.phase ?? '?'}`
+      : `goal state: ${fromTxt} → ${t.to}`
+  const note = t.note ? ` [${t.note}]` : ''
+  return `${head} (${reasonTxt})${note}`
 }
 
 export function validateGoalObjective(objective: string): string | null {
@@ -114,7 +385,9 @@ export function goalResponseText(goal: Goal | null): string {
 
   const lines = [
     `Goal: ${goal.objective}`,
-    `Status: ${formatGoalStatus(goal.status)}`,
+    `Status: ${formatGoalStatus(goal.status)}${
+      goal.status === 'active' && goal.phase ? ` (${goal.phase})` : ''
+    }`,
     `Goal ID: ${goal.goalId}`,
     `Time used: ${formatTime(goal.timeUsedSeconds)}`,
     `Tokens used: ${goal.tokensUsed.toLocaleString()}`,
@@ -126,10 +399,33 @@ export function goalResponseText(goal: Goal | null): string {
     lines.push(`Tokens remaining: ${remaining.toLocaleString()}`)
   }
 
+  // Subgoals view
+  if (goal.subgoals && goal.subgoals.length > 0) {
+    lines.push('', 'Subgoals:')
+    for (const sg of goal.subgoals.slice(-6)) {
+      const marker =
+        sg.status === 'in_flight' ? '⋯' : sg.status === 'completed' ? '✓' : '✗'
+      lines.push(
+        `  ${marker} ${sg.id} → ${sg.dispatchedTo}: ${truncate(sg.description, 80)}`,
+      )
+    }
+  }
+
+  // Transition history (most recent first, capped)
+  if (goal.transitionHistory && goal.transitionHistory.length > 0) {
+    lines.push('', 'Recent transitions:')
+    for (const t of goal.transitionHistory.slice(0, 5)) {
+      lines.push(`  · ${formatTransitionLine(t)}`)
+    }
+  }
+
   // Add helpful hints based on status
   switch (goal.status) {
     case 'active':
-      lines.push('', 'Commands: /goal pause, /goal resume, /goal clear')
+      lines.push(
+        '',
+        'Commands: /goal pause, /goal phase planning|executing|verifying, /goal clear',
+      )
       break
     case 'paused':
       lines.push('', 'Commands: /goal resume, /goal clear')
@@ -141,6 +437,11 @@ export function goalResponseText(goal: Goal | null): string {
   }
 
   return lines.join('\n')
+}
+
+function truncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text
+  return text.substring(0, Math.max(0, maxLen - 3)) + '...'
 }
 
 export function escapeXmlText(input: string): string {
@@ -222,24 +523,18 @@ export function renderGoalBudgetLimitPrompt(goal: Goal): string {
 
 // ── User/system lifecycle operations ──────────────────────────────
 
-export async function pauseGoal(threadId?: string): Promise<Goal | null> {
-  const goal = await getGoal(threadId)
-  if (!goal) return null
-  if (goal.status === 'paused') return goal
-  goal.status = 'paused'
-  goal.updatedAt = Date.now()
-  await saveGoal(goal)
-  return goal
+export async function pauseGoal(
+  threadId?: string,
+  reason: GoalTransitionReason = 'user_pause',
+): Promise<Goal | null> {
+  return transitionGoal('paused', reason, threadId)
 }
 
-export async function resumeGoal(threadId?: string): Promise<Goal | null> {
-  const goal = await getGoal(threadId)
-  if (!goal) return null
-  if (goal.status === 'active') return goal
-  goal.status = 'active'
-  goal.updatedAt = Date.now()
-  await saveGoal(goal)
-  return goal
+export async function resumeGoal(
+  threadId?: string,
+  reason: GoalTransitionReason = 'user_resume',
+): Promise<Goal | null> {
+  return transitionGoal('active', reason, threadId)
 }
 
 export async function clearGoal(threadId?: string): Promise<boolean> {
@@ -248,12 +543,8 @@ export async function clearGoal(threadId?: string): Promise<boolean> {
 
 export async function setGoalBudgetLimited(threadId?: string): Promise<Goal | null> {
   const goal = await getGoal(threadId)
-  if (!goal) return null
-  if (goal.status !== 'active') return goal
-  goal.status = 'budget_limited'
-  goal.updatedAt = Date.now()
-  await saveGoal(goal)
-  return goal
+  if (!goal || goal.status !== 'active') return goal
+  return transitionGoal('budget_limited', 'budget_exhausted', threadId)
 }
 
 /**
@@ -278,7 +569,18 @@ export async function accountGoalUsage(
   goal.updatedAt = Date.now()
 
   if (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget) {
+    const now = Date.now()
+    const transition: GoalTransition = {
+      from: goal.status,
+      to: 'budget_limited',
+      reason: 'budget_exhausted',
+      at: now,
+      phase: goal.phase ?? null,
+    }
     goal.status = 'budget_limited'
+    goal.lastTransition = transition
+    goal.transitionHistory = pushBoundedHistory(goal.transitionHistory, transition)
+    delete goal.phase
   }
 
   await saveGoal(goal)

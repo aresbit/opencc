@@ -1,4 +1,4 @@
-import { readFile, readdir, mkdir, writeFile, rm } from 'fs/promises'
+import { readFile, readdir, mkdir, writeFile, rm, copyFile } from 'fs/promises'
 import { join, resolve, relative } from 'path'
 import { existsSync } from 'fs'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
@@ -103,6 +103,122 @@ function getClientTsPath(): string {
 
 export function getSandboxDir(): string {
   return join(getMcpFsBaseDir(), 'sandbox')
+}
+
+function getBridgePath(): string {
+  return join(getMcpFsBaseDir(), 'bridge.mjs')
+}
+
+/**
+ * Ensure bridge.mjs exists in the mcp-fs directory. Tries, in order:
+ * 1. Already present — no-op.
+ * 2. Copy from the repo source (`src/utils/mcpBridge.mjs` relative to
+ *    the project root, which works in dev mode).
+ * 3. Fall back to a minimal inline bridge that can at least list tools
+ *    from stdio-based MCP servers (no SSE/streamable support).
+ *
+ * Without this, every `probeMcpServerTools()` call silently returned []
+ * because `!existsSync(bridgePath)` short-circuited before any probe.
+ */
+async function ensureBridge(): Promise<void> {
+  const dest = getBridgePath()
+  if (existsSync(dest)) return
+
+  // Try repo-relative copy first (dev mode).
+  try {
+    const { getProjectRoot } = await import('../bootstrap/state.js')
+    const src = join(getProjectRoot() as string, 'src', 'utils', 'mcpBridge.mjs')
+    if (existsSync(src)) {
+      await mkdir(getMcpFsBaseDir(), { recursive: true })
+      await copyFile(src, dest)
+      return
+    }
+  } catch { /* fall through to inline generation */ }
+
+  // Fallback: minimal bridge — can list tools + call via stdio transport
+  // (covers 95% of MCP servers). SSE / streamable transports need the full
+  // bridge; copy it manually or run scripts/chatwise-to-mcpfs.ts.
+  const minimalBridge = `#!/usr/bin/env node
+// Minimal MCP-FS bridge — lists tools and calls via stdio transport.
+// For SSE / streamable HTTP transports, copy the full bridge from:
+//   cp src/utils/mcpBridge.mjs ~/.claude/mcp-fs/bridge.mjs
+import { spawn } from 'child_process';
+import { readFile } from 'fs/promises';
+
+const MODE = process.env.BRIDGE_TOOL ? 'call' : 'list';
+
+async function main() {
+  const configStr = process.env.BRIDGE_SERVER_CONFIG;
+  if (!configStr) {
+    console.log(JSON.stringify({error:'no BRIDGE_SERVER_CONFIG'}));
+    process.exit(1);
+  }
+  const config = JSON.parse(configStr);
+  const {command, args = [], env = {}} = config;
+  if (!command) {
+    // URL-based servers (SSE) — can't probe with minimal bridge
+    console.log(JSON.stringify({tools:[]}));
+    process.exit(0);
+  }
+
+  const child = spawn(command, args, {
+    env: {...process.env, ...env},
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let stdout = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+
+  // MCP handshake: initialize
+  child.stdin.write(JSON.stringify({
+    jsonrpc:'2.0', id:1, method:'initialize',
+    params:{protocolVersion:'2024-11-05', capabilities:{}, clientInfo:{name:'mcpfs-bridge',version:'0.1'}}
+  }) + '\\n');
+  child.stdin.write(JSON.stringify({jsonrpc:'2.0', method:'notifications/initialized'}) + '\\n');
+
+  if (MODE === 'list') {
+    child.stdin.write(JSON.stringify({
+      jsonrpc:'2.0', id:2, method:'tools/list', params:{}
+    }) + '\\n');
+  } else {
+    const toolName = process.env.BRIDGE_TOOL;
+    const argsStr = process.env.BRIDGE_TOOL_ARGS || '{}';
+    child.stdin.write(JSON.stringify({
+      jsonrpc:'2.0', id:3, method:'tools/call',
+      params:{name:toolName, arguments:JSON.parse(argsStr)}
+    }) + '\\n');
+  }
+
+  await new Promise(r => setTimeout(r, 3000));
+  child.stdin.end();
+
+  try {
+    // Parse JSON-RPC responses from stdout
+    const lines = stdout.split('\\n').filter(l => l.trim());
+    for (const line of lines) {
+      try {
+        const msg = JSON.parse(line);
+        if (MODE === 'list' && msg.result?.tools) {
+          console.log(JSON.stringify(msg.result));
+          process.exit(0);
+        }
+        if (MODE === 'call' && msg.result !== undefined) {
+          console.log(JSON.stringify(msg.result));
+          process.exit(0);
+        }
+      } catch {}
+    }
+    console.log(JSON.stringify({tools:[]}));
+  } catch {
+    console.log(JSON.stringify({tools:[]}));
+  }
+}
+main();
+`
+  try {
+    await mkdir(getMcpFsBaseDir(), { recursive: true })
+    await writeFile(dest, minimalBridge)
+  } catch { /* best-effort */ }
 }
 
 // ── Tool .ts File Generation ─────────────────────────────────────
@@ -307,8 +423,13 @@ export async function generateToolFiles(
 
   // Write registry.json
   const registryPath = join(getMcpFsBaseDir(), 'registry.json')
-  await writeFile(registryPath, jsonStringify(entries, 2))
+  const serialized = jsonStringify(entries, 2)
+  await writeFile(registryPath, serialized)
+  lastRegistryJson = serialized
   filesWritten.push(registryPath)
+
+  // Mutation: bust the read-cache so the next read sees fresh entries.
+  invalidateDiscoverToolsCache()
 
   return { filesWritten }
 }
@@ -490,17 +611,88 @@ export async function discoverAndGenerate(): Promise<{
   return { entries, filesWritten }
 }
 
+// ── In-process discovery cache ───────────────────────────────────
+//
+// discoverTools() was previously called on every goal continuation, on every
+// mcp-fs tool description()/prompt() build, and on every executeToolSimple()
+// invocation. Each call did readdir + per-server stat/readFile/jsonParse +
+// an *unconditional* writeFile(registry.json). On a warm machine that's
+// ~5-20ms per call. With ~10 goal continuations in a turn the waste adds up.
+//
+// This cache memoizes the entry list for `DISCOVER_TTL_MS` and skips the
+// registry.json rewrite when the serialized payload hasn't changed. Cache
+// is invalidated whenever a tool that mutates servers (mcpfs_discover with
+// regenerate=true, discoverAndGenerate, generateToolFiles) runs.
+
+const DISCOVER_TTL_MS = 15_000
+
+interface DiscoverCacheEntry {
+  entries: McpFsRegistryEntry[]
+  fetchedAt: number
+  probeMcpServers: boolean
+}
+
+let discoverCache: DiscoverCacheEntry | null = null
+let lastRegistryJson: string | null = null
+let baseDirCreated = false
+let serversDirCreated = false
+
+/**
+ * Invalidate the in-process discovery cache. Called by mutating paths
+ * (mcpfs_discover with regenerate=true, generateToolFiles, etc.) so the
+ * next read sees the fresh state.
+ */
+export function invalidateDiscoverToolsCache(): void {
+  discoverCache = null
+  lastRegistryJson = null
+}
+
+/**
+ * Cached wrapper around discoverTools(). Hot, read-only callers (goal
+ * continuation prompt, tool description() / prompt() rendering, look-up
+ * inside executeToolSimple) should prefer this over the raw scan.
+ *
+ * - opts.probeMcpServers is part of the cache key — separate caches for
+ *   probe-enabled vs probe-disabled runs so one path can't poison the other.
+ * - opts.ttlMs overrides DISCOVER_TTL_MS for callers that want fresher data.
+ */
+export async function discoverToolsCached(opts?: {
+  probeMcpServers?: boolean
+  ttlMs?: number
+}): Promise<McpFsRegistryEntry[]> {
+  const probe = opts?.probeMcpServers !== false
+  const ttl = opts?.ttlMs ?? DISCOVER_TTL_MS
+  const now = Date.now()
+
+  if (
+    discoverCache &&
+    discoverCache.probeMcpServers === probe &&
+    now - discoverCache.fetchedAt < ttl
+  ) {
+    return discoverCache.entries
+  }
+
+  const entries = await discoverTools({ probeMcpServers: probe })
+  discoverCache = { entries, fetchedAt: now, probeMcpServers: probe }
+  return entries
+}
+
 /**
  * Scan for manifest.json files in the servers directory.
  * Also supports individual .ts files (ls-style discovery).
  * Also auto-discovers traditional MCP servers from system configs.
+ *
+ * Hot callers should use {@link discoverToolsCached} instead of this raw scan.
  */
 export async function discoverTools(opts?: {
   probeMcpServers?: boolean
 }): Promise<McpFsRegistryEntry[]> {
   const serversDir = getServersDir()
-  if (!existsSync(serversDir)) {
-    await mkdir(serversDir, { recursive: true })
+  if (!serversDirCreated) {
+    if (!existsSync(serversDir)) {
+      await mkdir(serversDir, { recursive: true })
+    }
+    serversDirCreated = true
   }
 
   const entries: McpFsRegistryEntry[] = []
@@ -566,12 +758,27 @@ export async function discoverTools(opts?: {
     } catch { /* bridge discovery is best-effort */ }
   }
 
-  // Persist registry
-  await mkdir(getMcpFsBaseDir(), { recursive: true })
-  await writeFile(
-    join(getMcpFsBaseDir(), 'registry.json'),
-    jsonStringify(entries, 2),
-  )
+  // Persist registry — but only when the serialized payload actually changed.
+  // Without this guard, every discoverTools() call wrote registry.json, which
+  // is wasteful and creates spurious file-watcher events. The lastRegistryJson
+  // module variable also short-circuits the rebuild-byte-compare for callers
+  // hitting this multiple times per second.
+  const serialized = jsonStringify(entries, 2)
+  if (serialized !== lastRegistryJson) {
+    if (!baseDirCreated) {
+      await mkdir(getMcpFsBaseDir(), { recursive: true })
+      baseDirCreated = true
+    }
+    try {
+      await writeFile(
+        join(getMcpFsBaseDir(), 'registry.json'),
+        serialized,
+      )
+      lastRegistryJson = serialized
+    } catch {
+      // Registry persistence is best-effort; in-memory cache still valid.
+    }
+  }
 
   return entries
 }
@@ -658,7 +865,8 @@ async function probeMcpServerTools(
   serverName: string,
   config: McpServerConfigStub,
 ): Promise<McpBridgeCache['servers'][string]['tools']> {
-  const bridgePath = join(getMcpFsBaseDir(), 'bridge.mjs')
+  await ensureBridge()
+  const bridgePath = getBridgePath()
   if (!existsSync(bridgePath)) return []
 
   const configJson = JSON.stringify(config).replace(/'/g, "'\\''")
@@ -701,6 +909,7 @@ async function probeMcpServerTools(
  * Caches results to avoid re-probing on every discovery cycle.
  */
 async function discoverMcpBridgeTools(): Promise<McpFsRegistryEntry[]> {
+  await ensureBridge()
   const cacheDir = join(getMcpFsBaseDir(), 'cache')
   await mkdir(cacheDir, { recursive: true })
   const cachePath = join(cacheDir, 'mcp-bridge.json')
@@ -762,7 +971,7 @@ async function discoverMcpBridgeTools(): Promise<McpFsRegistryEntry[]> {
  */
 function cacheToEntries(cache: McpBridgeCache): McpFsRegistryEntry[] {
   const entries: McpFsRegistryEntry[] = []
-  const bridgePath = join(getMcpFsBaseDir(), 'bridge.mjs')
+  const bridgePath = getBridgePath()
 
   for (const [serverName, { config, tools }] of Object.entries(cache.servers)) {
     const safeServerName = serverName.replace(/[^a-zA-Z0-9_-]/g, '-')
@@ -799,7 +1008,10 @@ export async function executeToolSimple(
   args: Record<string, unknown>,
   options?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<CodeExecResult> {
-  const entries = await discoverTools()
+  // Use the cached registry for the lookup step — a 15s stale window is fine
+  // because the only failure mode of staleness is "tool not found", which the
+  // user can fix with mcpfs_discover regenerate=true (which invalidates).
+  const entries = await discoverToolsCached()
   const entry = entries.find(
     e => `${e.server}/${e.toolName}` === toolName || e.toolName === toolName,
   )

@@ -33,8 +33,12 @@ export function GoalStatusIndicator({ refreshIntervalMs = 5000 }: Props) {
 
   if (!goal) return null
 
-  const statusLabel = formatGoalStatus(goal.status)
+  const statusLabel =
+    goal.status === 'active' && goal.phase
+      ? `${formatGoalStatus(goal.status)} · ${goal.phase}`
+      : formatGoalStatus(goal.status)
   const statusColor = statusColors[goal.status] ?? 'white'
+  const inFlightSubgoals = goal.subgoals?.filter(s => s.status === 'in_flight').length ?? 0
 
   let usageStr: string
   if (goal.tokenBudget !== null) {
@@ -50,6 +54,12 @@ export function GoalStatusIndicator({ refreshIntervalMs = 5000 }: Props) {
       <Text>{truncate(goal.objective, 60)}</Text>
       <Text dimColor> · </Text>
       <Text color={statusColor}>{statusLabel}</Text>
+      {inFlightSubgoals > 0 ? (
+        <>
+          <Text dimColor> · </Text>
+          <Text color="cyan">{inFlightSubgoals} subagent{inFlightSubgoals > 1 ? 's' : ''}</Text>
+        </>
+      ) : null}
       <Text dimColor> · </Text>
       <Text>{usageStr}</Text>
     </Box>

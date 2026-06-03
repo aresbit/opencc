@@ -1,7 +1,10 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { executeToolSimple, discoverTools } from '../../utils/mcpFilesystem.js'
+import {
+  executeToolSimple,
+  discoverToolsCached,
+} from '../../utils/mcpFilesystem.js'
 
 const MCP_FS_TOOL_NAME = 'mcpfs'
 
@@ -27,7 +30,7 @@ export const McpFsTool = buildTool({
   searchHint: 'execute single mcp tool direct subprocess',
   maxResultSizeChars: 500_000,
   async description() {
-    const entries = await discoverTools()
+    const entries = await discoverToolsCached()
     const list = entries.length > 0
       ? entries.map(e => `${e.server}/${e.toolName}`).join(', ')
       : 'none'

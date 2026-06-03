@@ -40,7 +40,7 @@ import {
 } from './utils/goalAccounting.js'
 import { checkGoalBudget } from './utils/goalBudget.js'
 import { getContinuationCandidate, onUserOrToolActivity, blockContinuation } from './utils/goalContinuation.js'
-import { pauseGoal, resumeGoal, getGoal } from './tools/GoalTool/utils.js'
+import { pauseGoal, resumeGoal, getGoal, consumeGoalTransition, formatTransitionLine } from './tools/GoalTool/utils.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
@@ -1113,6 +1113,25 @@ export class QueryEngine {
     // Goal accounting: finalize turn and check for auto-continuation
     await markTurnEnd(this.totalUsage.input_tokens + this.totalUsage.output_tokens).catch(() => {})
     const budgetResult = await checkGoalBudget().catch(() => null)
+
+    // Surface any state-machine transition that fired this turn so the user
+    // (and the SDK consumer) sees the edge event rather than only the polled
+    // status indicator. Consumes the transition so it doesn't re-fire.
+    try {
+      const consumed = await consumeGoalTransition()
+      if (consumed) {
+        yield {
+          type: 'system',
+          subtype: 'info',
+          message: `${formatTransitionLine(consumed.transition)} — "${consumed.goal.objective}"`,
+          session_id: getSessionId(),
+          uuid: randomUUID(),
+        }
+      }
+    } catch {
+      // best-effort
+    }
+
     const continuation = budgetResult?.blockContinuation
       ? null
       : await getContinuationCandidate().catch(() => null)
@@ -1366,16 +1385,46 @@ export async function* ask({
   })
 
   try {
-    // Check for paused goal on resume — prompt user to resume
+    // Surface goal status at session start so the user/SDK can see paused /
+    // budget_limited goals up front (matches Codex's "resume objective?"
+    // affordance) and any unconsumed transition recorded from a prior process.
     try {
       const goal = await getGoal()
-      if (goal && goal.status === 'paused') {
-        yield {
-          type: 'system',
-          subtype: 'info',
-          message: `Paused goal found: "${goal.objective}" (${goal.tokensUsed.toLocaleString()} tokens used, ${goal.timeUsedSeconds}s elapsed). Use /goal resume to continue.`,
-          session_id: getSessionId(),
-          uuid: randomUUID(),
+      if (goal) {
+        const consumed = await consumeGoalTransition()
+        if (consumed) {
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `${formatTransitionLine(consumed.transition)} — "${consumed.goal.objective}"`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        }
+        if (goal.status === 'paused') {
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `Paused goal found: "${goal.objective}" (${goal.tokensUsed.toLocaleString()} tokens used, ${goal.timeUsedSeconds}s elapsed). Use /goal resume to continue.`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        } else if (goal.status === 'budget_limited') {
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `Goal is budget-limited: "${goal.objective}" (${goal.tokensUsed.toLocaleString()} / ${goal.tokenBudget?.toLocaleString() ?? '∞'} tokens). Increase budget or /goal clear to remove.`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        } else if (goal.status === 'complete') {
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `Goal is complete: "${goal.objective}". Use /goal clear to remove it.`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
         }
       }
     } catch {

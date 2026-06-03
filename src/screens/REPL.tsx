@@ -146,6 +146,7 @@ import { queryCheckpoint, logQueryProfileReport } from '../utils/queryProfiler.j
 import { markTurnStart, markTurnEnd, createGoalQueryTracker } from '../utils/goalAccounting.js';
 import { checkGoalBudget } from '../utils/goalBudget.js';
 import { getContinuationCandidate, onUserOrToolActivity } from '../utils/goalContinuation.js';
+import { consumeGoalTransition, formatTransitionLine } from '../tools/GoalTool/utils.js';
 import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query } from '../query.js';
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
@@ -2823,6 +2824,25 @@ export function REPL({
 
       await markTurnEnd(goalTracker.getTotalTokens()).catch(() => {});
       goalBudgetResult = await checkGoalBudget().catch(() => null);
+
+      // Surface state-machine transition (e.g. active → budget_limited or
+      // → complete) as a visible system info message so the user sees the
+      // edge event, not just the polled status indicator. consume so it
+      // doesn't re-fire on every turn.
+      try {
+        const consumed = await consumeGoalTransition();
+        if (consumed) {
+          setMessages(prev => [
+            ...prev,
+            createSystemMessage(
+              `${formatTransitionLine(consumed.transition)} — "${consumed.goal.objective}"`,
+              'info',
+            ),
+          ]);
+        }
+      } catch {
+        // best-effort
+      }
 
       // Active Memory: auto-continue if goal is still active
       if (!goalBudgetResult?.blockContinuation && goalAutoContCount < MAX_GOAL_AUTO_CONT) {

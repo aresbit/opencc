@@ -12,11 +12,16 @@ export const GET_GOAL_DESCRIPTION = `Get the current goal for this thread, inclu
 
 export const GET_GOAL_PROMPT = `Use get_goal to check the current goal status, token usage, and remaining budget. Call this when you need to know how much budget remains or what the current objective is.`
 
-export const UPDATE_GOAL_DESCRIPTION = `Update the existing goal. Use this tool only to mark the goal achieved (status "complete"). You cannot use this tool to pause, resume, or budget-limit a goal; those status changes are controlled by the user or system. When marking a budgeted goal achieved, report the final token usage from the tool result to the user.`
+export const UPDATE_GOAL_DESCRIPTION = `Update the existing goal. You can: (1) mark it achieved with status "complete"; (2) advance the active phase (planning → executing → verifying) to signal where you are in the pursuit loop; (3) record a subgoal you just dispatched to an agent or skill, or resolve one previously dispatched. You cannot pause, resume, or budget-limit a goal; those changes are user/system controlled. When marking a budgeted goal achieved, report final token usage from the tool result to the user.`
 
-export const UPDATE_GOAL_PROMPT = `Use update_goal only to mark the existing goal as complete. The model can only set status to "complete". Do NOT:
-- Mark a goal complete merely because the budget is nearly exhausted
-- Mark a goal complete because you are stopping work
-- Use this to pause or resume a goal (those are user-controlled)
+export const UPDATE_GOAL_PROMPT = `Use update_goal to keep the goal record honest. Combine fields freely in one call:
 
-Before marking complete, perform a thorough completion audit against the objective's requirements.`
+- status: "complete" — only when an audit shows the objective is actually achieved. Do NOT mark complete because the budget is exhausted or you are stopping work.
+- phase: "planning" | "executing" | "verifying" — advance as you move through the Codex-style loop:
+    planning   = you are deciding what to do next
+    executing  = you are carrying out concrete work
+    verifying  = you are auditing whether the objective is satisfied
+- subgoal_add: record a subgoal you just dispatched (to an Agent, Skill, or other delegate). Use this BEFORE the dispatch returns so coordination state survives crashes / new turns.
+- subgoal_resolve: mark a previously-dispatched subgoal "completed" or "failed" once the subagent reports back. Include a brief result string so the audit trail is searchable.
+
+Stay in the loop: advance phase as you move, record subgoals before you delegate work, resolve them when results arrive, and only update status to complete after a verifying-phase audit.`
