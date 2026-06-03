@@ -303,11 +303,8 @@ export async function callMCPTool<T = Record<string, unknown>>(
     MCP_TOOL_DIR: \`./servers/\${server}\`,
   };
 
-  for (const [key, value] of Object.entries(args)) {
-    env[\`MCP_ARG_\${key.toUpperCase()}\`] = typeof value === 'string'
-      ? value
-      : JSON.stringify(value);
-  }
+  // Pass args as JSON to preserve camelCase parameter names
+  env['MCP_ARGS'] = JSON.stringify(args);
 
   // Find the tool's command from its registry entry
   const registryPath = './registry.json';
@@ -1029,9 +1026,8 @@ export async function executeToolSimple(
   // If the tool has a command, execute it directly
   if (entry.command) {
     const env: Record<string, string> = { ...process.env as Record<string, string> }
-    for (const [key, value] of Object.entries(args)) {
-      env[`MCP_ARG_${key.toUpperCase()}`] = typeof value === 'string' ? value : jsonStringify(value)
-    }
+    // Pass args as JSON to preserve camelCase parameter names
+    env['MCP_ARGS'] = jsonStringify(args)
 
     return new Promise((resolve) => {
       const child = spawn('sh', ['-c', entry.command!], {

@@ -19,13 +19,29 @@
 import { readFile, writeFile, mkdir, copyFile } from 'fs/promises';
 import { join, dirname } from 'path';
 import { existsSync } from 'fs';
-import { homedir, hostname } from 'os';
+import { homedir, hostname, platform } from 'os';
 import { spawnSync } from 'child_process';
 
 // ── Config ──────────────────────────────────────────────────────────
 
-const CHATWISE_DB = process.env.CHATWISE_DB_PATH ||
-  join(homedir(), 'Library/Application Support/app.chatwise/app.db');
+function defaultChatWiseDbPath(): string {
+  const os = platform();
+  if (os === 'darwin') {
+    return join(homedir(), 'Library/Application Support/app.chatwise/app.db');
+  }
+  // Linux, Windows (ChatWise uses Electron, follows XDG on Linux)
+  const candidates = [
+    join(homedir(), '.config/app.chatwise/app.db'),
+    join(homedir(), '.local/share/app.chatwise/app.db'),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  // Default to XDG config dir even if it doesn't exist yet
+  return candidates[0]!;
+}
+
+const CHATWISE_DB = process.env.CHATWISE_DB_PATH || defaultChatWiseDbPath();
 
 const MCP_FS_DIR = process.env.MCP_FS_DIR || join(homedir(), '.claude/mcp-fs');
 const SERVERS_DIR = join(MCP_FS_DIR, 'servers');
