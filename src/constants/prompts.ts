@@ -323,12 +323,24 @@ function getCodeActGuidanceSection(enabledTools: Set<string>): string | null {
   if (!enabledTools.has('CodeAct')) return null
 
   const items = [
-    'For multi-step logic, data processing, or complex workflows, use the CodeAct tool to write TypeScript code instead of chaining many individual tool calls. CodeAct provides built-in fs, shell, fetch, path, and os utilities. Only console.log() output reaches the model — intermediate results stay in the sandbox, saving tokens and reducing round-trips.',
+    'For multi-step logic, data processing, or complex workflows, use the CodeAct tool to write code (TypeScript, Python, Bash, C, C++) instead of chaining many individual tool calls. CodeAct provides built-in fs, shell, fetch, path, and os utilities in each language. Only stdout output reaches the model — intermediate results stay in the sandbox, saving tokens and reducing round-trips.',
     'The CodeAct iterative loop: write code → execute → analyze errors → fix → re-execute. Favor this over manually retrying individual tool calls when the task involves branching logic or sequential data processing.',
-    'Skills (loaded via the Skill tool) that describe procedural workflows may be more efficiently executed as CodeAct scripts. Consider whether a skill\'s instructions can be internalized into a single TypeScript script rather than followed step-by-step through individual tool calls.',
+    'Skills (loaded via the Skill tool) that describe procedural workflows may be more efficiently executed as CodeAct scripts. Consider whether a skill\'s instructions can be internalized into a single script rather than followed step-by-step through individual tool calls.',
+    'For deterministic reusable tasks, prefer creating an Action (~/.claude/action/ script) over writing a Skill. Actions execute directly and return results in one call. Skills teach HOW to think; Actions DO the work.',
   ]
 
   return ['# CodeAct', ...prependBullets(items)].join('\n')
+}
+
+function getActionGuidanceSection(enabledTools: Set<string>): string | null {
+  if (!enabledTools.has('Action')) return null
+
+  const items = [
+    'Actions are persistent executable scripts in ~/.claude/action/. They encapsulate deterministic workflows (e.g., downloading with yt-dlp, running a backtest) in code that executes in a single call. Unlike Skills (prompt templates the model must read and follow step-by-step), Actions execute directly and return only the result.',
+    'Use the Action tool to invoke an Action by name. Available Actions are listed in the Action tool\'s prompt. Write new Actions by creating scripts with YAML frontmatter in ~/.claude/action/.',
+  ]
+
+  return ['# Actions', ...prependBullets(items)].join('\n')
 }
 
 /**
@@ -580,6 +592,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
     getCodeActGuidanceSection(enabledTools),
+    getActionGuidanceSection(enabledTools),
     getSimpleToneAndStyleSection(),
     getOutputEfficiencySection(),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===

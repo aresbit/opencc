@@ -1,7 +1,7 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { executeCodeActCode } from '../../utils/codeActSandbox.js'
+import { executeCodeActCode, type CodeActLanguage } from '../../utils/codeActSandbox.js'
 import { getCodeActPrompt } from './prompt.js'
 
 const CODE_ACT_TOOL_NAME = 'CodeAct'
@@ -9,17 +9,32 @@ const CODE_ACT_TOOL_NAME = 'CodeAct'
 const inputSchema = lazySchema(() =>
   z.strictObject({
     code: z.string().describe(
-      'TypeScript code to execute in the CodeAct sandbox. ' +
-      'Import built-in utilities from ./builtins/fs.js, ./builtins/shell.js, ' +
-      './builtins/fetch.js, ./builtins/path.js, ./builtins/os.js. ' +
-      'Use console.log() to output results. Only console.log() output reaches ' +
-      'the model — intermediate values stay in the sandbox process.',
+      'Code to execute in the CodeAct sandbox. For TypeScript, import built-in ' +
+      'utilities from ./builtins/fs.js, ./builtins/shell.js, etc. For Python, ' +
+      'import from builtins_py.fs, builtins_py.shell, etc. For Bash, source ' +
+      './builtins_bash/bash.sh. For C/C++, #include "builtins_c/fs.h". ' +
+      'Use console.log() / print() / printf() to output results. Only stdout ' +
+      'output reaches the model.',
     ),
+    language: z.enum(['typescript', 'python', 'bash', 'c', 'cpp'])
+      .optional()
+      .default('typescript')
+      .describe(
+        'Programming language. Default: typescript. ' +
+        'Use python for data analysis/quant trading/ML tasks. ' +
+        'Use bash for simple shell automation. ' +
+        'Use c/cpp for performance-critical compiled code.',
+      ),
     timeoutMs: z.number().optional().default(300_000).describe(
       'Execution timeout in milliseconds (default 5 minutes)',
     ),
     cwd: z.string().optional().describe(
       'Working directory override. Defaults to the project root.',
+    ),
+    persistKey: z.string().optional().describe(
+      'When provided, the sandbox is kept at ~/.claude/codeact/sandbox/persist_<key> ' +
+      'for reuse across CodeAct calls. Reusable scripts should be promoted to ' +
+      'Actions (~/.claude/action/).',
     ),
   }),
 )
@@ -35,17 +50,16 @@ const outputSchema = lazySchema(() =>
 
 export const CodeActTool = buildTool({
   name: CODE_ACT_TOOL_NAME,
-  searchHint: 'write execute typescript code script programmatic solve',
+  searchHint: 'write execute typescript python bash c code script programmatic solve',
   maxResultSizeChars: 500_000,
 
   async description() {
     return (
-      'Write and execute TypeScript code to solve problems programmatically. ' +
-      'The sandbox provides built-in utilities for filesystem (fs), shell commands (shell), ' +
-      'network requests (fetch, fetchJSON), path manipulation (path), and OS/environment (os). ' +
-      'Only console.log() output reaches the model. ' +
-      'Use this for complex multi-step logic, data processing, iterative computation, ' +
-      'or when fixed-schema tools are insufficient.'
+      'Write and execute code (TypeScript, Python, Bash, C, C++) to solve ' +
+      'problems programmatically. The sandbox provides built-in filesystem, shell, ' +
+      'network, path, and OS utilities. Only stdout output reaches the model. ' +
+      'Use this for complex multi-step logic, data processing, quantitative ' +
+      'analysis, or when fixed-schema tools are insufficient.'
     )
   },
 
@@ -63,11 +77,13 @@ export const CodeActTool = buildTool({
 
   renderToolUseMessage() { return null },
 
-  async call({ code, timeoutMs, cwd }, context) {
+  async call({ code, language, timeoutMs, cwd, persistKey }, context) {
     const result = await executeCodeActCode(code, {
+      language: language as CodeActLanguage | undefined,
       timeoutMs,
       signal: context.abortController.signal,
       cwd,
+      persistKey,
     })
 
     return {
