@@ -210,13 +210,13 @@ const saveOutputSchema = z.object({
 const queryOutputSchema = z.object({
   action: z.literal('query_result'),
   count: z.number(),
-  results: z.array(z.record(z.unknown())),
+  results: z.array(z.record(z.string(), z.unknown())),
 })
 
 const statsOutputSchema = z.object({
   action: z.literal('stats_result'),
   totalEntries: z.number(),
-  byType: z.record(z.number()),
+  byType: z.record(z.string(), z.number()),
   topTags: z.array(z.object({ tag: z.string(), count: z.number() })),
   topFormulas: z.array(z.object({ formula: z.string(), count: z.number() })),
   topTemplates: z.array(z.object({ template: z.string(), count: z.number() })),

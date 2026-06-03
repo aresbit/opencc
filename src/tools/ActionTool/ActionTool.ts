@@ -12,7 +12,7 @@ const inputSchema = lazySchema(() =>
       'The action name to execute. E.g., "ytdlp", "git-sync", "backtest". ' +
       'Use the Action tool to discover available actions.',
     ),
-    args: z.record(z.string()).optional().describe(
+    args: z.record(z.string(), z.string()).optional().describe(
       'Arguments to pass to the action script. Available as _ACTION_ARGS ' +
       'in TypeScript, _action_args dict in Python, $ACTION_ARGS in Bash.',
     ),
