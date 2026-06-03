@@ -319,6 +319,18 @@ function getAgentToolSection(): string {
     : `Use the ${AGENT_TOOL_NAME} tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.`
 }
 
+function getCodeActGuidanceSection(enabledTools: Set<string>): string | null {
+  if (!enabledTools.has('CodeAct')) return null
+
+  const items = [
+    'For multi-step logic, data processing, or complex workflows, use the CodeAct tool to write TypeScript code instead of chaining many individual tool calls. CodeAct provides built-in fs, shell, fetch, path, and os utilities. Only console.log() output reaches the model — intermediate results stay in the sandbox, saving tokens and reducing round-trips.',
+    'The CodeAct iterative loop: write code → execute → analyze errors → fix → re-execute. Favor this over manually retrying individual tool calls when the task involves branching logic or sequential data processing.',
+    'Skills (loaded via the Skill tool) that describe procedural workflows may be more efficiently executed as CodeAct scripts. Consider whether a skill\'s instructions can be internalized into a single TypeScript script rather than followed step-by-step through individual tool calls.',
+  ]
+
+  return ['# CodeAct', ...prependBullets(items)].join('\n')
+}
+
 /**
  * Guidance for the skill_discovery attachment ("Skills relevant to your
  * task:") and the DiscoverSkills tool. Shared between the main-session
@@ -567,6 +579,7 @@ ${CYBER_RISK_INSTRUCTION}`,
       : null,
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
+    getCodeActGuidanceSection(enabledTools),
     getSimpleToneAndStyleSection(),
     getOutputEfficiencySection(),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===

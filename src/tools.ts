@@ -106,6 +106,7 @@ import { McpFsTool } from './tools/McpFsTool/McpFsTool.js'
 import { McpFsDiscoverTool } from './tools/McpFsTool/McpFsDiscoverTool.js'
 import { McpFsReadTool } from './tools/McpFsTool/McpFsReadTool.js'
 import { McpFsExecTool } from './tools/McpFsTool/McpFsExecTool.js'
+import { CodeActTool } from './tools/CodeActTool/CodeActTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -263,6 +264,7 @@ export function getAllBaseTools(): Tools {
     McpFsDiscoverTool,
     McpFsReadTool,
     McpFsExecTool,
+    CodeActTool,
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),

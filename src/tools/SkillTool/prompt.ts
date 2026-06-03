@@ -192,6 +192,7 @@ Important:
 - Do not invoke a skill that is already running
 - Do not use this tool for built-in CLI commands (like /help, /clear, etc.)
 - If you see a <${COMMAND_NAME_TAG}> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again
+- When a skill describes a procedural, deterministic workflow (check files, run commands, generate output), consider using the CodeAct tool to internalize the skill into a single TypeScript script. This is faster and more token-efficient than following the skill's instructions through individual tool calls.
 `
 })
 
