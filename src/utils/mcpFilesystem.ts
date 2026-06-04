@@ -221,6 +221,32 @@ main();
   } catch { /* best-effort */ }
 }
 
+/**
+ * Ensure client.ts exists in the mcp-fs directory. Copies from the repo
+ * source (`src/utils/mcpFsClient.ts`) in dev mode. This is the TypeScript
+ * bridge used by generated tool wrappers to call MCP tools at runtime.
+ */
+async function ensureClient(): Promise<void> {
+  const dest = getClientTsPath()
+  if (existsSync(dest)) return
+
+  try {
+    const { getProjectRoot } = await import('../bootstrap/state.js')
+    const src = join(getProjectRoot() as string, 'src', 'utils', 'mcpFsClient.ts')
+    if (existsSync(src)) {
+      await mkdir(getMcpFsBaseDir(), { recursive: true })
+      await copyFile(src, dest)
+      return
+    }
+  } catch { /* best-effort — user will need to copy client.ts manually */ }
+}
+
+/** Ensure both bridge.mjs and client.ts are present in the mcp-fs directory. */
+async function ensureMcpFsRuntime(): Promise<void> {
+  await ensureMcpFsRuntime()
+  await ensureClient()
+}
+
 // ── Tool .ts File Generation ─────────────────────────────────────
 
 /**
@@ -603,6 +629,7 @@ export async function discoverAndGenerate(): Promise<{
   entries: McpFsRegistryEntry[]
   filesWritten: string[]
 }> {
+  await ensureMcpFsRuntime()
   const entries = await discoverTools()
   const { filesWritten } = await generateToolFiles(entries)
   return { entries, filesWritten }
@@ -862,7 +889,7 @@ async function probeMcpServerTools(
   serverName: string,
   config: McpServerConfigStub,
 ): Promise<McpBridgeCache['servers'][string]['tools']> {
-  await ensureBridge()
+  await ensureMcpFsRuntime()
   const bridgePath = getBridgePath()
   if (!existsSync(bridgePath)) return []
 
@@ -906,7 +933,7 @@ async function probeMcpServerTools(
  * Caches results to avoid re-probing on every discovery cycle.
  */
 async function discoverMcpBridgeTools(): Promise<McpFsRegistryEntry[]> {
-  await ensureBridge()
+  await ensureMcpFsRuntime()
   const cacheDir = join(getMcpFsBaseDir(), 'cache')
   await mkdir(cacheDir, { recursive: true })
   const cachePath = join(cacheDir, 'mcp-bridge.json')

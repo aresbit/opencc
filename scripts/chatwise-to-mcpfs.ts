@@ -47,6 +47,8 @@ const MCP_FS_DIR = process.env.MCP_FS_DIR || join(homedir(), '.claude/mcp-fs');
 const SERVERS_DIR = join(MCP_FS_DIR, 'servers');
 const BRIDGE_SRC = join(dirname(import.meta.path), '..', 'src', 'utils', 'mcpBridge.mjs');
 const BRIDGE_DST = join(MCP_FS_DIR, 'bridge.mjs');
+const CLIENT_SRC = join(dirname(import.meta.path), '..', 'src', 'utils', 'mcpFsClient.ts');
+const CLIENT_DST = join(MCP_FS_DIR, 'client.ts');
 const DRY_RUN = process.env.DRY_RUN === 'true';
 
 // ── Config Source Name ──────────────────────────────────────────────
@@ -355,21 +357,29 @@ async function writeManifest(serverDir: string, manifest: McpFsManifest): Promis
   );
 }
 
-// ── Copy Bridge ─────────────────────────────────────────────────────
+// ── Copy Runtime Files ───────────────────────────────────────────────
 
-async function ensureBridge(): Promise<string> {
-  if (!existsSync(BRIDGE_DST)) {
-    if (!existsSync(BRIDGE_SRC)) {
-      console.error(`Bridge source not found at: ${BRIDGE_SRC}`);
-      console.error('Expected at: src/utils/mcpBridge.mjs relative to script');
-      return BRIDGE_DST;
-    }
-    if (!DRY_RUN) {
-      await mkdir(dirname(BRIDGE_DST), { recursive: true });
-      await copyFile(BRIDGE_SRC, BRIDGE_DST);
-      console.log(`  ${srcName('Bridge')} Copied to ${BRIDGE_DST}`);
-    }
+/** Copy a file from repo source to MCP-FS dest, only if dest doesn't exist */
+async function ensureRuntimeFile(
+  label: string,
+  src: string,
+  dst: string,
+): Promise<void> {
+  if (existsSync(dst)) return;
+  if (!existsSync(src)) {
+    console.error(`${label} source not found at: ${src}`);
+    return;
   }
+  if (!DRY_RUN) {
+    await mkdir(dirname(dst), { recursive: true });
+    await copyFile(src, dst);
+    console.log(`  ${srcName(label)} Copied to ${dst}`);
+  }
+}
+
+async function ensureRuntime(): Promise<string> {
+  await ensureRuntimeFile('Bridge', BRIDGE_SRC, BRIDGE_DST);
+  await ensureRuntimeFile('Client', CLIENT_SRC, CLIENT_DST);
   return BRIDGE_DST;
 }
 
@@ -392,8 +402,8 @@ async function main() {
   console.log(`  Dry run:     ${DRY_RUN}`);
   console.log();
 
-  // 1. Ensure bridge.mjs is in place
-  const bridgePath = await ensureBridge();
+  // 1. Ensure bridge.mjs and client.ts are in place
+  const bridgePath = await ensureRuntime();
 
   // 2. Query ChatWise
   console.log('Scanning ChatWise MCP servers...');

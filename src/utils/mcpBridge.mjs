@@ -15,7 +15,7 @@
  * If MCP_ARG_TOOL is empty, lists all tools.
  */
 
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
 import { readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -106,42 +106,71 @@ async function stdioCall(config, method, params) {
   return { error: 'No response received', messages };
 }
 
-// ── HTTP Transport ────────────────────────────────────────────────
+// ── HTTP/SSE Transport ─────────────────────────────────────────────
 
-async function httpCall(config, method, params) {
-  const url = config.url.replace(/\/+$/, '');
-  try {
-    // Initialize
-    const initRes = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(config.headers || {}),
-      },
-      body: JSON.stringify(rpcRequest('initialize', {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'mcp-fs-bridge', version: '1.0.0' },
-      })),
-    });
-    await initRes.text(); // consume init response
+const SSE_HEADERS = {
+  'Accept': 'application/json, text/event-stream',
+  'Content-Type': 'application/json',
+};
 
-    // Send actual request
-    const req = rpcRequest(method, params);
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(config.headers || {}),
-      },
-      body: JSON.stringify(req),
-    });
-    const data = await res.json();
-    if (data.error) return { error: data.error };
-    return data.result;
-  } catch (err) {
-    return { error: err.message };
+/** Parse SSE text into JSON-RPC messages */
+function parseSseFromText(text) {
+  const messages = [];
+  for (const line of text.split('\n')) {
+    if (line.startsWith('data: ')) {
+      try { messages.push(JSON.parse(line.slice(6))); } catch { /* skip */ }
+    }
   }
+  return messages;
+}
+
+/** Call an MCP server via HTTP POST using curl (respects proxy env vars).
+ *  Stateless HTTP servers don't require initialize — each POST is self-contained. */
+function httpCall(config, method, params) {
+  const url = config.url.replace(/\/+$/, '');
+  const headers = { ...SSE_HEADERS, ...(config.headers || {}) };
+
+  const body = rpcRequest(method, params);
+  const curlArgs = ['-s', '-X', 'POST', url, '-d', body];
+  for (const [k, v] of Object.entries(headers)) {
+    curlArgs.push('-H', `${k}: ${v}`);
+  }
+
+  return new Promise((resolve) => {
+    execFile('curl', curlArgs, { timeout: 60000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        // curl exits non-zero on HTTP errors, but stdout still has the body
+        if (!stdout.trim()) {
+          resolve({ error: err.message });
+          return;
+        }
+      }
+      const text = stdout.trim();
+      if (!text) { resolve({ error: 'Empty response' }); return; }
+
+      // Try SSE parsing first
+      if (text.includes('event: message') || text.includes('data: ')) {
+        const messages = parseSseFromText(text);
+        const response = messages.find(m => 'id' in m && !('method' in m));
+        if (response) {
+          if (response.error) { resolve({ error: response.error }); return; }
+          resolve(response.result || response);
+          return;
+        }
+        resolve({ error: 'No response in SSE stream', messages });
+        return;
+      }
+
+      // Plain JSON
+      try {
+        const data = JSON.parse(text);
+        if (data.error) { resolve({ error: data.error }); return; }
+        resolve(data.result || data);
+      } catch {
+        resolve({ _raw: text });
+      }
+    });
+  });
 }
 
 // ── Main ───────────────────────────────────────────────────────────
@@ -173,17 +202,22 @@ async function main() {
         : await stdioCall(config, 'tools/list', {});
       console.log(JSON.stringify(result));
     } else {
-      // Call tool mode — collect args from MCP_ARG_* env vars (excluding special vars)
-      const toolArgs = {};
+      // Call tool mode — prefer MCP_ARGS JSON, fall back to MCP_ARG_* env vars
+      let toolArgs = {};
+      if (process.env.MCP_ARGS) {
+        try { toolArgs = JSON.parse(process.env.MCP_ARGS); } catch { /* ignore */ }
+      }
+      // MCP_ARG_* vars override/extend MCP_ARGS
       for (const [key, value] of Object.entries(process.env)) {
         if (key.startsWith('MCP_ARG_') &&
             key !== 'BRIDGE_SERVER_CONFIG' &&
             key !== 'MCP_ARG_TOOL' &&
-            key !== 'MCP_ARG_TOOL_NAME') {
-          // Convert SNAKE_CASE or UPPER_CASE → snake_case (lowercase all)
-          // This handles: url→url, MAX_LENGTH→max_length, startIndex→startindex (not perfect but correct for the common case)
-          const argName = key.replace('MCP_ARG_', '').toLowerCase();
-          // Try to parse JSON values
+            key !== 'MCP_ARG_TOOL_NAME' &&
+            key !== 'MCP_ARGS') {
+          // Preserve the arg name case by requiring the caller to use the exact
+          // env var: MCP_ARG_repoName for parameter "repoName". We strip the
+          // prefix only, preserving the rest of the key's case.
+          const argName = key.slice('MCP_ARG_'.length);
           try { toolArgs[argName] = JSON.parse(value); } catch { toolArgs[argName] = value; }
         }
       }
