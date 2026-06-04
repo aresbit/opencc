@@ -73,6 +73,56 @@ bun run build
 
 构建产物输出到 `dist/cli.js`（~25.75 MB，5326 模块）。
 
+## MCP-FS：基于文件系统的 MCP 工具桥接
+
+从 ChatWise 导入 MCP 工具到本地 mcp-fs 注册表，无需常驻进程，按需 bridge 执行。
+
+### 快速导入
+
+```bash
+# 从 ChatWise 导入所有启用的 MCP 服务端（自动检测 OS 下的 DB 路径）
+bun run scripts/chatwise-to-mcpfs.ts
+
+# 自定义 ChatWise DB 路径
+CHATWISE_DB_PATH=/path/to/app.db bun run scripts/chatwise-to-mcpfs.ts
+
+# 仅预览（不写入文件）
+DRY_RUN=true bun run scripts/chatwise-to-mcpfs.ts
+```
+
+导入后在 REPL 中调用 `mcpfs_discover regenerate=true`，即可使用 `mcpfs` / `mcpfs_exec` 调用任意已导入的工具。
+
+### 架构
+
+```
+ChatWise SQLite DB (~/.config/app.chatwise/app.db)
+  ├─ enabled MCP servers  ──import──→  ~/.claude/mcp-fs/
+  ├─ cached tool schemas                ├─ servers/<name>/manifest.json  (服务 & 工具定义)
+  └─ env / API keys                     ├─ servers/<name>/*.ts           (wrapper，供 mcpfs_exec 调用)
+                                        ├─ bridge.mjs                   (运行时桥接：curl + SSE + 代理)
+                                        ├─ client.ts                    (TypeScript 客户端)
+                                        └─ registry.json               (工具索引)
+```
+
+- **`bun run scripts/chatwise-to-mcpfs.ts`** — 读取 ChatWise DB，生成 manifest + 拷贝运行时文件
+- **`mcpfs_discover`** (REPL 内) — 扫描 manifest，生成 `.ts` wrapper 和 `registry.json`
+- **`mcpfs`** — REPL 内单次工具调用，走 bridge 执行
+- **`mcpfs_exec`** — REPL 内执行 Agent 编写的 TypeScript 代码，import 工具 wrapper 后直接调用
+
+### 多端一致性
+
+`bridge.mjs` 和 `client.ts` 的权威源码存放在本仓库 `src/utils/` 中。在任何机器上执行
+`chatwise-to-mcpfs.ts` 或 `mcpfs_discover regenerate=true` 时，会自动从仓库拷贝到
+`~/.claude/mcp-fs/`，无需手动复制。只需 `git pull && bun run scripts/chatwise-to-mcpfs.ts`
+即可完整重建 mcp-fs 环境。
+
+### 修复的桥接问题
+
+- **代理穿透：** bridge.mjs 使用 curl（非 Node.js fetch），自动尊重 `http_proxy` / `HTTPS_PROXY` 环境变量
+- **SSE 解析：** 支持 `text/event-stream` 响应（`data:` / `event:` 行解析）
+- **参数大小写：** 通过 `MCP_ARGS` JSON 环境变量传递参数，保留 `camelCase` 键名
+- **跨平台 DB 路径：** Linux 依次尝试 `~/.config/app.chatwise/app.db` → `~/.local/share/app.chatwise/app.db`，macOS 使用 `~/Library/Application Support/app.chatwise/app.db`
+
 ## 能力清单
 
 > ✅ = 已实现  ⚠️ = 部分实现 / 条件启用  ❌ = stub / 移除 / feature flag 关闭
