@@ -28,6 +28,7 @@ import { resetSentSkillNames } from '../../utils/attachments.js'
 import { clearCommandPrefixCaches } from '../../utils/bash/commands.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { clearRepositoryCaches } from '../../utils/detectRepository.js'
+import { resetDeepSeekOptimizer } from '../../services/api/deepseekOptimizer.js'
 import { clearResolveGitDirCache } from '../../utils/git/gitFilesystem.js'
 import { clearStoredImagePaths } from '../../utils/imageStore.js'
 import { clearSessionEnvVars } from '../../utils/sessionEnvVars.js'
@@ -141,4 +142,6 @@ export function clearSessionCaches(
   void import('../../tools/SkillTool/prompt.js').then(({ clearPromptCache }) =>
     clearPromptCache(),
   )
+  // Reset DeepSeek prefix optimizer (byte-level prefix tracker + append-only log)
+  resetDeepSeekOptimizer()
 }
