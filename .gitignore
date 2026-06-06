@@ -15,3 +15,4 @@ CLAUDE.md
 .self_improving_experience.json
 .self_improving_performance.json
 vendor/
+packages/quant/src/hmm/build/

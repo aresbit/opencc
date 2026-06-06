@@ -1,0 +1,1 @@
+It looks like you sent an empty message. How can I help you today? I'm ready to assist with any questions or tasks related to the OpenCC codebase (the reverse-engineered Claude Code CLI tool) or anything else you need.

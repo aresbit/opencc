@@ -1,0 +1,1 @@
+Your message appears to be empty. How can I help you? The repository at `/data/data/com.termux/files/home/opencc` (a reverse-engineered Claude Code CLI tool) is on the `main` branch with several untracked working files (`dist-check/`, `dist-check2/`, `findings.md`, `progress.md`, `task_plan.md`, `mythos_output/`). Let me know what you'd like to work on.
