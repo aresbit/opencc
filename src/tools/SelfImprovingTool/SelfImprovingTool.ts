@@ -1,5 +1,7 @@
 import { access, appendFile, mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { constants as fsConstants } from 'fs'
+import { createHash } from 'crypto'
+import { execSync } from 'child_process'
 import { join } from 'path'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -27,9 +29,10 @@ const inputSchema = lazySchema(() =>
         'learn',
         'ingest_memory',
         'promote_memory',
+        'demote_memory',
       ])
       .describe(
-        'monitor initializes self-improving workspace; record logs one execution sample; analyze summarizes historical metrics; adjust generates PID-based parameter adjustments; predict forecasts performance; report returns recommendations; learn logs a learning/error/feature request entry; ingest_memory converts memory markdown docs into structured learnings; promote_memory promotes validated learnings into long-term memory.',
+        'monitor initializes self-improving workspace; record logs one execution sample; analyze summarizes historical metrics; adjust generates PID-based parameter adjustments; predict forecasts performance; report returns recommendations; learn logs a learning/error/feature request entry; ingest_memory converts memory markdown docs into structured learnings; promote_memory promotes validated learnings into long-term memory; demote_memory reverses a previous promotion by entry id.',
       ),
     toolName: z
       .string()
@@ -107,7 +110,7 @@ const inputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe(
-        'Used by action=promote_memory: only promote entries marked as validated/effective (default: true).',
+        'Used by action=promote_memory: only promote entries that carry an explicit **Verified-By**: <evidence> block in their body (default: true).',
       ),
     maxEntries: z
       .number()
@@ -119,11 +122,21 @@ const inputSchema = lazySchema(() =>
     dryRun: z
       .boolean()
       .optional()
-      .describe('Used by action=promote_memory: preview promotions without writing memory files.'),
+      .describe(
+        'Used by action=promote_memory: preview promotions without writing memory files. DEFAULTS TO TRUE — caller must explicitly pass dryRun: false to actually persist memories (RSI safety).',
+      ),
     memoryType: z
       .enum(MEMORY_TYPES)
       .optional()
-      .describe('Used by action=promote_memory: memory type to save (default: feedback).'),
+      .describe(
+        'Used by action=promote_memory: memory type to save (default: project). The feedback type has the strongest behavioral effect on future sessions, so it must be explicitly requested.',
+      ),
+    entryId: z
+      .string()
+      .optional()
+      .describe(
+        'Used by action=demote_memory: the [LRN-…] / [ERR-…] / [FEAT-…] entry id whose previous promotion should be reversed.',
+      ),
   }),
 )
 
@@ -145,6 +158,7 @@ const outputSchema = lazySchema(() =>
       'learn',
       'ingest_memory',
       'promote_memory',
+      'demote_memory',
     ]),
     summary: z.string(),
     projectRoot: z.string(),
@@ -177,8 +191,10 @@ const outputSchema = lazySchema(() =>
     loggedEntryId: z.string().optional(),
     importedCount: z.number().optional(),
     promotedCount: z.number().optional(),
+    demotedCount: z.number().optional(),
     skippedCount: z.number().optional(),
     dryRunPreview: z.array(z.string()).optional(),
+    promotionLogPath: z.string().optional(),
   }),
 )
 
@@ -187,10 +203,26 @@ export type Output = z.infer<OutputSchema>
 
 const PERFORMANCE_DATA_FILE = '.self_improving_performance.json'
 const ADJUSTMENTS_LOG_FILE = '.self_improving_adjustments.log'
+const PROMOTIONS_LOG_FILE = '.self_improving_promotions.log'
 const LEARNINGS_DIR = '.learnings'
 const LEARNINGS_FILE = 'LEARNINGS.md'
 const ERRORS_FILE = 'ERRORS.md'
 const FEATURES_FILE = 'FEATURE_REQUESTS.md'
+
+/**
+ * Audit record written per real memory promotion. Append-only.
+ * Enables `demote_memory` to revert a specific promotion and gives
+ * humans a verifiable trail of what crossed the session boundary.
+ */
+interface PromotionLogEntry {
+  timestamp: string
+  entryId: string
+  sourceFile: string
+  contentSha: string
+  memoryType: MemoryType
+  savedMemoryId: string
+  gitHead?: string
+}
 
 type LearningKind = NonNullable<Input['learningType']>
 
@@ -236,6 +268,56 @@ function fingerprint(text: string): string {
     h = Math.imul(h, 16777619)
   }
   return (h >>> 0).toString(16)
+}
+
+function sha256Short(text: string): string {
+  return createHash('sha256').update(text, 'utf-8').digest('hex').slice(0, 16)
+}
+
+/**
+ * Best-effort short git SHA. Failures (not in a repo, git missing) return undefined
+ * — provenance is a nice-to-have, not a hard requirement.
+ */
+function currentGitHead(): string | undefined {
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf-8',
+      timeout: 1000,
+    }).trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function loadPromotionLog(projectRoot: string): Promise<PromotionLogEntry[]> {
+  const path = join(projectRoot, PROMOTIONS_LOG_FILE)
+  if (!(await exists(path))) return []
+  const raw = await readFile(path, 'utf-8').catch(() => '')
+  const out: PromotionLogEntry[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    try {
+      const parsed = JSON.parse(trimmed) as PromotionLogEntry
+      if (parsed && parsed.entryId && parsed.savedMemoryId) out.push(parsed)
+    } catch {
+      // Skip malformed lines rather than abort — the log is append-only and
+      // a torn-write at process exit shouldn't poison future reads.
+    }
+  }
+  return out
+}
+
+async function appendPromotionLog(
+  projectRoot: string,
+  entry: PromotionLogEntry,
+): Promise<void> {
+  await appendFile(
+    join(projectRoot, PROMOTIONS_LOG_FILE),
+    JSON.stringify(entry) + '\n',
+    'utf-8',
+  )
 }
 
 function getLearnToolRoot(): string {
@@ -495,22 +577,27 @@ async function runAdjust(
     const exec = rows.map(r => r.executionTimeMs)
     if (exec.length < 2) continue
 
-    const last = exec[exec.length - 1]
     const avg = exec.reduce((a, b) => a + b, 0) / exec.length
     const setpoint = targetValue ?? Math.max(50, avg * 0.9)
 
     const pid = new PIDController(0.6, 0.05, 0.1, setpoint)
+    // error = setpoint - avg → negative when too slow → control negative.
+    // Sign carries direction; absolute value carries magnitude. Both matter.
     const control = pid.update(avg)
-
-    const oldTimeout = Math.max(100, Math.round(last))
-    const newTimeout = Math.max(100, Math.round(oldTimeout + Math.abs(control)))
+    const direction =
+      Math.abs(control) < 0.5
+        ? 'hold'
+        : control > 0
+          ? 'expand_scope_or_relax'
+          : 'tighten_scope_or_narrow_input'
 
     const adj = {
       tool: t,
-      parameter: 'timeout_ms',
-      oldValue: oldTimeout,
-      newValue: newTimeout,
-      reason: `avg=${avg.toFixed(1)}ms target=${setpoint.toFixed(1)}ms control=${control.toFixed(2)}`,
+      // Honest about what this is: an advisory PID signal, not a knob we own.
+      parameter: 'control_signal',
+      oldValue: 0,
+      newValue: Number(control.toFixed(2)),
+      reason: `avg=${avg.toFixed(1)}ms target=${setpoint.toFixed(1)}ms direction=${direction} (positive=under target/explore, negative=over target/tighten)`,
     }
 
     adjustments.push(adj)
@@ -660,7 +747,8 @@ async function runLearn(projectRoot: string, input: Input): Promise<Output> {
   const existing = (await exists(fullPath)) ? await readFile(fullPath, 'utf-8') : ''
   const id = nextId(prefix, existing, iso)
 
-  const entry = `\n## [${id}] ${input.title}\n\n**Logged**: ${iso}\n**Priority**: ${prio}\n**Status**: pending\n**Area**: ${area}\n\n### Summary\n${input.title}\n\n### Details\n${input.details}\n\n### Metadata\n- Source: learn-tool\n- Type: ${input.learningType}\n\n---\n`
+  const gitHead = currentGitHead()
+  const entry = `\n## [${id}] ${input.title}\n\n**Logged**: ${iso}\n**Priority**: ${prio}\n**Status**: pending\n**Area**: ${area}\n**Verified-By**: (none — fill in evidence before promote_memory will accept this entry)\n\n### Summary\n${input.title}\n\n### Details\n${input.details}\n\n### Metadata\n- Source: learn-tool\n- Type: ${input.learningType}\n${gitHead ? `- Git HEAD: ${gitHead}\n` : ''}\n---\n`
   await appendFile(fullPath, entry, 'utf-8')
 
   return {
@@ -766,7 +854,18 @@ async function fileLikelyMatchesTopic(path: string, topic: string): Promise<bool
 }
 
 async function runIngestMemory(projectRoot: string, input: Input): Promise<Output> {
-  const topic = (input.topic?.trim() || 'cdp').toLowerCase()
+  const rawTopic = input.topic?.trim()
+  if (!rawTopic) {
+    return {
+      success: false,
+      action: 'ingest_memory',
+      projectRoot,
+      summary:
+        'action=ingest_memory requires an explicit topic. Pass topic="<keyword>" so only matching memory files are ingested (previous default was project-specific).',
+      importedCount: 0,
+    }
+  }
+  const topic = rawTopic.toLowerCase()
   let filePaths = input.memoryFilePaths ?? []
   let consideredCount = 0
   let skippedCount = 0
@@ -890,14 +989,31 @@ function parseLearningEntries(content: string): LearningEntry[] {
   return out
 }
 
+/**
+ * Strict verification: an entry only counts as verified if it carries an
+ * explicit `**Verified-By**: <evidence>` block in the body. The previous
+ * keyword-regex heuristic was trivially fooled because the model both writes
+ * the entry AND decides whether to promote it — a textbook RSI failure mode
+ * (Anthropic 2026-05: "misalignment present in today's models could compound
+ * as the models build their successors").
+ *
+ * Accepted forms (evidence must be a non-empty phrase):
+ *   **Verified-By**: user
+ *   **Verified-By**: 3 passing runs in CI
+ *   **Verified-By**: regression test tests/foo.test.ts
+ */
 function isVerifiedEffective(entry: LearningEntry): boolean {
-  const text = `${entry.status}\n${entry.body}`.toLowerCase()
-  const hasNegative =
-    /(?:未验证|待验证|验证中|未生效|无效|invalid|unverified|pending)/i.test(text)
-  if (hasNegative) return false
-  return /(?:verified|validated|effective|accepted|adopted|stable|done|resolved|closed|已验证|验证通过|有效|已采用|已落地|稳定)/i.test(
-    text,
+  const match = entry.body.match(
+    /\*\*Verified-By\*\*:\s*([^\n]+?)\s*(?:\n|$)/i,
   )
+  if (!match) return false
+  const evidence = match[1]?.trim() ?? ''
+  if (evidence.length < 3) return false
+  // Reject obvious negations even when the field is present.
+  if (/^(?:none|n\/a|tbd|pending|unverified|无|待定|无效)$/i.test(evidence)) {
+    return false
+  }
+  return true
 }
 
 function normalizeTitle(text: string): string {
@@ -946,9 +1062,18 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
 
   const onlyVerified = input.onlyVerified ?? true
   const maxEntries = input.maxEntries ?? 30
-  const dryRun = input.dryRun ?? false
-  const memoryType = (input.memoryType ?? 'feedback') as MemoryType
+  // RSI-safety default: never persist unless caller is explicit. Mirrors
+  // Anthropic's "humans shift to oversight/verification" principle — the
+  // model proposes, the human (via explicit dryRun:false) commits.
+  const dryRun = input.dryRun ?? true
+  // 'feedback' has the strongest behavioral effect on future sessions, so
+  // it must be explicitly requested. Default to 'project' which is scoped
+  // to factual context rather than steering rules.
+  const memoryType = (input.memoryType ?? 'project') as MemoryType
   const store = new MemoryStore()
+  const priorPromotions = await loadPromotionLog(projectRoot)
+  const promotedContentShas = new Set(priorPromotions.map(p => p.contentSha))
+  const gitHead = currentGitHead()
 
   let promotedCount = 0
   let skippedCount = 0
@@ -957,11 +1082,6 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
   for (const entry of entries) {
     if (promotedCount >= maxEntries) break
     if (onlyVerified && !isVerifiedEffective(entry)) {
-      skippedCount += 1
-      continue
-    }
-
-    if (await hasDuplicateMemory(store, memoryType, entry)) {
       skippedCount += 1
       continue
     }
@@ -979,32 +1099,118 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
       '',
       `Source File: ${sourcePath}`,
       'Source: learn-tool promote_memory',
-    ].join('\n')
+      gitHead ? `Source Git HEAD: ${gitHead}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+    const contentSha = sha256Short(content)
+
+    // Reject duplicates both by store-side (title/id) AND by promotion-log
+    // content hash. Without the latter, a title-tweaked re-promotion of the
+    // same evidence sneaks past — exactly the kind of compounding drift the
+    // Anthropic article warns about.
+    if (promotedContentShas.has(contentSha)) {
+      skippedCount += 1
+      continue
+    }
+    if (await hasDuplicateMemory(store, memoryType, entry)) {
+      skippedCount += 1
+      continue
+    }
 
     if (dryRun) {
       dryRunPreview.push(`[${entry.id}] ${entry.title}`)
     } else {
-      await store.saveMemory(
+      const saved = await store.saveMemory(
         memoryType,
         entry.title,
         description,
         content,
         ['self-improving', 'promoted-learning', entry.id.toLowerCase()],
       )
+      await appendPromotionLog(projectRoot, {
+        timestamp: nowISO(),
+        entryId: entry.id,
+        sourceFile: sourcePath,
+        contentSha,
+        memoryType,
+        savedMemoryId: saved.id,
+        gitHead,
+      })
+      promotedContentShas.add(contentSha)
     }
     promotedCount += 1
   }
 
+  const promotionLogPath = join(projectRoot, PROMOTIONS_LOG_FILE)
+
   return {
-    success: promotedCount > 0,
+    success: dryRun ? true : promotedCount > 0,
     action: 'promote_memory',
     projectRoot,
     summary: dryRun
-      ? `Dry-run complete: would promote ${promotedCount} entries (skipped ${skippedCount}) from ${sourcePath}.`
-      : `Promoted ${promotedCount} entries into MemoryTool store (skipped ${skippedCount}) from ${sourcePath}.`,
+      ? `Dry-run (default): would promote ${promotedCount} entries (skipped ${skippedCount}) from ${sourcePath} as memoryType=${memoryType}. Pass dryRun:false to actually persist.`
+      : `Promoted ${promotedCount} entries into MemoryTool store as memoryType=${memoryType} (skipped ${skippedCount}) from ${sourcePath}.`,
     promotedCount,
     skippedCount,
     dryRunPreview: dryRun ? dryRunPreview : undefined,
+    promotionLogPath: dryRun ? undefined : promotionLogPath,
+  }
+}
+
+async function runDemoteMemory(projectRoot: string, input: Input): Promise<Output> {
+  if (!input.entryId) {
+    return {
+      success: false,
+      action: 'demote_memory',
+      projectRoot,
+      summary: 'action=demote_memory requires entryId.',
+      demotedCount: 0,
+    }
+  }
+  const entryId = input.entryId.trim()
+  const log = await loadPromotionLog(projectRoot)
+  const matches = log.filter(p => p.entryId === entryId)
+  if (matches.length === 0) {
+    return {
+      success: false,
+      action: 'demote_memory',
+      projectRoot,
+      summary: `No prior promotion found for entryId=${entryId}.`,
+      demotedCount: 0,
+    }
+  }
+
+  const store = new MemoryStore()
+  let demotedCount = 0
+  let skippedCount = 0
+  for (const entry of matches) {
+    const ok = await store.deleteMemory(entry.savedMemoryId)
+    if (ok) {
+      demotedCount += 1
+      await appendPromotionLog(projectRoot, {
+        ...entry,
+        timestamp: nowISO(),
+        // Convention: a demotion is recorded as a new log line with
+        // savedMemoryId prefixed by 'DEMOTED:' so future loads see the
+        // reversal without us having to mutate prior log lines.
+        savedMemoryId: `DEMOTED:${entry.savedMemoryId}`,
+      })
+    } else {
+      skippedCount += 1
+    }
+  }
+
+  return {
+    success: demotedCount > 0,
+    action: 'demote_memory',
+    projectRoot,
+    summary:
+      demotedCount > 0
+        ? `Demoted ${demotedCount} memory file(s) previously promoted for entryId=${entryId} (skipped ${skippedCount} already-missing).`
+        : `Found ${matches.length} promotion records for entryId=${entryId} but no memory files could be deleted (possibly already removed).`,
+    demotedCount,
+    skippedCount,
   }
 }
 
@@ -1077,6 +1283,8 @@ export const SelfImprovingTool = buildTool({
         return { data: await runIngestMemory(projectRoot, input) }
       case 'promote_memory':
         return { data: await runPromoteMemory(projectRoot, input) }
+      case 'demote_memory':
+        return { data: await runDemoteMemory(projectRoot, input) }
       default:
         return {
           data: {
@@ -1102,8 +1310,14 @@ export const SelfImprovingTool = buildTool({
     if (typeof output.promotedCount === 'number') {
       lines.push(`Promoted: ${output.promotedCount}`)
     }
+    if (typeof output.demotedCount === 'number') {
+      lines.push(`Demoted: ${output.demotedCount}`)
+    }
     if (typeof output.skippedCount === 'number') {
       lines.push(`Skipped: ${output.skippedCount}`)
+    }
+    if (output.promotionLogPath) {
+      lines.push(`Promotion Log: ${output.promotionLogPath}`)
     }
     if (output.dryRunPreview?.length) {
       lines.push('DryRun Preview:')

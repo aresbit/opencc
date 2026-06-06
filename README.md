@@ -123,6 +123,78 @@ ChatWise SQLite DB (~/.config/app.chatwise/app.db)
 - **参数大小写：** 通过 `MCP_ARGS` JSON 环境变量传递参数，保留 `camelCase` 键名
 - **跨平台 DB 路径：** Linux 依次尝试 `~/.config/app.chatwise/app.db` → `~/.local/share/app.chatwise/app.db`，macOS 使用 `~/Library/Application Support/app.chatwise/app.db`
 
+## LearnTool：受控的自我改进工具
+
+`learn-tool`（注册名 `LearnTool`，源码 `src/tools/SelfImprovingTool/`）是一个"提案—审查—持久化—可撤回"的自我改进闭环。设计原则对齐 Anthropic Institute 关于
+[Recursive Self-Improvement](https://www.anthropic.com/institute/recursive-self-improvement) 的立场：跨会话生效的写入必须**人工显式批准**、**可审计**、**可逆**。
+
+### 默认行为（重要）
+
+| 维度 | 默认 | 含义 |
+|------|------|------|
+| `promote_memory` 是否真写 | `dryRun: true` | 默认只返回 preview，不写长期记忆。必须显式传 `dryRun: false` 才会落盘 |
+| 写入哪种 memory type | `project` | `feedback` 类型对未来会话的行为影响最大，需要显式指定 |
+| 「已验证」判定 | 严格 | 条目正文必须包含显式字段 `**Verified-By**: <evidence>`（关键词正则猜测已废除） |
+| `autoCapture`（每次工具调用后台写 learnings） | **关闭** | 需 `export CLAUDE_CODE_LEARN_AUTOCAPTURE=1` 才启动 |
+| `ingest_memory` 的 `topic` 参数 | 必填 | 不传会报错（以前默认硬编码 `cdp` 是项目特定遗留） |
+| `adjust` 的 PID 控制信号 | 保留符号 | 输出字段名 `control_signal`，magnitude=紧迫度，sign=方向（正=放宽 / 负=收紧），不再伪装成 `timeout_ms` |
+
+### 状态目录
+
+所有状态写在 `~/.claude/projects/<project>/learn-tool/`：
+
+```
+.self_improving_performance.json   # record 写入的性能样本
+.self_improving_adjustments.log    # adjust 写入的 PID 建议（仅记录，不实施）
+.self_improving_promotions.log     # 每次真实 promotion 的审计日志（JSON Lines）
+.learnings/
+  ├─ LEARNINGS.md                  # learn / ingest_memory / autoCapture 写入
+  ├─ ERRORS.md
+  └─ FEATURE_REQUESTS.md
+```
+
+`.self_improving_promotions.log` 每行一条 JSON，字段：
+`{timestamp, entryId, sourceFile, contentSha, memoryType, savedMemoryId, gitHead}` —
+这是后续 `demote_memory` 回滚的依据，也是 RSI 安全审计的"verifiable trail"。
+
+### 日常使用姿势
+
+```bash
+# 1) Day-to-day：让模型记 learning（只写本地 .learnings/，不影响后续会话）
+learn-tool action=learn learningType=insight title="..." details="..."
+
+# 2) 你 review 后觉得真有用，编辑 .learnings/LEARNINGS.md 在那条目里加：
+#    **Verified-By**: user
+#    （或 "regression test tests/foo.test.ts" / "3 passing CI runs" 等具体证据）
+
+# 3) 让模型先看一眼会 promote 哪些（默认 dryRun=true，只返回 preview）
+learn-tool action=promote_memory
+
+# 4) 你确认无误，真写入长期记忆：
+learn-tool action=promote_memory dryRun=false
+
+# 5) 后悔了？按 entryId 撤回：
+learn-tool action=demote_memory entryId=LRN-20260606-001
+#    会删除从该条目 promote 出去的所有记忆文件，并在 promotions.log 留下反向记录
+
+# 6) 启用后台自动捕获（默认关，每次工具调用后会自动写 .learnings/LEARNINGS.md）：
+export CLAUDE_CODE_LEARN_AUTOCAPTURE=1
+```
+
+### action 速查
+
+| action | 写入位置 | 跨会话影响 |
+|--------|----------|------------|
+| `monitor` | 仅创建空文件 | 无 |
+| `record` | `.self_improving_performance.json` | 无 |
+| `analyze` / `predict` / `report` | 只读 | 无 |
+| `adjust` | `.self_improving_adjustments.log`（建议，不实施） | 无 |
+| `learn` | `.learnings/{LEARNINGS,ERRORS,FEATURE_REQUESTS}.md` | 无（除非后续 promote） |
+| `ingest_memory` | `.learnings/LEARNINGS.md` | 无（除非后续 promote） |
+| `promote_memory` (默认 dryRun) | 无 | 无 |
+| `promote_memory dryRun=false` | `~/.claude/projects/<proj>/memory/*.md` + `MEMORY.md` + promotions.log | **有**（所有后续会话都会加载） |
+| `demote_memory` | 删除 memory 文件 + 追加反向 promotions.log | **有**（反向） |
+
 ## 能力清单
 
 > ✅ = 已实现  ⚠️ = 部分实现 / 条件启用  ❌ = stub / 移除 / feature flag 关闭

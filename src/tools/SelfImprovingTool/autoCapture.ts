@@ -164,7 +164,22 @@ function buildExperienceKey(
   return `${toolName}::${action}::${snippet ?? 'default'}`
 }
 
+/**
+ * Opt-in: writes performance samples AND markdown "experience" entries
+ * to `.learnings/LEARNINGS.md` without per-call user consent. Off by
+ * default per Anthropic RSI guidance (humans shift to oversight/verification;
+ * automated writes that later feed promote_memory must be deliberately
+ * enabled, not silent).
+ *
+ * Enable: `export CLAUDE_CODE_LEARN_AUTOCAPTURE=1`
+ */
+function isAutoCaptureEnabled(): boolean {
+  const v = process.env.CLAUDE_CODE_LEARN_AUTOCAPTURE
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on'
+}
+
 export async function capturePostToolUseSample(sample: CaptureSample): Promise<void> {
+  if (!isAutoCaptureEnabled()) return
   if (!sample.projectRoot) return
   if (!sample.toolName) return
 
