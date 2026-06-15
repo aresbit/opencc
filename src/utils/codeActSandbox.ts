@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'child_process'
+import { StringDecoder } from 'string_decoder'
 import { join } from 'path'
 import { mkdir, writeFile, rm as rmDir, readdir, cp, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
@@ -318,6 +319,13 @@ function spawnWithTimeout(
     let stderr = ''
     let settled = false
 
+    // Decode stdout/stderr through StringDecoder so multi-byte UTF-8 sequences
+    // (e.g. Chinese characters) that straddle chunk boundaries are reassembled
+    // instead of being corrupted into U+FFFD. chunk.toString() decodes each
+    // chunk independently and truncates split code points on large output.
+    const outDecoder = new StringDecoder('utf8')
+    const errDecoder = new StringDecoder('utf8')
+
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true
@@ -326,8 +334,8 @@ function spawnWithTimeout(
       }
       resolve({
         success: false,
-        stdout,
-        stderr: stderr + '\n[TIMEOUT]',
+        stdout: stdout + outDecoder.end(),
+        stderr: stderr + errDecoder.end() + '\n[TIMEOUT]',
         exitCode: -1,
       })
     }, timeoutMs)
@@ -335,7 +343,7 @@ function spawnWithTimeout(
     if (signal) {
       if (signal.aborted) {
         clearTimeout(timer)
-        resolve({ success: false, stdout, stderr: stderr + '\n[ABORTED]', exitCode: -1 })
+        resolve({ success: false, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() + '\n[ABORTED]', exitCode: -1 })
         return
       }
       signal.addEventListener('abort', () => {
@@ -344,12 +352,12 @@ function spawnWithTimeout(
           clearTimeout(timer)
           child.kill('SIGTERM')
         }
-        resolve({ success: false, stdout, stderr: stderr + '\n[ABORTED]', exitCode: -1 })
+        resolve({ success: false, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() + '\n[ABORTED]', exitCode: -1 })
       })
     }
 
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += outDecoder.write(chunk) })
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += errDecoder.write(chunk) })
 
     child.on('error', (err) => {
       if (!settled) { settled = true; clearTimeout(timer); reject(err) }
@@ -360,8 +368,8 @@ function spawnWithTimeout(
         settled = true; clearTimeout(timer)
         resolve({
           success: code === 0,
-          stdout: stdout.trim(),
-          stderr: stderr.trim(),
+          stdout: (stdout + outDecoder.end()).trim(),
+          stderr: (stderr + errDecoder.end()).trim(),
           exitCode: code ?? -1,
         })
       }

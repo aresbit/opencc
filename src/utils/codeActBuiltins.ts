@@ -143,6 +143,7 @@ export async function stat(p: string): Promise<{
 function shellBuiltin(): string {
   return `// CodeAct builtin: shell command execution
 import { spawn, type SpawnOptions } from 'child_process'
+import { StringDecoder } from 'string_decoder'
 
 export interface ShellResult {
   stdout: string
@@ -169,15 +170,20 @@ export function exec(
     let stderr = ''
     let settled = false
 
+    // StringDecoder reassembles multi-byte UTF-8 sequences split across chunk
+    // boundaries; chunk.toString() would corrupt them (U+FFFD) on large output.
+    const outDecoder = new StringDecoder('utf8')
+    const errDecoder = new StringDecoder('utf8')
+
     const timer = options?.timeout
       ? setTimeout(() => {
           if (!settled) { settled = true; child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 3000) }
-          resolve({ stdout, stderr, exitCode: -1 })
+          resolve({ stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end(), exitCode: -1 })
         }, options.timeout)
       : null
 
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    child.stdout?.on('data', (chunk: Buffer) => { stdout += outDecoder.write(chunk) })
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += errDecoder.write(chunk) })
 
     child.on('error', (err) => {
       if (!settled) { settled = true; if (timer) clearTimeout(timer); reject(err) }
@@ -188,8 +194,8 @@ export function exec(
         settled = true
         if (timer) clearTimeout(timer)
         resolve({
-          stdout: stdout.trim(),
-          stderr: stderr.trim(),
+          stdout: (stdout + outDecoder.end()).trim(),
+          stderr: (stderr + errDecoder.end()).trim(),
           exitCode: code ?? -1,
         })
       }
@@ -309,6 +315,11 @@ export function chdir(dir: string): void {
 
 // ── Bootstrap ──────────────────────────────────────────────────────
 
+// Bump when any generated builtin source changes so cached copies in
+// ~/.claude/codeact/builtins/ are regenerated instead of served stale.
+// v2: shell.ts exec() uses StringDecoder to fix UTF-8 chunk-boundary corruption.
+const BUILTINS_VERSION = '2'
+
 const BUILTINS: Record<string, string> = {
   'fs.ts': fsBuiltin(),
   'shell.ts': shellBuiltin(),
@@ -317,7 +328,18 @@ const BUILTINS: Record<string, string> = {
   'os.ts': osBuiltin(),
 }
 
+function versionPath(dir: string): string {
+  return join(dir, '.version')
+}
+
 async function isFresh(dir: string): Promise<boolean> {
+  try {
+    if ((await readFile(versionPath(dir), 'utf-8')).trim() !== BUILTINS_VERSION) {
+      return false
+    }
+  } catch {
+    return false
+  }
   for (const name of Object.keys(BUILTINS)) {
     try {
       await access(join(dir, name))
@@ -341,6 +363,7 @@ export async function ensureCodeActBuiltins(): Promise<string> {
       writeFile(join(dir, name), content, 'utf-8'),
     ),
   )
+  await writeFile(versionPath(dir), BUILTINS_VERSION, 'utf-8')
 
   return dir
 }
@@ -350,11 +373,20 @@ export function ensureCodeActBuiltinsSync(): string {
   const dir = builtinsDir()
   mkdirSync(dir, { recursive: true })
 
+  let stale = true
+  try {
+    stale = readFileSync(versionPath(dir), 'utf-8').trim() !== BUILTINS_VERSION
+  } catch { /* missing version => stale */ }
+
   for (const [name, content] of Object.entries(BUILTINS)) {
     const p = join(dir, name)
-    if (!existsSync(p)) {
+    // Rewrite when the cache is stale (version bump) or the file is missing.
+    if (stale || !existsSync(p)) {
       writeFileSync(p, content, 'utf-8')
     }
+  }
+  if (stale) {
+    writeFileSync(versionPath(dir), BUILTINS_VERSION, 'utf-8')
   }
 
   return dir
