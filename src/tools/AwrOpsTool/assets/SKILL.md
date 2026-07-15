@@ -50,10 +50,68 @@ async def main():
 
 ---
 
+## 节点重启
+
+当用户说"节点挂了"/"重启节点"/"节点起不来"时，执行以下命令重启 AWR 节点：
+
+```bash
+cd /apollo && source gaea.bashrc 2>/dev/null && echo nvidia | sudo -S bash /apollo/scripts/humanoid/start_awr.sh 2>&1
+```
+
+**注意**：
+- 此命令会自动处理 sudo 密码输入，无需交互
+- 重启后验证：`ps aux | grep mainboard | grep -v grep | wc -l` 应 ≥6
+- 如果重启失败，检查 `journalctl -u humanoid-startup -f` 查看错误日志
+
+---
+
+## ST 测试报告 (report.md)
+
+**每次 ST 测试必须在当前测试目录生成 `report.md`**，每条指令执行后立即追加结果，形成可追溯的验证 checklist。
+
+### 报告格式
+
+```markdown
+# ST 测试报告 — <board> / <recipe> / <日期>
+
+| # | 步骤 | 状态 | 结果/详情 | 时间 |
+|---|------|:---:|------|------|
+| 1 | 绑定机器人 | ✅ | agent72 bound, is_bound=1 | 14:30:01 |
+| 2 | 绑定地图 | ✅ | board188 THHB, operation_map published | 14:30:15 |
+| 3 | 锁精定位 | ✅ | is_accepted=1 | 14:30:32 |
+| ... | ... | ... | ... | ... |
+```
+
+### 规则
+
+- **每条指令执行完立即 `append` 进 `report.md`**，不要等到最后一次性写入
+- 每行包含：**步骤编号、步骤名、状态 (✅/❌/⚠️)、关键结果详情、时间戳**
+- 失败步骤用 `❌` 标记，并在详情中附上错误信息和日志路径
+- 需要人工介入的步骤 (打点/扫码/摆位) 用 `⏸️` 标记，等待人类确认后更新为 `✅`
+
+### 质检 (QC) 详细数据要求
+
+质检操作 (`quality-check`, mode 154/155/156/157) **不能只输出 pass/fail**，必须把详细数据写入 report.md：
+
+```markdown
+| 8 | 质检 mode=155 (手眼左手) | ✅ | std=0.87mm (<1.5mm), validate_success=True, 耗时 48s | 14:45:10 |
+| 9 | 质检 mode=154 (双目) | ❌ | std=2.3mm (≥1.5mm), task_id=xxx, 日志见 /apollo/data/log/qualitycheck/ | 14:46:30 |
+```
+
+**QC 详细数据必须包含**：
+- `std` 值 (标准差，单位 mm) 和阈值 (1.5mm)
+- `validate_success` / 各校验项逐项结果
+- 耗时
+- 失败时附上 `task_id` 和日志路径，方便后续排查
+
+---
+
 ## 快速决策树
 
 ```
 测试同学给你 IP
+  ├── 节点挂了？
+  │     └── cd /apollo && source gaea.bashrc 2>/dev/null && echo nvidia | sudo -S bash /apollo/scripts/humanoid/start_awr.sh 2>&1
   ├── 需要新编译？
   │     └── 优先板载编译 (aarch64 原生) ← 不要用 x86_64 容器产物给测试!
   │           1. 在板子上 cd /mnt/dji/partitions/user/gaea/repo && source gaea.bashrc
