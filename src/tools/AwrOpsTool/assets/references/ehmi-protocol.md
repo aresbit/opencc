@@ -171,11 +171,11 @@ python3 ehmi_client.py <ip> rebind agent72      # unbind→bind→校验,自动�
 
 ### 跳板(踏板)访问 robot 9094
 robot(nvidia@192.168.10.15)只需 9094(ROS bridge,无鉴权)即可绑定,无需登录板子。
-经测试机 `book`(saglen@192.168.84.160,pass 111111)做端口转发即可:
+经测试机 `book`(<跳板用户名>@<跳板IP>,pass 111111)做端口转发即可:
 ```bash
 ssh -f -N -M -S ~/.ssh/book.ctl -o ControlPersist=1200 \
   -L 127.0.0.1:9094:192.168.10.15:9094 -L 127.0.0.1:1995:192.168.10.15:1995 \
-  saglen@192.168.84.160
+  <跳板用户名>@<跳板IP>
 python3 ehmi_client.py 127.0.0.1 rebind
 ```
 
@@ -267,7 +267,7 @@ grep -rhE "load verify|is_cruise_load_over.*SUCCESS|Trajectory replay submitted.
 ### 登进机器人拿 shell(经跳板转发 22 口)
 9094/1995 转发只够跑 eHMI;要看**服务端日志**得进机器人 shell。用已有 book 控制主控加一条 22 转发:
 ```bash
-ssh -S ~/.ssh/book.ctl -O forward -L 127.0.0.1:2222:192.168.10.15:22 saglen@192.168.84.160
+ssh -S ~/.ssh/book.ctl -O forward -L 127.0.0.1:2222:192.168.10.15:22 <跳板用户名>@<跳板IP>
 # askpass 返回 'nvidia'(机器人密码):
 SSH_ASKPASS=<返回nvidia的脚本> SSH_ASKPASS_REQUIRE=force DISPLAY=dummy:0 \
   setsid ssh -o StrictHostKeyChecking=no -p 2222 nvidia@127.0.0.1

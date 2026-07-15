@@ -259,10 +259,10 @@ grep -A40 "XxxRequest.encode" src/types/protobuf/awr_msgs.js
 ## 8. 联调环境(每个脚本都这样验)
 
 ```bash
-# 1) 经测试机踏板做端口转发(book: saglen@192.168.84.160 / 111111),robot=192.168.10.15
+# 1) 经测试机踏板做端口转发(book: <跳板用户名>@<跳板IP> / 111111),robot=192.168.10.15
 ssh -f -N -M -S ~/.ssh/book.ctl -o ControlPersist=1200 \
   -L 127.0.0.1:9094:192.168.10.15:9094 -L 127.0.0.1:1995:192.168.10.15:1995 \
-  saglen@192.168.84.160
+  <跳板用户名>@<跳板IP>
 # 2) 本地直接跑(9094 无鉴权,不用登录板子)
 python3 ehmi_client.py 127.0.0.1 status
 python3 ehmi_client.py 127.0.0.1 <新命令>

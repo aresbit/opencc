@@ -43,7 +43,7 @@
 
 ```bash
 # 配置环境变量 (按实际机器修改)
-export AWR_JUMP_USER=saglen AWR_JUMP_IP=192.168.84.160 AWR_JUMP_PASS=111111
+export AWR_JUMP_USER=<跳板用户名> AWR_JUMP_IP=<跳板IP> AWR_JUMP_PASS=111111
 export AWR_ROBOT_USER=nvidia AWR_ROBOT_IP=192.168.10.15 AWR_ROBOT_PASS=nvidia
 
 # 一键建立隧道 (9094→eHMI, 1995→HMI, 2222→SSH)

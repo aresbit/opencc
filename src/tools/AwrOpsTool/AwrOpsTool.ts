@@ -15,7 +15,37 @@ import {
 
 const AWR_OPS_TOOL_NAME = 'awr-ops'
 
-const DESCRIPTION = `Thor 开发板应用包和固件部署操作知识工具。加载 AWR 部署运维文档（板载编译、.run 大包部署、thor 镜像烧录、A/B slot 切换恢复、rsync/三跳中继传输、eHMI 远程控制、Gate-1 E2E 验证）与 eHMI 客户端脚本。所有内容内置于工具目录，无外部依赖。返回文档正文与脚本源码，模型可用 BashTool/FileWriteTool 实际执行命令。触发词："部署到 thor"、"刷大包"、"刷镜像"、"deploy to thor"、"awr deploy"、"烧录固件"、"rsync 传输"、"锁精定位"、"ehmi"、"HMI 控制"、"recipe 创建"、"gate1"。`
+const DESCRIPTION = `Thor 开发板应用包和固件部署操作知识工具。加载 AWR 部署运维文档（板载编译、.run 大包部署、thor 镜像烧录、A/B slot 切换恢复、rsync/三跳中继传输、eHMI 远程控制、Gate-1 E2E 验证）与 eHMI 客户端脚本。所有内容内置于工具目录，无外部依赖。返回文档正文与脚本源码，模型可用 BashTool/FileWriteTool 实际执行命令。触发词："部署到 thor"、"刷大包"、"刷镜像"、"deploy to thor"、"awr deploy"、"烧录固件"、"rsync 传输"、"锁精定位"、"ehmi"、"HMI 控制"、"recipe 创建"、"gate1"、"节点挂了"、"重启节点"、"节点起不来"、"质检"、"标定"、"ST 测试"、"轨迹生成"、"start-job"、"报告"。`
+
+const SAFETY_RULES_PROMPT = `
+## AWR 安全规则 (每次操作机器人前必须遵守)
+
+### 规则 1: 质检必须依次执行
+标定质检 (quality-check, mode 154/155/156/157) 必须串行：前一项完成并返回结果后才能发下一项。禁止 for 循环批量下发。
+
+### 规则 2: 机器人操作指令高度安全优先级
+所有机器人操作（锁精定位、标定、质检、启动作业、轨迹生成、复位、归零等）只能通过 ehmi_client.py 脚本执行，使用脚本提供的命令行参数。禁止生成新的 Python 脚本直接通过 WebSocket 操作机器人。如确需生成新脚本，必须先获得人类确认。
+
+### 使用 ehmi_client.py 脚本
+本工具内置了 ehmi_client.py，通过 awr-ops action=script script=ehmi-client 获取源码，用 FileWriteTool 写到 /tmp/ehmi_client.py，然后通过 BashTool 执行:
+  python3 /tmp/ehmi_client.py <机器人IP> <命令>
+常用命令: status / lock / recipe-create / recipe-list / quality-check / calibrate / single-traj / start-job / gate1 / rebind / bindmap
+注意: 脚本依赖 websockets 库 (pip3 install websockets)。
+
+### 节点重启
+当用户说"节点挂了"/"重启节点"时:
+  cd /apollo && source gaea.bashrc 2>/dev/null && echo nvidia | sudo -S bash /apollo/scripts/humanoid/start_awr.sh 2>&1
+重启后验证: ps aux | grep mainboard | grep -v grep | wc -l  应 ≥6
+
+### SSH 连接: 先问用户角色
+- 开发者 (办公网络, 需要跳板): 通过跳板机 192.168.84.160 中转, 需要设置 AWR_JUMP_* 环境变量, 用 ssh-tunnel.sh 建立隧道
+- 测试人员 (实验室现场, 直连机器人): 不需要跳板, 直接 ssh nvidia@<机器人IP>, ehmi 命令直连机器人 IP
+不清楚时先问用户"你是开发者还是测试人员? 能否直连机器人?"
+
+### ST 测试报告
+每次 ST 测试必须在当前目录生成 report.md，每条指令执行完立即 append 结果（checklist 表格: 步骤/状态/详情/时间）。质检必须输出详细数据（std 值 mm、validate_success、耗时），不能只写 pass/fail。
+
+详细操作指南: 调用 awr-ops action=guide 获取完整 SKILL.md。`
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -204,7 +234,7 @@ export const AwrOpsTool = buildTool({
     return DESCRIPTION
   },
   async prompt() {
-    return DESCRIPTION
+    return DESCRIPTION + SAFETY_RULES_PROMPT
   },
   get inputSchema(): InputSchema {
     return inputSchema()

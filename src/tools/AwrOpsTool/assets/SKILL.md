@@ -232,47 +232,70 @@ gcc -O3 -mavx512f -mavx512dq -o avx512_checksum avx512_checksum.c
 
 ## SSH 连接模式
 
-所有连接参数通过环境变量注入，**不硬编码用户名、IP、密码**：
+**先问用户是哪种角色**，再选择对应的连接方式：
+
+### 场景 A: 开发者 (需要跳板)
+
+开发者在办公网络，无法直连实验室机器人，必须通过跳板机中转：
+
+```
+开发者PC ─WiFi─→ 跳板机 (<跳板IP>) ─USB─→ 机器人 (192.168.10.x)
+```
+
+**环境变量**（无硬编码，按实际情况修改）：
 
 | 环境变量 | 说明 | 示例 |
 |----------|------|------|
-| `AWR_JUMP_USER` | 跳板用户名 | `saglen` |
-| `AWR_JUMP_IP` | 跳板 IP | `192.168.84.160` |
+| `AWR_JUMP_USER` | 跳板用户名 | `<跳板用户名>` |
+| `AWR_JUMP_IP` | 跳板 IP | `<跳板IP>` |
 | `AWR_JUMP_PASS` | 跳板密码 | `111111` |
 | `AWR_ROBOT_USER` | 机器人用户名 | `nvidia` |
 | `AWR_ROBOT_IP` | 机器人 IP | `192.168.10.15` |
 | `AWR_ROBOT_PASS` | 机器人密码 | `nvidia` |
 
-脚本已内置在 `scripts/ssh/` 目录下：
-
-| 脚本 | 用途 | 依赖环境变量 |
-|------|------|------|
-| `scripts/ssh/ssh-askpass.sh` | SSH_ASKPASS 密码提供 | `AWR_SSH_PASS` |
-| `scripts/ssh/ssh-askpass-wrapper.sh` | 密码认证 SSH 连接 | `AWR_SSH_PASS`, `SSH_ASKPASS`, `DISPLAY` |
-| `scripts/ssh/ssh-tunnel.sh` | 建立 SSH 隧道 (9094/1995/2222) | `AWR_JUMP_*`, `AWR_ROBOT_IP` |
-| `scripts/ssh/ssh-via-jump.sh` | 通过跳板在机器人上执行命令 | 全部 6 个 |
-
 ```bash
-# 配置环境变量 (按实际情况修改)
-export AWR_JUMP_USER=saglen AWR_JUMP_IP=192.168.84.160 AWR_JUMP_PASS=111111
+# 配置环境变量
+export AWR_JUMP_USER=<跳板用户名> AWR_JUMP_IP=<跳板IP> AWR_JUMP_PASS=111111
 export AWR_ROBOT_USER=nvidia AWR_ROBOT_IP=192.168.10.15 AWR_ROBOT_PASS=nvidia
 
-# 方式 A: 建立隧道 (推荐 — eHMI 用)
+# 方式 A: 建立隧道 (推荐 — eHMI 用，端口转发到本地)
 bash scripts/ssh/ssh-tunnel.sh
 # 然后 eHMI 命令直连 127.0.0.1:9094
 
-# 方式 B: 通过跳板在机器人上执行命令
+# 方式 B: 通过跳板在机器人上执行单条命令
 bash scripts/ssh/ssh-via-jump.sh "ls /apollo/data/log/"
 
-# 方式 C: 直连 (免密)
-ssh thor
-
-# 方式 D: 手动 SSH_ASKPASS (隧道过期时重建)
-export AWR_SSH_PASS="${AWR_JUMP_PASS}" SSH_ASKPASS=$(realpath scripts/ssh/ssh-askpass.sh) DISPLAY=dummy:0
-setsid ssh -f -N -M -S ~/.ssh/awr-tunnel.ctl -o StrictHostKeyChecking=no \
-  -o ControlPersist=1800 -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-  -L 127.0.0.1:9094:${AWR_ROBOT_IP}:9094 ${AWR_JUMP_USER}@${AWR_JUMP_IP}
+# 方式 C: 交互式 SSH (需要手动输入密码)
+ssh -J <跳板用户名>@<测试机IP> nvidia@192.168.10.15
 ```
+
+### 场景 B: 测试人员 (直连机器人)
+
+测试人员在实验室现场，PC 和机器人在同一网络，**不需要跳板**：
+
+```
+测试人员PC ─WiFi/USB─→ 机器人 (192.168.10.x)
+```
+
+```bash
+# 直接 SSH 到机器人
+ssh nvidia@192.168.10.15
+
+# eHMI 命令直连机器人 IP
+python3 /tmp/ehmi_client.py 192.168.10.15 status
+python3 /tmp/ehmi_client.py 192.168.10.15 lock
+```
+
+**注意**：测试人员场景下，**不需要设置 `AWR_JUMP_*` 环境变量**，所有操作直连机器人 IP 即可。
+
+### 脚本速查
+
+| 脚本 | 用途 | 适用场景 |
+|------|------|:---:|
+| `scripts/ssh/ssh-tunnel.sh` | 建立 SSH 隧道 (9094/1995/2222) | 开发者 |
+| `scripts/ssh/ssh-via-jump.sh` | 通过跳板在机器人上执行命令 | 开发者 |
+| 直接 `ssh nvidia@<IP>` | 直连机器人 | 测试人员 |
+| 直接 `python3 ehmi_client.py <IP>` | eHMI 命令直连 | 测试人员 / 开发者(隧道后 127.0.0.1) |
 
 ## 板子间传输 (三跳中继)
 
@@ -389,7 +412,7 @@ HMI 前端 (Vue.js, :1995)
 
 ```bash
 # 通过跳板 SSH 到机器人
-ssh -J saglen@<测试机IP> nvidia@192.168.10.15
+ssh -J <跳板用户名>@<测试机IP> nvidia@192.168.10.15
 
 # 确认 Apollo 路径
 ls -la /apollo
@@ -499,7 +522,7 @@ python3 scripts/ehmi/ehmi_client.py 192.168.10.15 <command>
 B64=$(base64 scripts/ehmi/ehmi_client.py | tr -d '\n')
 
 # 2. 通过跳板 SSH 执行
-ssh -J saglen@<测试机IP> nvidia@192.168.10.15 \
+ssh -J <跳板用户名>@<测试机IP> nvidia@192.168.10.15 \
   "echo '$B64' | base64 -d > /tmp/ehmi.py && python3 /tmp/ehmi.py 127.0.0.1 <command>"
 ```
 
