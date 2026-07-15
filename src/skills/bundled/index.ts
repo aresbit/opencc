@@ -12,6 +12,7 @@ import { registerSkillifySkill } from './skillify.js'
 import { registerStuckSkill } from './stuck.js'
 import { registerUpdateConfigSkill } from './updateConfig.js'
 import { registerClaudeToolAddSkill } from './claude-tool-add-skill.js'
+import { registerAwrStRunSkill } from './awrStRun.js'
 import { registerVerifySkill } from './verify.js'
 import { registerWikitoolSkill } from './wikitool.js'
 import { registerBrainstormSkill } from './brainstorm.js'
@@ -29,6 +30,7 @@ import { registerHandoffSkill } from './handoff.js'
 export function initBundledSkills(): void {
   registerUpdateConfigSkill()
   registerClaudeToolAddSkill()
+  registerAwrStRunSkill()
   registerKeybindingsSkill()
   registerVerifySkill()
   registerDebugSkill()

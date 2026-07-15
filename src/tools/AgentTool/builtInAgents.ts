@@ -7,6 +7,7 @@ import { EXPLORE_AGENT } from './built-in/exploreAgent.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { NOVA_AGENT } from './built-in/novaAgent.js'
 import { PAPER_AGENT } from './built-in/paperAgent.js'
+import { AWR_TEST_AGENT } from './built-in/awrTestAgent.js'
 import { PLAN_AGENT } from './built-in/planAgent.js'
 import { QUANT_AGENT } from './built-in/quantAgent.js'
 import { STATUSLINE_SETUP_AGENT } from './built-in/statuslineSetup.js'
@@ -51,6 +52,7 @@ export function getBuiltInAgents(): AgentDefinition[] {
     STATUSLINE_SETUP_AGENT,
     NOVA_AGENT,
     PAPER_AGENT,
+    AWR_TEST_AGENT,
     QUANT_AGENT,
     VIRAL_WRITER_AGENT,
   ]

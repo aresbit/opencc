@@ -25,6 +25,8 @@ import { RedoTool } from './tools/RedoTool/RedoTool.js'
 import { SETool } from './tools/SETool/SETool.js'
 import { PMTool } from './tools/PMTool/PMTool.js'
 import { LearnTool } from './tools/LearnTool/LearnTool.js'
+import { AwrOpsTool } from './tools/AwrOpsTool/AwrOpsTool.js'
+import { AwrStRunTool } from './tools/AwrStRunTool/AwrStRunTool.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
@@ -249,6 +251,8 @@ export function getAllBaseTools(): Tools {
     SETool,
     PMTool,
     LearnTool,
+    AwrOpsTool,
+    AwrStRunTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
