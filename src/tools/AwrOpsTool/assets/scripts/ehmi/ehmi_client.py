@@ -1078,10 +1078,9 @@ class HmiController:
         """标定质检. mode: 154=鱼眼双目 155=鱼眼手眼 156=内窥镜双目 157=鱼眼左目到内窥镜左目.
         触发后订阅 /ts_awr/qualitycheck/response 按 task_id 收结果并判定通过(标准差<1.5mm)。
 
-        ⚠ 双目(154/156)单帧秒回;手眼(155)/鱼眼左内窥左(157)要经 POSE_CALCULATION→
-        VALIDATION 两阶段,实测 ~55s,默认等待按 mode 自动放宽到 120s。"""
+        ⚠ 双目(154/156)单帧秒回,手眼(155)/鱼眼左内窥左(157)两阶段 ~55s;四项统一 120s 保底。"""
         if wait_result is None:
-            wait_result = 120.0 if mode in (155, 157) else 40.0
+            wait_result = 120.0
         task_id = self._gen_task_id()
         # 先订阅结果 topic,再触发(质检计算耗时,结果稍后到)
         await self.ws.send(encode_json_wrapper(
