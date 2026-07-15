@@ -5,6 +5,51 @@ description: Thor 开发板应用包和固件部署操作。当你需要刷大�
 
 # AWR Ops — Thor Board 全生命周期部署与验证
 
+## 安全规则 (Safety Rules)
+
+### 规则 1: 质检必须依次执行
+
+标定质检 (quality-check, mode 154/155/156/157) **必须串行执行**，即：
+- 前一项质检完全结束并返回结果 (PASS/FAIL/TIMEOUT) 后，才能下发下一项
+- **禁止**使用 `for` 循环一次性连续下发多条质检命令
+- **禁止**在未收到上一项结果前就下发下一项
+
+```python
+# ❌ 错误: for 循环批量下发质检
+for mode in [154, 155, 156, 157]:
+    await run_qc(mode)  # 没有等待结果就发下一个
+
+# ✅ 正确: 逐项等待结果后再下发下一项
+result = await run_qc(154)  # 等待 154 完成
+if result.get('passed') is not None:
+    result = await run_qc(155)  # 再发 155
+```
+
+### 规则 2: 机器人操作指令高度安全优先级
+
+对机器人的所有操作指令（包括但不限于：锁精定位、标定、质检、启动作业、轨迹生成、复位、归零等）属于**高风险操作**，必须遵守：
+- **只能通过调用 `scripts/ehmi/` 目录下的已有脚本命令来执行**，使用脚本提供的命令行参数
+- **禁止**生成新的 Python 脚本或临时代码直接通过 WebSocket 操作机器人
+- **如果确实需要生成新脚本，必须先获得人类确认后才能执行**
+
+```bash
+# ✅ 正确: 使用已有脚本 + 命令行参数
+python3 scripts/ehmi/ehmi_client.py 192.168.10.15 quality-check 154
+python3 scripts/ehmi/ehmi_client.py 192.168.10.15 lock
+
+# ❌ 错误: 生成新的 py 脚本直接操作机器人
+python3 -c "
+import asyncio, websockets
+async def main():
+    ws = await websockets.connect('ws://192.168.10.15:9094')
+    # ... 直接下发指令
+"
+```
+
+违反以上规则可能导致：机器人异常动作、机械臂碰撞、硬件损坏或人员伤害。
+
+---
+
 ## 快速决策树
 
 ```
