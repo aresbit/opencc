@@ -28,16 +28,27 @@
 ## 0. 访问 & 前置
 
 ### 0.1 SSH 隧道(每次会话先做;ControlPersist 会过期,断了重建)
+
+所有连接参数通过环境变量注入，**无硬编码**：
+
 ```bash
-# book 跳板: saglen@192.168.84.160 / 111111 ; robot: nvidia@192.168.10.15 / nvidia
-# askpass 脚本分别 echo 111111 / nvidia
-CTL=~/.ssh/book.ctl
-SSH_ASKPASS=<echo 111111> SSH_ASKPASS_REQUIRE=force DISPLAY=dummy:0 \
-setsid ssh -f -N -M -S "$CTL" -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes -o ControlPersist=1800 \
-  -L 127.0.0.1:9094:192.168.10.15:9094 -L 127.0.0.1:1995:192.168.10.15:1995 saglen@192.168.84.160
-# 板子 shell(查日志用): 给同一主控加 22 转发
-ssh -S "$CTL" -O forward -L 127.0.0.1:2222:192.168.10.15:22 saglen@192.168.84.160
-# 进板子: SSH_ASKPASS=<echo nvidia> ... ssh -p 2222 nvidia@127.0.0.1
+# 配置环境变量 (按实际机器修改)
+export AWR_JUMP_USER=saglen AWR_JUMP_IP=192.168.84.160 AWR_JUMP_PASS=111111
+export AWR_ROBOT_USER=nvidia AWR_ROBOT_IP=192.168.10.15 AWR_ROBOT_PASS=nvidia
+
+# 一键建立隧道 (9094→eHMI, 1995→HMI, 2222→SSH)
+bash scripts/ssh/ssh-tunnel.sh
+
+# 通过跳板在机器人上执行命令
+bash scripts/ssh/ssh-via-jump.sh "ls /apollo/data/trajectories/"
+
+# 隧道过期时手动重建:
+export AWR_SSH_PASS="${AWR_JUMP_PASS}" SSH_ASKPASS=$(realpath scripts/ssh/ssh-askpass.sh) DISPLAY=dummy:0
+setsid ssh -f -N -M -S ~/.ssh/awr-tunnel.ctl -o StrictHostKeyChecking=no \
+  -o ControlPersist=1800 -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+  -L 127.0.0.1:9094:${AWR_ROBOT_IP}:9094 \
+  -L 127.0.0.1:1995:${AWR_ROBOT_IP}:1995 \
+  ${AWR_JUMP_USER}@${AWR_JUMP_IP}
 ```
 所有 eHMI 命令都对 `127.0.0.1` 跑(经隧道)。
 
@@ -98,13 +109,24 @@ $CLI bindmap board188 THHB agent72
 # 4. 锁精定位(需 recipe + 一个 wire)
 $CLI lock 1841 30103
 
-# 5. 轨迹生成(全部;从线束3起,1/2不在范围)
-$CLI gen-traj 1841
-#    等生成完成(后台规划,几分钟): 板子上 ls /apollo/data/trajectories/*_joint.npz | grep 线束14 出现即完成
+# 5. 轨迹生成 — ⚠️ 串行！每条线束必须逐个生成并确认完成后才能继续下一条
+#    每条线束生成 3 个 _joint.npz 文件(init_to_load / organize_and_connection / exit_poses)
+#    确认命令: ls -aln /apollo/data/trajectories/*_joint.npz | grep -E "线束n"
+#    必须等 3 个文件全部出现后才能继续生成下一条线束！
+#    逐条生成(线束3..14, wire_id 30103..30114):
+$CLI single-traj 30103 1841
+#    ssh nvidia@192.168.10.15 'ls -aln /apollo/data/trajectories/*_joint.npz | grep -E "线束3"'
+#    确认 3/3 → 继续下一条
+$CLI single-traj 30104 1841
+#    ... 逐条确认到 30114
 
-# 6. 执行 job(从线束3),start_job 自动跑三步 REQUEST_DATABASE→START_JOB→LOAD_VERIFY
+# 6. 执行 job — ⚠️ 只需触发一次！
+#    start-job 从起始线束触发后，机器人会自动执行后续所有线束的插接。
+#    不要每条线束都发一次 start-job！如果从线束4开始但没有线束4的轨迹会报错。
+#    确保起始线束的轨迹已存在，然后只发一次：
 $CLI start-job 1841 30103 0
-#    继续下一批: $CLI start-job 1841 30104 0   (从线束4)
+#    如果中途某条线束失败，从该线束重新触发即可:
+#    $CLI start-job 1841 30110 0   (例如从线束10继续)
 ```
 
 > **标定质检**若要跑:人工把手臂/标定板摆到位后
@@ -152,6 +174,8 @@ $CLI start-job 1841 30103 0
 | 轨迹/标定 mode 用错(138/139) | 轨迹走 ROBOT_MODE(10/11/12/13),标定 150-153,不是 ACTION | 已在 `ehmi_client.py` 对齐 |
 | 隧道断(命令 ConnectionRefused 9094) | ControlPersist 过期 | 重建隧道(§0.1) |
 | 手眼质检 50s 超时但其实通过 | 手眼两阶段 ~55s | `quality_check` 已按 mode 放宽到 120s |
+| start-job 报错/机械臂不动 | 起始 wire_id 的轨迹不存在 | 先确认 `ls /apollo/data/trajectories/*_joint.npz \| grep 线束N` 有 3 个文件 |
+| 逐条 start-job 导致重复执行 | 只需触发一次，机器人自动执行后续线束 | 从起始线束发一次 start-job 即可，中途失败才从该线束重新触发 |
 
 **板载确认通用**:进板子 `grep -rhE "<关键字>" /apollo/data/log/`(glog `W20260714...` 级,`-rhE` 别用 `-o`),关键字见 §1 表 + ehmi-protocol.md「板载验证」。
 

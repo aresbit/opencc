@@ -25,6 +25,10 @@ import stTestSop from './assets/references/st-test-sop.md' with { type: 'text' }
 
 // --- Scripts ---
 import ehmiClientPy from './assets/scripts/ehmi/ehmi_client.py' with { type: 'text' }
+import sshAskpass from './assets/scripts/ssh/ssh-askpass.sh' with { type: 'text' }
+import sshAskpassWrapper from './assets/scripts/ssh/ssh-askpass-wrapper.sh' with { type: 'text' }
+import sshTunnel from './assets/scripts/ssh/ssh-tunnel.sh' with { type: 'text' }
+import sshViaJump from './assets/scripts/ssh/ssh-via-jump.sh' with { type: 'text' }
 
 export interface ReferenceAsset {
   /** Stable identifier (no .md suffix) used by the `reference` action. */
@@ -95,6 +99,34 @@ const SCRIPTS: ScriptAsset[] = [
     language: 'python',
     suggestedFilename: 'ehmi_client.py',
     content: ehmiClientPy,
+  },
+  {
+    name: 'ssh-askpass',
+    path: 'assets/scripts/ssh/ssh-askpass.sh',
+    language: 'bash',
+    suggestedFilename: 'ssh-askpass.sh',
+    content: sshAskpass,
+  },
+  {
+    name: 'ssh-askpass-wrapper',
+    path: 'assets/scripts/ssh/ssh-askpass-wrapper.sh',
+    language: 'bash',
+    suggestedFilename: 'ssh-askpass-wrapper.sh',
+    content: sshAskpassWrapper,
+  },
+  {
+    name: 'ssh-tunnel',
+    path: 'assets/scripts/ssh/ssh-tunnel.sh',
+    language: 'bash',
+    suggestedFilename: 'ssh-tunnel.sh',
+    content: sshTunnel,
+  },
+  {
+    name: 'ssh-via-jump',
+    path: 'assets/scripts/ssh/ssh-via-jump.sh',
+    language: 'bash',
+    suggestedFilename: 'ssh-via-jump.sh',
+    content: sshViaJump,
   },
 ]
 

@@ -129,16 +129,46 @@ gcc -O3 -mavx512f -mavx512dq -o avx512_checksum avx512_checksum.c
 
 ## SSH 连接模式
 
+所有连接参数通过环境变量注入，**不硬编码用户名、IP、密码**：
+
+| 环境变量 | 说明 | 示例 |
+|----------|------|------|
+| `AWR_JUMP_USER` | 跳板用户名 | `saglen` |
+| `AWR_JUMP_IP` | 跳板 IP | `192.168.84.160` |
+| `AWR_JUMP_PASS` | 跳板密码 | `111111` |
+| `AWR_ROBOT_USER` | 机器人用户名 | `nvidia` |
+| `AWR_ROBOT_IP` | 机器人 IP | `192.168.10.15` |
+| `AWR_ROBOT_PASS` | 机器人密码 | `nvidia` |
+
+脚本已内置在 `scripts/ssh/` 目录下：
+
+| 脚本 | 用途 | 依赖环境变量 |
+|------|------|------|
+| `scripts/ssh/ssh-askpass.sh` | SSH_ASKPASS 密码提供 | `AWR_SSH_PASS` |
+| `scripts/ssh/ssh-askpass-wrapper.sh` | 密码认证 SSH 连接 | `AWR_SSH_PASS`, `SSH_ASKPASS`, `DISPLAY` |
+| `scripts/ssh/ssh-tunnel.sh` | 建立 SSH 隧道 (9094/1995/2222) | `AWR_JUMP_*`, `AWR_ROBOT_IP` |
+| `scripts/ssh/ssh-via-jump.sh` | 通过跳板在机器人上执行命令 | 全部 6 个 |
+
 ```bash
-# 直连板子 (免密)
+# 配置环境变量 (按实际情况修改)
+export AWR_JUMP_USER=saglen AWR_JUMP_IP=192.168.84.160 AWR_JUMP_PASS=111111
+export AWR_ROBOT_USER=nvidia AWR_ROBOT_IP=192.168.10.15 AWR_ROBOT_PASS=nvidia
+
+# 方式 A: 建立隧道 (推荐 — eHMI 用)
+bash scripts/ssh/ssh-tunnel.sh
+# 然后 eHMI 命令直连 127.0.0.1:9094
+
+# 方式 B: 通过跳板在机器人上执行命令
+bash scripts/ssh/ssh-via-jump.sh "ls /apollo/data/log/"
+
+# 方式 C: 直连 (免密)
 ssh thor
 
-# 跳板模式
-sshpass -p '777888' ssh -J susan@192.168.85.183 nvidia@192.168.10.15
-
-# 密码模式 (fallback)
-export SSH_ASKPASS=/home/pc/ssh-pass.sh DISPLAY=dummy:0
-setsid ssh -o StrictHostKeyChecking=no nvidia@192.168.10.15 '<command>'
+# 方式 D: 手动 SSH_ASKPASS (隧道过期时重建)
+export AWR_SSH_PASS="${AWR_JUMP_PASS}" SSH_ASKPASS=$(realpath scripts/ssh/ssh-askpass.sh) DISPLAY=dummy:0
+setsid ssh -f -N -M -S ~/.ssh/awr-tunnel.ctl -o StrictHostKeyChecking=no \
+  -o ControlPersist=1800 -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+  -L 127.0.0.1:9094:${AWR_ROBOT_IP}:9094 ${AWR_JUMP_USER}@${AWR_JUMP_IP}
 ```
 
 ## 板子间传输 (三跳中继)
@@ -227,8 +257,9 @@ journalctl -u humanoid-startup -f    # 观察日志
 | humanoid-startup status=203 | ExecStart 脚本不存在 | cp 脚本到 /usr/local/bin/ |
 | rsync daemon 端口被占 | Failed to bind port 873 | `sudo kill $(cat /var/run/rsyncd.pid)` |
 | 板子时钟不准 | apt update 报 Release invalid | `date -s "YYYY-MM-DD HH:MM:SS"` |
-| WiFi 跳板传输慢 | 2-10 MB/s, 11GB 需 20-30 分钟 | 正常现象，WiFi 链路瓶颈，非协议问题 |
-| 裸 TCP 传输不完整 | nc 提前关闭，文件大小不对 | 用 rsync 续传或 `pv` 替代 `nc -q` |
+| 强制"逐条 start-job" | robot 自动执行后续线束，重复触发会报错/混乱 | 只需从起始线束发一次 start-job，中途失败才从失败线束重新触发 |
+| 从无轨迹的线束 start-job | 机械臂不动/报错 | 先确认 `ls /apollo/data/trajectories/*_joint.npz \| grep 线束N` 有 3 个文件 |
+| 轨迹生成用 gen-traj 一次全下 | 实际是异步的，需要逐条确认 | 用 single-traj 逐条生成，每条确认 3 个 npz 文件后再继续下一条 |
 
 ---
 
