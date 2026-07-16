@@ -22,6 +22,7 @@ import awrBuild from './assets/references/awr-build.md' with { type: 'text' }
 import ehmiProtocol from './assets/references/ehmi-protocol.md' with { type: 'text' }
 import ehmiScriptingGuide from './assets/references/ehmi-scripting-guide.md' with { type: 'text' }
 import stTestSop from './assets/references/st-test-sop.md' with { type: 'text' }
+import awrStCases from './assets/st_cases/awr-st-cases.yaml' with { type: 'text' }
 
 // --- Scripts ---
 import ehmiClientPy from './assets/scripts/ehmi/ehmi_client.py' with { type: 'text' }
@@ -89,6 +90,11 @@ const REFERENCES: ReferenceAsset[] = [
     name: 'st-test-sop',
     path: 'assets/references/st-test-sop.md',
     content: stripFrontmatter(stTestSop),
+  },
+  {
+    name: 'awr-st-cases',
+    path: 'assets/st_cases/awr-st-cases.yaml',
+    content: stripFrontmatter(awrStCases),
   },
 ]
 

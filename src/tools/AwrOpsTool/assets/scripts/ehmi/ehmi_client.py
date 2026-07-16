@@ -185,6 +185,15 @@ SCENARIO = {
 
 ARM_ID = {"LEFT": 0, "RIGHT": 1, "DUAL": 2}
 
+# 准备姿态列表顺序 + label(SafePosConfig.vue safePosList)。
+# 后端 name 字段就是这些 label;前端按 name===label 匹配(不是纯 index)。
+SAFE_POSE_LABELS = [
+    "初始准备姿态", "上料准备姿态", "理线准备姿态", "结束位插接准备姿态",
+    "起始位插接准备姿态", "下料准备姿态", "归置准备姿态", "缠胶准备姿态",
+    "连接器上料准备姿态", "扎带准备姿态", "扎带机安装准备姿态", "扎带机卸载准备姿态",
+    "左侧结构光扫描准备姿态", "右侧结构光扫描准备姿态",
+]
+
 # ⚠ 轨迹生成/删除:维护页用 ROBOT_MODE 枚举(不是 ACTION!)。
 #   ROBOT_MODE.SINGLE_TRAJECTORY_GENERATION=10, DELETE_SINGLE=11, ALL_GEN=12, ALL_DEL=13
 #   (ACTION 枚举里同名项是 10/109/138/139,维护页不用)。scenario=MAINTAIN。
@@ -198,6 +207,17 @@ ROBOT_MODE = {
     "GENERATE_ALL_TRAJECTORIES": 12, "DELETE_ALL_TRAJECTORIES": 13,
     "FISHEYE_STEREO_CALIBRATION": 150, "FISHEYE_HANDEYE_CALIBRATION": 151,
     "PINHOLE_STEREO_CALIBRATION": 152, "FISHEYE_PINHOLE_LEFT_CALIBRATION": 153,
+    # 姿态 / 安全恢复(撞机后回安全位常用)
+    "JOINT_MOVE": 110,              # 关节空间运动(移动到准备姿态/关键点用它)
+    "MOVE_ALL": 115,                # 全轴/整体运动(getSportMode 的另一取值)
+    "MOVE_TO_WAIT_AREA": 118,       # 移动到等候区(scenario=RECIPE)
+    "ARM_VERTICAL": 141,            # 一键垂直于地面(scenario=MAINTAIN, 带 arm_id/param)
+    "MOVE_ALL_FAR": 156,            # 移动到操作位/远离位(scenario=MAINTAIN)
+    # recipe 位姿调整 (poseAdjust.vue)
+    "MOVE_INSERT": 117,             # 精调插接移动(fineTuning MOVE-INSERT, RECIPE, arm)
+    "MOVE_TO_ARUCO_POSITION": 121,  # 移动到 ArUco 位姿(关键点无 id 时, RECIPE, aruco_id+points)
+    "MOVE_TO_LOAD_POSE": 123,       # 调整到上料高度(SINGLE_STEP)
+    "MOVE_TO_WIRE_PLUGGING_POSE": 124,  # 调整到理线插接高度(SINGLE_STEP)
 }
 
 # 标定: checkType → ROBOT_MODE (autoCalibrationProgress.ts ROBOT_MODE_BY_CHECK_TYPE)
@@ -451,6 +471,66 @@ def encode_map_provision_select(request_id, pattern, with_header=True):
     r.extend(varint((2 << 3) | 2)); r.extend(varint(len(e))); r.extend(e)
     r.extend(varint((3 << 3) | 0)); r.extend(varint(int(pattern)))
     return bytes(r)
+
+
+# ============================================================
+# 移动到准备姿态 / 安全姿态 (SafePosConfig.vue buildSafePosMovePayload)
+# AwRobotServiceRequest 扩展字段: joint_values=32(rep double,不packed),
+#   joint_names=33(rep string), points=37(rep Pose)。
+# Pose{position:Point{x1,y1,z1}, orientation:Quaternion{x1,y2,z3,w4}} 全 double。
+# ============================================================
+
+def _dfield(fnum, val):
+    """一个 double 字段 (wiretype 1)。"""
+    return varint((fnum << 3) | 1) + struct.pack("<d", float(val or 0.0))
+
+
+def _q(quat):
+    """Quaternion dict/list → (x,y,z,w)。"""
+    if isinstance(quat, dict):
+        return (quat.get("x", 0), quat.get("y", 0), quat.get("z", 0), quat.get("w", 0))
+    quat = list(quat or [])
+    return tuple((quat + [0, 0, 0, 0])[:4])
+
+
+def _encode_pose(pos_xyz, quat_xyzw):
+    """geometry Pose bytes: position(Point) + orientation(Quaternion)。"""
+    pos_xyz = list(pos_xyz or [0, 0, 0])
+    pt = _dfield(1, pos_xyz[0]) + _dfield(2, pos_xyz[1] if len(pos_xyz) > 1 else 0) \
+        + _dfield(3, pos_xyz[2] if len(pos_xyz) > 2 else 0)
+    qx, qy, qz, qw = _q(quat_xyzw)
+    qt = _dfield(1, qx) + _dfield(2, qy) + _dfield(3, qz) + _dfield(4, qw)
+    r = bytearray()
+    r.extend(varint((1 << 3) | 2)); r.extend(varint(len(pt))); r.extend(pt)   # position
+    r.extend(varint((2 << 3) | 2)); r.extend(varint(len(qt))); r.extend(qt)   # orientation
+    return bytes(r)
+
+
+def encode_safe_pos_move(mode, scenario, recipe_id, arm_id, serial_number,
+                         workspace_id, joints_pos, points, aruco_id=None):
+    """AwRobotServiceRequest for 移动到准备姿态/关键点 (buildSafePosMovePayload / poseAdjust moveTo 复刻)。
+
+    joints_pos: {joint_name: value} dict → joint_values(32)+joint_names(33)(空则不带,用于 ArUco 移动)
+    points: [(pos3, quat), ...] → 每个 Pose 走 points(37)。前端顺序 = 左/右/base(或单臂)。
+    aruco_id: MOVE_TO_ARUCO_POSITION 时带(字段 19)。
+    """
+    # 标量字段复用 encode_service_request(字段顺序不影响解析)
+    req = bytearray(encode_service_request(
+        mode=mode, scenario=scenario, node_id=1, recipe_id=recipe_id,
+        arm_id=arm_id, serial_number=serial_number, workspace_id=workspace_id,
+        agent_type=0, **({"aruco_id": aruco_id} if aruco_id is not None else {})))
+    # joint_values (32, rep double, 非 packed)
+    for v in (joints_pos.values() if isinstance(joints_pos, dict) else (joints_pos or [])):
+        req.extend(_dfield(32, v))
+    # joint_names (33, rep string)
+    for n in (joints_pos.keys() if isinstance(joints_pos, dict) else []):
+        e = str(n).encode("utf-8")
+        req.extend(varint((33 << 3) | 2)); req.extend(varint(len(e))); req.extend(e)
+    # points (37, rep Pose)
+    for pos, quat in (points or []):
+        pb = _encode_pose(pos, quat)
+        req.extend(varint((37 << 3) | 2)); req.extend(varint(len(pb))); req.extend(pb)
+    return bytes(req)
 
 
 # ============================================================
@@ -968,6 +1048,159 @@ class HmiController:
         return await self.robot_action(mode, scenario=SCENARIO["MAINTAIN"], serial=serial,
                                        workspace_id=workspace_id, wire_id=wire_id,
                                        **_nz(recipe_id=recipe_id))
+
+    # ---- 姿态 / 安全恢复 (撞机后回安全位) ----
+    # 源: maintainPage.vue(移动到操作位) / RobotControlPanel.vue(一键垂直) /
+    #     agentConfig.vue(等候区) / SafePosConfig.vue handleMove(移动到准备姿态)
+
+    async def move_operation_pose(self, serial=None, recipe_id=None, workspace_id=None):
+        """移动到操作位/远离位 (MOVE_ALL_FAR=156, MAINTAIN)。撞机后最简单稳健的安全恢复。"""
+        return await self.robot_action(ROBOT_MODE["MOVE_ALL_FAR"], scenario=SCENARIO["MAINTAIN"],
+                                       serial=serial, workspace_id=workspace_id,
+                                       **_nz(recipe_id=recipe_id))
+
+    async def arm_vertical(self, arm_id=0, param=1.0, serial=None, workspace_id=None):
+        """一键垂直于地面 (ARM_VERTICAL=141, MAINTAIN, 带 arm_id/param)。"""
+        return await self.robot_action(ROBOT_MODE["ARM_VERTICAL"], scenario=SCENARIO["MAINTAIN"],
+                                       serial=serial, workspace_id=workspace_id,
+                                       arm_id=arm_id, param=param)
+
+    async def move_wait_area(self, serial=None, workspace_id=None):
+        """移动到等候区 (MOVE_TO_WAIT_AREA=118, RECIPE)。"""
+        return await self.robot_action(ROBOT_MODE["MOVE_TO_WAIT_AREA"], scenario=SCENARIO["RECIPE"],
+                                       serial=serial, workspace_id=workspace_id)
+
+    def safe_pos_list(self, recipe_id):
+        """该 recipe 的准备姿态列表。
+
+        ⚠ 前端 SafePosConfig.getSafePos 用 `apiGetRobotSafePos` =
+        GET /recipeSafePosition/getRecipeSafePositionList?recipe_id=(返回 SafePos[]),
+        每项 name 是标签(如"初始准备姿态")。**不是** /safePosition/getList(那个返回通用
+        "安全位置N"、坐标是别的东西)——用错端点机器人不动。
+        """
+        r = self._rest("GET", "/recipeSafePosition/getRecipeSafePositionList",
+                       params={"recipe_id": recipe_id})
+        if isinstance(r, list):
+            return r
+        if isinstance(r, dict):
+            data = r.get("data", r)
+            items = data.get("items") if isinstance(data, dict) else None
+            if items is None:
+                items = r.get("items")
+            if items is None and isinstance(r.get("data"), list):
+                items = r["data"]
+            return items if isinstance(items, list) else []
+        return []
+
+    async def move_safe_pose(self, recipe_id, index=0, name=None, arm_id=0,
+                             serial=None, workspace_id=None):
+        """移动到准备姿态 (SafePosConfig.vue handleMove 复刻)。
+
+        index=0 即"初始准备姿态";也可直接传 name="上料准备姿态"。
+        按 name(label)匹配后端记录(前端同款 findIndex(label===name)),匹配不到再退回按序。
+        JOINT_MOVE(110)/RECIPE, 带 joint_values+joint_names+points(左/右/base Pose)。
+        """
+        items = self.safe_pos_list(recipe_id)
+        if not items:
+            return {"error": "no safe positions for recipe %s (endpoint 或网络)" % recipe_id}
+        # 目标标签: 显式 name 优先, 否则用 SAFE_POSE_LABELS[index]
+        target = name or (SAFE_POSE_LABELS[index] if 0 <= index < len(SAFE_POSE_LABELS) else None)
+        item = None
+        if target:
+            item = next((it for it in items if it.get("name") == target), None)
+        if item is None:  # 名字匹配不到, 退回按序 index
+            if index < 0 or index >= len(items):
+                return {"error": "pose '%s' 未匹配且 index %d 越界(0..%d)"
+                        % (target, index, len(items) - 1)}
+            item = items[index]
+        pos = item.get("position", {}) or {}
+        joints_pos = pos.get("joints_pos", {}) or {}
+        base = pos.get("base_link_pose", {}) or {}
+        points = [
+            (pos.get("left_position"), pos.get("left_quaternion")),
+            (pos.get("right_position"), pos.get("right_quaternion")),
+            (base.get("position"), base.get("quaternion")),
+        ]
+        if serial is None:
+            serial = await self.resolve_serial() or "0"
+        if workspace_id is None:
+            workspace_id = int(self.device_id) if str(self.device_id).isdigit() else 0
+        req = encode_safe_pos_move(
+            ROBOT_MODE["JOINT_MOVE"], SCENARIO["RECIPE"], recipe_id, arm_id,
+            serial, workspace_id, joints_pos, points)
+        resp, code = await self.call_service("/aw_task_manager_service", req)
+        return {"success": resp.get(1, 0) == 1, "is_accepted": resp.get(1),
+                "pose_name": item.get("name"), "joints": len(joints_pos),
+                "response": resp, "code": code}
+
+    # ---- Recipe 位姿调整 (poseAdjust.vue) ----
+
+    async def adjust_upload_position(self, serial=None, workspace_id=None):
+        """调整到上料高度 (MOVE_TO_LOAD_POSE=123, SINGLE_STEP)。"""
+        return await self.robot_action(ROBOT_MODE["MOVE_TO_LOAD_POSE"],
+                                       scenario=SCENARIO["SINGLE_STEP"],
+                                       serial=serial, workspace_id=workspace_id)
+
+    async def adjust_cutting_position(self, serial=None, workspace_id=None):
+        """调整到理线插接高度 (MOVE_TO_WIRE_PLUGGING_POSE=124, SINGLE_STEP)。"""
+        return await self.robot_action(ROBOT_MODE["MOVE_TO_WIRE_PLUGGING_POSE"],
+                                       scenario=SCENARIO["SINGLE_STEP"],
+                                       serial=serial, workspace_id=workspace_id)
+
+    async def move_insert(self, arm_id=0, serial=None, workspace_id=None):
+        """精调插接移动 (fineTuning MOVE-INSERT → MOVE_INSERT=117, RECIPE, 带 arm_id)。"""
+        return await self.robot_action(ROBOT_MODE["MOVE_INSERT"], scenario=SCENARIO["RECIPE"],
+                                       serial=serial, workspace_id=workspace_id, arm_id=arm_id)
+
+    @staticmethod
+    def _points_from_pose(pose, arm_id, move_all):
+        """poseAdjust getPoseData 复刻: MOVE_ALL→[左,右,base]; 单臂→[选中臂]。"""
+        left = (pose.get("left_position"), pose.get("left_quaternion"))
+        right = (pose.get("right_position"), pose.get("right_quaternion"))
+        base = pose.get("base_link_pose", {}) or {}
+        if move_all:
+            return [left, right, (base.get("position"), base.get("quaternion"))]
+        return [left if arm_id == ARM_ID["LEFT"] else right]
+
+    async def move_to_pose(self, recipe_id, pose, arm_id=0, mode=None,
+                           serial=None, workspace_id=None):
+        """移动到关键点/目标位姿 (poseAdjust moveTo/moveToUpload, 已同步有 joints 的情形)。
+
+        pose: 关键点的 pose dict(含 joints_pos + left/right/base position+quaternion)。
+        mode: getSportMode,默认 JOINT_MOVE(110);MOVE_ALL(115) 则下发三臂。
+        """
+        if mode is None:
+            mode = ROBOT_MODE["JOINT_MOVE"]
+        joints_pos = pose.get("joints_pos", {}) or {}
+        points = self._points_from_pose(pose, arm_id, mode == ROBOT_MODE["MOVE_ALL"])
+        if serial is None:
+            serial = await self.resolve_serial() or "0"
+        if workspace_id is None:
+            workspace_id = int(self.device_id) if str(self.device_id).isdigit() else 0
+        req = encode_safe_pos_move(mode, SCENARIO["RECIPE"], recipe_id, arm_id,
+                                   serial, workspace_id, joints_pos, points)
+        resp, code = await self.call_service("/aw_task_manager_service", req)
+        return {"success": resp.get(1, 0) == 1, "is_accepted": resp.get(1),
+                "joints": len(joints_pos), "response": resp, "code": code}
+
+    async def move_to_aruco(self, recipe_id, aruco_id, pose, arm_id=0, mode=None,
+                            serial=None, workspace_id=None):
+        """按 ArUco 移动到目标(poseAdjust moveTo 中关键点未同步/无 id 的分支)。
+
+        MOVE_TO_ARUCO_POSITION=121,带 aruco_id + points(不带 joints,机器人自行寻找)。
+        """
+        if mode is None:
+            mode = ROBOT_MODE["MOVE_TO_ARUCO_POSITION"]
+        points = self._points_from_pose(pose, arm_id, False)
+        if serial is None:
+            serial = await self.resolve_serial() or "0"
+        if workspace_id is None:
+            workspace_id = int(self.device_id) if str(self.device_id).isdigit() else 0
+        req = encode_safe_pos_move(mode, SCENARIO["RECIPE"], recipe_id, arm_id,
+                                   serial, workspace_id, {}, points, aruco_id=int(aruco_id))
+        resp, code = await self.call_service("/aw_task_manager_service", req)
+        return {"success": resp.get(1, 0) == 1, "is_accepted": resp.get(1),
+                "aruco_id": aruco_id, "response": resp, "code": code}
 
     # ---- Misc protobuf services ----
 
@@ -1570,6 +1803,57 @@ async def main():
             print("=== launcher ABORT_PIPELINE ===")
             print("  ", await ctrl.launcher_command(2))
 
+        # ---- 姿态 / 安全恢复 ----
+        elif cmd == "safe-pose":
+            # safe-pose <recipe_id> [index=0 | 名字如"初始准备姿态"] [arm=0]
+            recipe_id = int(sys.argv[3]) if len(sys.argv) > 3 else None
+            sel = sys.argv[4] if len(sys.argv) > 4 else "0"
+            arm = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+            if recipe_id is None:
+                print("  用法: safe-pose <recipe_id> [index=0初始准备姿态 | 名字] [arm]")
+                return
+            idx = int(sel) if sel.isdigit() else 0
+            name = None if sel.isdigit() else sel
+            print(f"=== 移动到准备姿态 recipe={recipe_id} target={name or SAFE_POSE_LABELS[idx] if idx < len(SAFE_POSE_LABELS) else idx} arm={arm} (JOINT_MOVE/RECIPE) ===")
+            res = await ctrl.move_safe_pose(recipe_id, index=idx, name=name, arm_id=arm)
+            if res.get("error"):
+                print(f"  ERROR: {res['error']}")
+            else:
+                print(f"  pose_name={res.get('pose_name')} joints={res.get('joints')} "
+                      f"is_accepted={res.get('is_accepted')}")
+
+        elif cmd == "move-op":
+            print("=== 移动到操作位 (MOVE_ALL_FAR/MAINTAIN) ===")
+            recipe_id = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else None
+            res = await ctrl.move_operation_pose(recipe_id=recipe_id)
+            print(f"  is_accepted={res.get('is_accepted')}")
+
+        elif cmd == "arm-vertical":
+            arm = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+            param = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
+            print(f"=== 一键垂直 (ARM_VERTICAL/MAINTAIN) arm={arm} param={param} ===")
+            res = await ctrl.arm_vertical(arm_id=arm, param=param)
+            print(f"  is_accepted={res.get('is_accepted')}")
+
+        elif cmd == "move-wait":
+            print("=== 移动到等候区 (MOVE_TO_WAIT_AREA/RECIPE) ===")
+            res = await ctrl.move_wait_area()
+            print(f"  is_accepted={res.get('is_accepted')}")
+
+        # ---- Recipe 位姿调整 (poseAdjust.vue) ----
+        elif cmd == "pose-upload":
+            print("=== 调整到上料高度 (MOVE_TO_LOAD_POSE/SINGLE_STEP) ===")
+            print(f"  is_accepted={(await ctrl.adjust_upload_position()).get('is_accepted')}")
+
+        elif cmd == "pose-cutting":
+            print("=== 调整到理线插接高度 (MOVE_TO_WIRE_PLUGGING_POSE/SINGLE_STEP) ===")
+            print(f"  is_accepted={(await ctrl.adjust_cutting_position()).get('is_accepted')}")
+
+        elif cmd == "move-insert":
+            arm = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+            print(f"=== 精调插接移动 (MOVE_INSERT/RECIPE) arm={arm} ===")
+            print(f"  is_accepted={(await ctrl.move_insert(arm_id=arm)).get('is_accepted')}")
+
         elif cmd == "calibrate":
             # calibrate <check_type 4|7|10|13> [arm 0左/1右/2双]  (前置: 人工摆好手臂+标定板)
             check_type = int(sys.argv[3]) if len(sys.argv) > 3 else 7
@@ -1638,6 +1922,8 @@ async def main():
             print("          start-job pause-job continue-job stop-job gen-traj del-traj single-traj")
             print("          record-start record-stop launcher-abort")
             print("          calibrate <4|7|10|13> [arm] | quality-check <154..157> [arm]")
+            print("          safe-pose <recipe_id> [idx0=初始准备姿态] | move-op | arm-vertical [arm] [param] | move-wait")
+            print("          pose-upload | pose-cutting | move-insert [arm]  (recipe 位姿调整)")
             print("          info kit-result kit-progress issue-report launcher-status")
             print("          clear-fault read-fault-log clear-fault-log")
             print("          recipe-list recipe-create recipe-get recipe-status recipe-copy recipe-delete")

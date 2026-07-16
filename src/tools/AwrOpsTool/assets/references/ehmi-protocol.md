@@ -304,6 +304,45 @@ ls /mnt/gaea/map/     # 有 board188/ → 秒成; 没 board142/ → 要 provisio
 需机器人已绑定(workspace=DEVICE_ID)+ 维护页选好 recipe(**已完成态**)+ wire。
 `lock <recipe_id> <wire_id>` → 服务端 `scenario=2 mode=15` execute_task,is_accepted=1。空白新 recipe(status=0)不能直接锁,要先人工打点。
 
+## 姿态 / 安全恢复(撞机后回安全位)
+
+源:`maintainPage.vue` / `RobotControlPanel.vue` / `agentConfig.vue` / `SafePosConfig.vue handleMove`。
+
+| 命令 | mode | scenario | 说明 |
+|------|------|----------|------|
+| `move-op [recipe_id]` | MOVE_ALL_FAR **156** | MAINTAIN | 移动到操作位/远离位。**最简单稳健的撞机安全恢复** |
+| `arm-vertical [arm] [param]` | ARM_VERTICAL **141** | MAINTAIN | 一键垂直于地面,带 arm_id + param |
+| `move-wait` | MOVE_TO_WAIT_AREA **118** | RECIPE | 移动到等候区 |
+| `safe-pose <recipe_id> [index=0] [arm]` | JOINT_MOVE **110** | RECIPE | 移动到**准备姿态**;**index=0 即"初始准备姿态"** |
+
+**`safe-pose` 是精确的"回到初始准备姿态"**:从 REST **`GET /recipeSafePosition/getRecipeSafePositionList?recipe_id=`**(前端 `apiGetRobotSafePos`,返回 `SafePos[]`,每项 `name`=标签如"初始准备姿态")拉列表,**按 name 匹配**(前端 `findIndex(label===name)`)取 `position` 构建 payload。
+> ⚠ **不要用 `/safePosition/getList`** —— 那个返回通用"安全位置N"、坐标是别的东西,机器人不会动到正确准备姿态(2026-07-16 踩坑)。
+> index→标签:0=初始 1=上料 2=理线 3=结束位插接 4=起始位插接 5=下料 6=归置 7=缠胶 …(`SAFE_POSE_LABELS`)。也可 `safe-pose <recipe> 上料准备姿态`。
+
+payload(取匹配项的 `position`):
+- `joint_values`(字段 **32**,repeated double 非 packed)= `joints_pos` 的值
+- `joint_names`(字段 **33**,repeated string)= `joints_pos` 的键
+- `points`(字段 **37**,repeated Pose)= [左, 右, base] 三个 `Pose{position:Point{x,y,z}, orientation:Quaternion{x,y,z,w}}`,全 double
+- 标量:mode=JOINT_MOVE(110),scenario=RECIPE,recipe_id,arm_id,serial_number,workspace_id(=DEVICE_ID)
+
+> 撞机后快速回安全位优先 `move-op`(无需 recipe 数据);要精确回到示教的初始准备姿态用 `safe-pose <recipe> 0`。
+
+## Recipe 位姿调整移动 (poseAdjust.vue)
+
+recipe 位姿调整页的所有移动操作,均走 `/aw_task_manager_service`:
+
+| 操作 | 命令/方法 | mode | scenario | 参数 |
+|------|-----------|------|----------|------|
+| 调整到上料高度 | `pose-upload` | MOVE_TO_LOAD_POSE **123** | SINGLE_STEP | — |
+| 调整到理线插接高度 | `pose-cutting` | MOVE_TO_WIRE_PLUGGING_POSE **124** | SINGLE_STEP | — |
+| 精调插接移动 | `move-insert [arm]` | MOVE_INSERT **117** | RECIPE | arm_id |
+| 移动到关键点位姿(已同步) | `move_to_pose(recipe,pose,arm,mode)` 方法 | getSportMode(JOINT_MOVE **110** / MOVE_ALL **115**) | RECIPE | joint_values(32)+joint_names(33)+points(37) |
+| 按 ArUco 移动(关键点无 id) | `move_to_aruco(recipe,aruco_id,pose,arm)` 方法 | MOVE_TO_ARUCO_POSITION **121** | RECIPE | aruco_id(19)+points(37) |
+
+- `getPoseData` 复刻(`_points_from_pose`):`MOVE_ALL`(115)下发 [左,右,base] 三 Pose;单臂只下发选中臂。
+- `move_to_pose`/`move_to_aruco` 是**库方法**(需传入关键点的 pose dict:joints_pos + left/right/base position+quaternion),CLI 未直接暴露(位姿数据来自 recipe 关键点)。简单三个(pose-upload/pose-cutting/move-insert)有 CLI。
+- `pose`/`points` 编码同 `safe-pose`(joint_values 32 / joint_names 33 / points 37,见上一节)。
+
 ## eHMI 客户端完整命令表 (ehmi_client.py)
 
 ```
@@ -317,6 +356,10 @@ action <MODE|名> [scenario] | reset | clear-alarm | init-all | home-all | confi
 start-job <recipe_id> <起始wire_id> [job_type 0理线/1缠绞] | pause-job | continue-job | stop-job
 gen-traj [recipe_id] | del-traj [recipe_id] | single-traj <wire_id> [recipe_id] [--delete]
 record-start | record-stop | launcher-abort
+# 姿态 / 安全恢复 (撞机后回安全位)
+move-op [recipe_id] | arm-vertical [arm] [param] | move-wait | safe-pose <recipe_id> [index=0初始准备姿态] [arm]
+# recipe 位姿调整 (poseAdjust.vue)
+pose-upload | pose-cutting | move-insert [arm]   # 库方法另有 move_to_pose / move_to_aruco(需 pose 数据)
 # 标定 / 质检 (scenario=SINGLE_STEP, 带 arm_id; 前置需人工摆好手臂+标定板)
 calibrate <check_type 4|7|10|13> [arm 0左/1右/2双]   # 自动化标定 → ROBOT_MODE 150/151/152/153
 quality-check <mode 154|155|156|157> [arm]           # 标定质检 (task_id 关联结果, std<1.5mm 判通过)
