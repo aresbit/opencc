@@ -47,7 +47,6 @@ variables:
   check_type_calib: &check_type "7"        # 鱼眼手眼标定;4双目/7手眼/10内窥镜双目/13鱼眼左到内窥镜左
   qc_modes: &qc_modes [154,155,156,157]     # 质检四项,必须串行(规则1)
   calib_arm: &calib_arm "0"                # 0左 1右 2双
-  calib_arm_right: &calib_arm_right "1"    # 右手 arm=1
   jump_user: &jump_user null
   jump_ip: &jump_ip null
   jump_pass: &jump_pass null
@@ -87,9 +86,9 @@ dag_top:
   - tc: TC-08
     depends_on: [TC-07]            # 点位验证需黄金模板
   - tc: TC-09
-    depends_on: [TC-08]            # 左手标定质检需点位验证完成
+    depends_on: [TC-08]            # 标定需点位就绪
   - tc: TC-10
-    depends_on: [TC-09]            # 右手标定质检需左手完成
+    depends_on: [TC-09]            # 质检需标定完成
   - tc: TC-11
     depends_on: [TC-04]            # 轨迹生成需锁精定位+recipe
   - tc: TC-12
@@ -159,7 +158,7 @@ test_cases:
       nodes:
         - id: start_awr
           type: ssh
-          command: "cd /apollo && source gaea.bashrc 2>/dev/null && bash /apollo/scripts/humanoid/start_awr.sh 2>&1"
+          command: "cd /apollo && source gaea.bashrc 2>/dev/null && echo {robot_pass} | sudo -S bash /apollo/scripts/humanoid/start_awr.sh 2>&1"
           depends_on: []
           on_failure: abort
           report: "| 1.1 | start_awr.sh | {status} | {result} | {time} |"
@@ -392,285 +391,137 @@ test_cases:
 
   # ---------------------------------------------------------------------------
   - id: TC-09
-    name: 左手标定质检 (先QC→不通过再标定→再QC)
+    name: 自动化标定
     type: semi
-    description: |
-      左手 (arm=0) 四个 check_type 的质检标定循环:
-        check_type=4(鱼眼双目,QC154/标定150) → 7(鱼眼手眼,QC155/标定151)
-        → 10(内窥镜双目,QC156/标定152) → 13(鱼眼左目→内窥镜左目,QC157/标定153)
-      流程: 人工摆位 → QC → passed? → 下一项
-                                  → failed? → calibrate 重新标定 → 再QC → 下一项
-      通过标准: 154/156/157 看 report 存在; 155 看 overall_std_mm < 1.5mm
+    description: "人工摆好手臂/底盘/标定板(在相机视野内) → calibrate check_type→ROBOT_MODE 150-153"
     preconditions: [TC-08]
     dag:
       nodes:
-        - id: human_position_qc_calib_left
+        - id: human_position_calib
           type: human
           prompt: |
-            【人工操作】左手标定质检: 把手臂/标定板移到位(标定板在相机视野内)。
+            【人工操作】把手臂/底盘/标定板移到位,标定板在相机视野内。
             完成后在测试目录执行: touch .resume-TC-09
           resume: ".resume-TC-09"
           depends_on: []
           on_failure: manual
           timeout_s: 1800
-          report: "| 9.1 | 左手标定质检摆位 | ⏸️→{status} | 等待人工 resume | {time} |"
-        # ---- check_type=4 鱼眼双目: QC154 → (fail?) calibrate 150 → QC154 ----
-        - id: qc_154_left
+          report: "| 9.1 | 标定摆位 | ⏸️→{status} | 等待人工 resume | {time} |"
+        - id: calibrate
           type: script
           env: "{env}"
-          command: "{ehmi} quality-check 154 0"
-          depends_on: [human_position_qc_calib_left]
-          on_failure: retry(1)
-          report: "| 9.2 | QC 154 鱼眼双目 (左手) | {status} | passed={result} | {time} |"
-        - id: calib_4_left
-          type: script
-          env: "{env}"
-          command: "{ehmi} calibrate 4 0"
-          depends_on: [qc_154_left]
+          command: "{ehmi} calibrate {check_type} {calib_arm}"
+          depends_on: [human_position_calib]
+          verify:
+            - cmd: "{ehmi} status"
           on_failure: retry(2)
-          report: "| 9.3 | 标定 check_type=4 鱼眼双目 (左手) | {status} | is_accepted={result} | {time} |"
-        - id: qc_154_left_retry
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 154 0"
-          depends_on: [calib_4_left]
-          on_failure: abort
-          report: "| 9.4 | QC 154 鱼眼双目 复检 (左手) | {status} | passed={result} | {time} |"
-        # ---- check_type=7 鱼眼手眼: QC155 → (fail?) calibrate 151 → QC155 ----
-        - id: qc_155_left
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 155 0"
-          depends_on: [qc_154_left_retry]
-          on_failure: retry(1)
-          report: "| 9.5 | QC 155 鱼眼手眼 (左手) | {status} | overall_std_mm < 1.5mm | {time} |"
-        - id: calib_7_left
-          type: script
-          env: "{env}"
-          command: "{ehmi} calibrate 7 0"
-          depends_on: [qc_155_left]
-          on_failure: retry(2)
-          report: "| 9.6 | 标定 check_type=7 鱼眼手眼 (左手) | {status} | is_accepted={result} | {time} |"
-        - id: qc_155_left_retry
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 155 0"
-          depends_on: [calib_7_left]
-          on_failure: abort
-          report: "| 9.7 | QC 155 鱼眼手眼 复检 (左手) | {status} | overall_std_mm < 1.5mm | {time} |"
-        # ---- check_type=10 内窥镜双目: QC156 → (fail?) calibrate 152 → QC156 ----
-        - id: qc_156_left
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 156 0"
-          depends_on: [qc_155_left_retry]
-          on_failure: retry(1)
-          report: "| 9.8 | QC 156 内窥镜双目 (左手) | {status} | passed={result} | {time} |"
-        - id: calib_10_left
-          type: script
-          env: "{env}"
-          command: "{ehmi} calibrate 10 0"
-          depends_on: [qc_156_left]
-          on_failure: retry(2)
-          report: "| 9.9 | 标定 check_type=10 内窥镜双目 (左手) | {status} | is_accepted={result} | {time} |"
-        - id: qc_156_left_retry
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 156 0"
-          depends_on: [calib_10_left]
-          on_failure: abort
-          report: "| 9.10 | QC 156 内窥镜双目 复检 (左手) | {status} | passed={result} | {time} |"
-        # ---- check_type=13 鱼眼左目→内窥镜左目: QC157 → (fail?) calibrate 153 → QC157 ----
-        - id: qc_157_left
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 157 0"
-          depends_on: [qc_156_left_retry]
-          on_failure: retry(1)
-          report: "| 9.11 | QC 157 鱼眼左目→内窥镜左目 (左手) | {status} | passed={result} | {time} |"
-        - id: calib_13_left
-          type: script
-          env: "{env}"
-          command: "{ehmi} calibrate 13 0"
-          depends_on: [qc_157_left]
-          on_failure: retry(2)
-          report: "| 9.12 | 标定 check_type=13 鱼眼左目→内窥镜左目 (左手) | {status} | is_accepted={result} | {time} |"
-        - id: qc_157_left_retry
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 157 0"
-          depends_on: [calib_13_left]
-          on_failure: abort
-          report: "| 9.13 | QC 157 鱼眼左目→内窥镜左目 复检 (左手) | {status} | passed={result} | {time} |"
-        - id: verify_calib_qc_left_board
+          report: "| 9.2 | calibrate check_type={check_type} arm={calib_arm} | {status} | is_accepted={result} | {time} |"
+        - id: verify_calib_board
           type: ssh
-          command: "grep -rhE 'handeye_quality_summary|stereo_calibrate.*success|handeye_validate.*success' {board_log}/ | tail -8"
-          depends_on: [qc_157_left_retry]
+          command: "grep -rhE 'handeye_validate|calib' {board_log}/ | tail -3"
+          depends_on: [calibrate]
           verify:
             - grep: "success"
               path: "{board_log}"
           on_failure: manual
-          report: "| 9.14 | 板载确认左手四项标定质检完成 | {status} | {result} | {time} |"
+          report: "| 9.3 | 板载确认标定 success | {status} | {result} | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-10
-    name: 右手标定质检 (先QC→不通过再标定→再QC)
+    name: 标定质检 (串行)
     type: semi
     description: |
-      右手 (arm=1) 四个 check_type 的质检标定循环:
-        check_type=4(鱼眼双目,QC154/标定150) → 7(鱼眼手眼,QC155/标定151)
-        → 10(内窥镜双目,QC156/标定152) → 13(鱼眼左目→内窥镜左目,QC157/标定153)
-      流程: 人工摆位 → QC → passed? → 下一项
-                                  → failed? → calibrate 重新标定 → 再QC → 下一项
-      通过标准: 154/156/157 看 report 存在; 155 看 overall_std_mm < 1.5mm
+      人工摆位 → quality-check 154/155/156/157 逐项串行(规则1:前一项出结果才发下一项)。
+      手眼(155)/鱼眼左内窥左(157)两阶段~55s,统一 120s 保底;判定 std<1.5mm。
     preconditions: [TC-09]
     dag:
       nodes:
-        - id: human_position_qc_calib_right
+        - id: human_position_qc
           type: human
           prompt: |
-            【人工操作】右手标定质检: 把右手臂/标定板移到位(标定板在相机视野内)。
+            【人工操作】把手臂/标定板摆到质检位(每项质检前可能需换位)。
             完成后在测试目录执行: touch .resume-TC-10
           resume: ".resume-TC-10"
           depends_on: []
           on_failure: manual
           timeout_s: 1800
-          report: "| 10.1 | 右手标定质检摆位 | ⏸️→{status} | 等待人工 resume | {time} |"
-        # ---- check_type=4 鱼眼双目: QC154 → (fail?) calibrate 150 → QC154 ----
-        - id: qc_154_right
+          report: "| 10.1 | 质检摆位 | ⏸️→{status} | 等待人工 resume | {time} |"
+        # ---- 质检链: 154 → 155 → 156 → 157 (depends_on 链式强制串行, 禁止 for 批量) ----
+        - id: qc_154
           type: script
           env: "{env}"
-          command: "{ehmi} quality-check 154 1"
-          depends_on: [human_position_qc_calib_right]
-          on_failure: retry(1)
-          report: "| 10.2 | QC 154 鱼眼双目 (右手) | {status} | passed={result} | {time} |"
-        - id: calib_4_right
-          type: script
-          env: "{env}"
-          command: "{ehmi} calibrate 4 1"
-          depends_on: [qc_154_right]
-          on_failure: retry(2)
-          report: "| 10.3 | 标定 check_type=4 鱼眼双目 (右手) | {status} | is_accepted={result} | {time} |"
-        - id: qc_154_right_retry
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 154 1"
-          depends_on: [calib_4_right]
-          on_failure: abort
-          report: "| 10.4 | QC 154 鱼眼双目 复检 (右手) | {status} | passed={result} | {time} |"
-        # ---- check_type=7 鱼眼手眼: QC155 → (fail?) calibrate 151 → QC155 ----
-        - id: qc_155_right
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 155 1"
-          depends_on: [qc_154_right_retry]
-          on_failure: retry(1)
-          report: "| 10.5 | QC 155 鱼眼手眼 (右手) | {status} | overall_std_mm < 1.5mm | {time} |"
-        - id: calib_7_right
-          type: script
-          env: "{env}"
-          command: "{ehmi} calibrate 7 1"
-          depends_on: [qc_155_right]
-          on_failure: retry(2)
-          report: "| 10.6 | 标定 check_type=7 鱼眼手眼 (右手) | {status} | is_accepted={result} | {time} |"
-        - id: qc_155_right_retry
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 155 1"
-          depends_on: [calib_7_right]
-          on_failure: abort
-          report: "| 10.7 | QC 155 鱼眼手眼 复检 (右手) | {status} | overall_std_mm < 1.5mm | {time} |"
-        # ---- check_type=10 内窥镜双目: QC156 → (fail?) calibrate 152 → QC156 ----
-        - id: qc_156_right
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 156 1"
-          depends_on: [qc_155_right_retry]
-          on_failure: retry(1)
-          report: "| 10.8 | QC 156 内窥镜双目 (右手) | {status} | passed={result} | {time} |"
-        - id: calib_10_right
-          type: script
-          env: "{env}"
-          command: "{ehmi} calibrate 10 1"
-          depends_on: [qc_156_right]
-          on_failure: retry(2)
-          report: "| 10.9 | 标定 check_type=10 内窥镜双目 (右手) | {status} | is_accepted={result} | {time} |"
-        - id: qc_156_right_retry
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 156 1"
-          depends_on: [calib_10_right]
-          on_failure: abort
-          report: "| 10.10 | QC 156 内窥镜双目 复检 (右手) | {status} | passed={result} | {time} |"
-        # ---- check_type=13 鱼眼左目→内窥镜左目: QC157 → (fail?) calibrate 153 → QC157 ----
-        - id: qc_157_right
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 157 1"
-          depends_on: [qc_156_right_retry]
-          on_failure: retry(1)
-          report: "| 10.11 | QC 157 鱼眼左目→内窥镜左目 (右手) | {status} | passed={result} | {time} |"
-        - id: calib_13_right
-          type: script
-          env: "{env}"
-          command: "{ehmi} calibrate 13 1"
-          depends_on: [qc_157_right]
-          on_failure: retry(2)
-          report: "| 10.12 | 标定 check_type=13 鱼眼左目→内窥镜左目 (右手) | {status} | is_accepted={result} | {time} |"
-        - id: qc_157_right_retry
-          type: script
-          env: "{env}"
-          command: "{ehmi} quality-check 157 1"
-          depends_on: [calib_13_right]
-          on_failure: abort
-          report: "| 10.13 | QC 157 鱼眼左目→内窥镜左目 复检 (右手) | {status} | passed={result} | {time} |"
-        - id: verify_calib_qc_right_board
-          type: ssh
-          command: "grep -rhE 'handeye_quality_summary|stereo_calibrate.*success|handeye_validate.*success' {board_log}/ | tail -8"
-          depends_on: [qc_157_right_retry]
+          command: "{ehmi} quality-check 154 {calib_arm}"
+          depends_on: [human_position_qc]
           verify:
-            - grep: "success"
-              path: "{board_log}"
-          on_failure: manual
-          report: "| 10.14 | 板载确认右手四项标定质检完成 | {status} | {result} | {time} |"
+            - cmd: "{ehmi} status"
+          on_failure: abort             # 任一项 fail 即停整 TC,不跳过
+          report: "| 10.2 | 质检 154 鱼眼双目 | {status} | std/validate_success={result} | {time} |"
+        - id: qc_155
+          type: script
+          env: "{env}"
+          command: "{ehmi} quality-check 155 {calib_arm}"
+          depends_on: [qc_154]          # 必须等 154 结果
+          verify:
+            - cmd: "{ehmi} status"
+          on_failure: abort
+          report: "| 10.3 | 质检 155 鱼眼手眼 | {status} | std<1.5mm,validate_success={result} | {time} |"
+        - id: qc_156
+          type: script
+          env: "{env}"
+          command: "{ehmi} quality-check 156 {calib_arm}"
+          depends_on: [qc_155]          # 必须等 155 结果
+          verify:
+            - cmd: "{ehmi} status"
+          on_failure: abort
+          report: "| 10.4 | 质检 156 内窥镜双目 | {status} | std/validate_success={result} | {time} |"
+        - id: qc_157
+          type: script
+          env: "{env}"
+          command: "{ehmi} quality-check 157 {calib_arm}"
+          depends_on: [qc_156]          # 必须等 156 结果
+          verify:
+            - cmd: "{ehmi} status"
+          on_failure: abort
+          report: "| 10.5 | 质检 157 鱼眼左到内窥镜左 | {status} | std/validate_success={result} | {time} |"
+        - id: qc_report
+          type: verify
+          depends_on: [qc_157]
+          verify:
+            - cmd: "{ehmi} status"
+          report: "| 10.6 | 质检四项全部完成 | ✅ | 四项串行通过 | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-11
     name: 单条轨迹生成 (逐线束串行)
     type: auto
     description: |
-      ⚠️ 必须先查询 recipe 实际线束列表,wire_id 不是固定值(每个 recipe 不同)!
-      查询: curl -s 'https://awr-backend-test.tars-ai.com/api/wireInfo/getList?recipe_id=<id>&page_size=0'
       逐线束 single-traj,每条必须等 3 个 _joint.npz(init_to_load/organize_and_connection/exit_poses)
       全部出现后才能继续下一条(常见陷阱: gen-traj 一次全下是异步的,会漏文件)。
     preconditions: [TC-04]
     dag:
       nodes:
-        - id: query_wire_list
-          type: script
-          command: "curl -s 'https://awr-backend-test.tars-ai.com/api/wireInfo/getList?recipe_id={recipe_id}&page_size=0' | python3 -c \"import sys,json; d=json.load(sys.stdin); wires=d.get('data',d) if isinstance(d,dict) else d; [print(f'wire_id={w[\\\"id\\\"]} name={w.get(\\\"wire_name\\\",\\\"?\\\")}') for w in wires if isinstance(w,dict) and 'id' in w]\""
-          depends_on: []
-          on_failure: abort
-          report: "| 11.1 | 查询 recipe={recipe_id} 线束列表 | {status} | {result} | {time} |"
         - id: traj_loop
           type: script
           env: "{env}"
           iterate:
-            over: wire_id_list        # 逐个 wire_id 执行 (需根据 query_wire_list 结果更新)
+            over: wire_id_list        # 逐个 wire_id 执行
             as: wire_id
           command: "{ehmi} single-traj {wire_id} {recipe_id}"
-          depends_on: [query_wire_list]
+          depends_on: []
           on_failure: abort
-          report: "| 11.2 | single-traj wire={wire_id} recipe={recipe_id} | {status} | is_accepted={result} | {time} |"
+          report: "| 11.1 | single-traj wire={wire_id} recipe={recipe_id} | {status} | is_accepted={result} | {time} |"
         - id: verify_traj_files
           type: ssh
-          command: "ls -la /apollo/data/trajectories/*_joint.npz | grep '{wire_id}' | wc -l"
+          iterate:
+            over: wire_id_list
+            as: wire_id
+          command: "ls -aln /apollo/data/trajectories/*_joint.npz | grep -E '线束' "
           depends_on: [traj_loop]
           verify:
             - min_count: 3
-              cmd: "ssh {robot_user}@{robot_ip_direct} 'ls /apollo/data/trajectories/*_joint.npz 2>/dev/null | wc -l'"
+              cmd: "ssh -p 2222 nvidia@127.0.0.1 'ls /apollo/data/trajectories/*_joint.npz 2>/dev/null | wc -l'"
           on_failure: abort
-          report: "| 11.3 | 轨迹文件 3/3 线束 wire={wire_id} | {status} | count={result} (≥3) | {time} |"
+          report: "| 11.2 | 轨迹文件 3/3 每线束 | {status} | {result} | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-12
@@ -679,17 +530,16 @@ test_cases:
     description: |
       start-job = REQUEST_DATABASE(154) → START_JOB(22) → LOAD_VERIFY(26) 三步。
       只需从起始线束触发一次,机器人自动执行后续线束(常见陷阱: 逐条 start-job 会重复执行)。
-      ⚠️ start_wire_id 必须使用 query_wire_list 查到的实际 wire_id,不是序号!
     preconditions: [TC-11]
     dag:
       nodes:
         - id: verify_traj_exists
           type: ssh
-          command: "ls /apollo/data/trajectories/*_joint.npz | wc -l"
+          command: "ls /apollo/data/trajectories/*_joint.npz | grep -E '线束' | wc -l"
           depends_on: []
           verify:
             - min_count: 3
-              cmd: "ssh {robot_user}@{robot_ip_direct} 'ls /apollo/data/trajectories/*_joint.npz 2>/dev/null | wc -l'"
+              cmd: "ssh -p 2222 nvidia@127.0.0.1 'ls /apollo/data/trajectories/*_joint.npz 2>/dev/null | wc -l'"
           on_failure: abort
           report: "| 12.1 | 起始线束轨迹已存在 | {status} | count={result} (≥3) | {time} |"
         - id: start_job

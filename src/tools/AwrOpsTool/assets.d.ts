@@ -8,7 +8,7 @@ declare module '*.py' {
   export default content
 }
 
-declare module '*.yaml' with { type: 'text' } {
+declare module '*.yaml' {
   const content: string
   export default content
 }

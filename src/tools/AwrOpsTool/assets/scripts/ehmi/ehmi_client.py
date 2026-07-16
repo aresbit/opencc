@@ -194,9 +194,6 @@ SAFE_POSE_LABELS = [
     "左侧结构光扫描准备姿态", "右侧结构光扫描准备姿态",
 ]
 
-# 打点日志上报: quickdata 快传的外部数据平台上传接口(FeedbackDialog.vue 硬编码)
-QUICKDATA_ISSUE_URL = "https://open.tars-ai.com/api/v1/transform/record_upload"
-
 # ⚠ 轨迹生成/删除:维护页用 ROBOT_MODE 枚举(不是 ACTION!)。
 #   ROBOT_MODE.SINGLE_TRAJECTORY_GENERATION=10, DELETE_SINGLE=11, ALL_GEN=12, ALL_DEL=13
 #   (ACTION 枚举里同名项是 10/109/138/139,维护页不用)。scenario=MAINTAIN。
@@ -534,66 +531,6 @@ def encode_safe_pos_move(mode, scenario, recipe_id, arm_id, serial_number,
         pb = _encode_pose(pos, quat)
         req.extend(varint((37 << 3) | 2)); req.extend(varint(len(pb))); req.extend(pb)
     return bytes(req)
-
-
-# ============================================================
-# 打点日志上报 / 问题上报 (FeedbackDialog.vue onSubmit)
-#   publish /tars/quickdata/request (TSQuickDataRequest, 日志/录制数据快传上报)
-#   + publish /issue_report (IssueReport, 录制中打标记点)
-# ============================================================
-
-def _pf_str(fnum, val):
-    if val is None or val == "":
-        return b""
-    e = str(val).encode("utf-8")
-    return varint((fnum << 3) | 2) + varint(len(e)) + e
-
-
-def _pf_var(fnum, val):
-    if not val:
-        return b""
-    return varint((fnum << 3) | 0) + varint(int(val))
-
-
-def encode_issue_report(issue_detail=None, operator=None, take_over_type=0,
-                        tag_type=1, timestamp_ms=None, header="", feature=None,
-                        module=None, version=None, assignee=None):
-    """IssueReport(/issue_report): header1,tag_type2,issue_detail3,feature4,
-    module5,version6,assignee7,operator8,take_over_type9,timestamp10。
-    tag_type: LOG0/NORMAL1/WARNING2/ERROR3; take_over_type: NONE0/INVALID1/TAKEOVER2。"""
-    if timestamp_ms is None:
-        timestamp_ms = int(time.time() * 1000)
-    r = bytearray()
-    r.extend(_pf_str(1, header or ""))          # required string(空也发)
-    r.extend(_pf_var(2, tag_type))
-    r.extend(_pf_str(3, issue_detail))
-    r.extend(_pf_str(4, feature)); r.extend(_pf_str(5, module))
-    r.extend(_pf_str(6, version)); r.extend(_pf_str(7, assignee))
-    r.extend(_pf_str(8, operator))
-    r.extend(_pf_var(9, take_over_type))
-    r.extend(_pf_var(10, timestamp_ms))
-    return bytes(r)
-
-
-def encode_quickdata_request(request_id, issue_url, request_timestamp, device_id,
-                             tag_type=1, issue_detail=None, operator_name=None,
-                             take_over_type=0, location="ShangHai", purpose="AWR",
-                             task_type="AWR", hardware=None, package_version="0.0.0",
-                             test_type="研发自测", issue_title=None, handler_name=None,
-                             recipe_id=None, device_sn=None, logsegment_name=None):
-    """TSQuickDataRequest(/tars/quickdata/request): 字段号见 QuickData.proto(1-19)。"""
-    r = bytearray()
-    r.extend(_pf_str(1, request_id)); r.extend(_pf_str(2, issue_url))
-    r.extend(_pf_var(3, request_timestamp)); r.extend(_pf_str(4, device_id))
-    r.extend(_pf_str(5, device_sn)); r.extend(_pf_var(6, tag_type))
-    r.extend(_pf_str(7, issue_detail)); r.extend(_pf_str(8, operator_name))
-    r.extend(_pf_var(9, take_over_type)); r.extend(_pf_str(10, location))
-    r.extend(_pf_str(11, purpose)); r.extend(_pf_str(12, task_type))
-    r.extend(_pf_str(13, hardware)); r.extend(_pf_str(14, package_version))
-    r.extend(_pf_str(15, test_type)); r.extend(_pf_str(16, logsegment_name))
-    r.extend(_pf_str(17, issue_title)); r.extend(_pf_str(18, handler_name))
-    r.extend(_pf_var(19, recipe_id))
-    return bytes(r)
 
 
 # ============================================================
@@ -1349,44 +1286,6 @@ class HmiController:
                                                topic="/aw_launcher/command", msg=bytes(r)))
         return {"published": True, "command_id": cid}
 
-    # ---- 打点日志上报 / 问题上报 (FeedbackDialog.vue onSubmit) ----
-
-    async def report_issue(self, issue_detail, operator=None, handler=None,
-                           take_over_type=0, tag_type=1, recipe_id=None,
-                           issue_title=None, serial=None, mark=True,
-                           package_version="0.0.0"):
-        """打点日志上报(问题上报). 复刻 onSubmit:
-          1. publish /tars/quickdata/request(TSQuickDataRequest)—— 日志/录制数据快传上报
-          2. mark=True 时 publish /issue_report(IssueReport)—— 在录制里打标记点(tag_type=2)
-
-        tag_type: 0 LOG/1 NORMAL/2 WARNING/3 ERROR; take_over_type: 0 NONE/1 INVALID/2 TAKEOVER。
-        """
-        if serial is None:
-            serial = await self.resolve_serial() or "0"
-        request_id = uuid.uuid4().hex
-        ts_ms = int(time.time() * 1000)
-        dev = f"X1-{serial}"
-        # 1) 数据快传 / 日志上报
-        qd = encode_quickdata_request(
-            request_id=request_id, issue_url=QUICKDATA_ISSUE_URL,
-            request_timestamp=ts_ms, device_id=dev, tag_type=tag_type,
-            issue_detail=issue_detail, operator_name=operator,
-            take_over_type=take_over_type, hardware=dev,
-            package_version=package_version, issue_title=issue_title,
-            handler_name=handler, recipe_id=recipe_id)
-        await self.ws.send(encode_json_wrapper(
-            type_="publish", topic="/tars/quickdata/request", msg=qd))
-        result = {"published": True, "request_id": request_id, "quickdata": True}
-        # 2) 打点标记(录制中)
-        if mark:
-            ir = encode_issue_report(
-                issue_detail=issue_detail, operator=operator,
-                take_over_type=take_over_type, tag_type=2, timestamp_ms=ts_ms)
-            await self.ws.send(encode_json_wrapper(
-                type_="publish", topic="/issue_report", msg=ir))
-            result["issue_report"] = True
-        return result
-
     # ---- 标定 / 质检 (calibration & quality check) ----
     # 源: views/calibration/{autoCalibratin,qualityCheck}.vue + autoCalibrationProgress.ts
     # 都走 robotService → /aw_task_manager_service, scenario=SINGLE_STEP(3), 带 arm_id。
@@ -1954,22 +1853,6 @@ async def main():
             arm = int(sys.argv[3]) if len(sys.argv) > 3 else 0
             print(f"=== 精调插接移动 (MOVE_INSERT/RECIPE) arm={arm} ===")
             print(f"  is_accepted={(await ctrl.move_insert(arm_id=arm)).get('is_accepted')}")
-
-        elif cmd == "report-issue":
-            # report-issue <描述> [operator] [tag_type=1] [recipe_id] [--no-mark]
-            detail = sys.argv[3] if len(sys.argv) > 3 else None
-            if not detail:
-                print("  用法: report-issue <问题描述> [operator] [tag_type 0LOG/1NORMAL/2WARN/3ERR] [recipe_id] [--no-mark]")
-                return
-            operator = sys.argv[4] if len(sys.argv) > 4 and not sys.argv[4].startswith("--") else None
-            tag = int(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5].isdigit() else 1
-            recipe = int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6].isdigit() else None
-            mark = "--no-mark" not in sys.argv
-            print(f"=== 打点日志上报 (quickdata快传 + issue_report打点={mark}) ===")
-            res = await ctrl.report_issue(detail, operator=operator, tag_type=tag,
-                                          recipe_id=recipe, mark=mark)
-            print(f"  request_id={res.get('request_id')} quickdata={res.get('quickdata')} "
-                  f"issue_report={res.get('issue_report')}")
 
         elif cmd == "calibrate":
             # calibrate <check_type 4|7|10|13> [arm 0左/1右/2双]  (前置: 人工摆好手臂+标定板)
