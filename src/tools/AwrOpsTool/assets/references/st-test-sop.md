@@ -94,7 +94,7 @@ ssh -p 2222 nvidia@127.0.0.1 'ps aux|grep -c "[m]ainboard"; curl -s -o /dev/null
 | 6 | 黄金模板配置(app 扫码绑 kit) | **人工** | — | — |
 | 7 | 点位验证 / 精修 | **人工** | — | — |
 | 8 | 标定质检 | 半自动 | 人工摆位 → `calibrate <4\|7\|10\|13> [arm]` / `quality-check <154..157> [arm]` | `handeye_validate success` |
-| 9 | 轨迹生成 | 脚本 | `AWR_DEVICE_ID=188 ... single-traj <wire_id> <recipe_id>` 或 `gen-traj <recipe_id>`(从线束3起,1/2不生成) | `TrajMgmtService action=1x` |
+| 9 | 轨迹生成 | 脚本 | **先查线束列表**: `curl -s 'https://awr-backend-test.tars-ai.com/api/wireInfo/getList?recipe_id=<id>&page_size=0'` 确认 wire_id 后 `single-traj <实际wire_id> <recipe_id>` | `TrajMgmtService action=1x` |
 | 10 | 执行 job | 脚本 | `AWR_DEVICE_ID=188 ... start-job <recipe_id> <起始wire_id> 0` | `load verify`+`is_cruise_load_over SUCCESS`+`Trajectory replay submitted` |
 
 ---
@@ -154,7 +154,7 @@ $CLI start-job 1841 30103 0
 | op_map_id | board188→132 / board142→86 | `recipe_create` 自动解析 |
 | nav_map_id | 6 | — |
 | recipe(完成态) | 1841 refined_thhb_imported status=11 | `recipe-list 188` |
-| **wire_id** | 线束3=30103 … 线束14=30114 | **DB id 非序号**; `/wireInfo/getList?recipe_id=&page_size=0` |
+| **wire_id** | 线束3=30103 … 线束14=30114 | **DB id 非序号, 每个 recipe 不同! 必须先查再生成**; 查询: `curl -s 'https://awr-backend-test.tars-ai.com/api/wireInfo/getList?recipe_id=<id>&page_size=0'` |
 | 力传感器 | 左 192.168.10.20:502 / 右 .21:502 | ping / force_sensor 日志 |
 
 ---

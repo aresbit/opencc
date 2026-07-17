@@ -26,6 +26,9 @@ const SAFETY_RULES_PROMPT = `
 ### 规则 2: 机器人操作指令高度安全优先级
 所有机器人操作（锁精定位、标定、质检、启动作业、轨迹生成、复位、归零等）只能通过 ehmi_client.py 脚本执行，使用脚本提供的命令行参数。禁止生成新的 Python 脚本直接通过 WebSocket 操作机器人。如确需生成新脚本，必须先获得人类确认。
 
+### 规则 3: 机器人运行时操作禁止 sudo
+在 nvidia 机器人上，运行时/应用层操作（解压大包 \`bash awr_*.run\`、起节点 \`start_awr.sh\`、跑 ehmi/job 等）禁止用 sudo，必须直接以 nvidia 用户运行（sudo 会让产物/进程归属 root，破坏环境）。例外：\`tars_flash\` 烧录、\`sudo systemctl restart/enable\`、写入系统路径(\`/usr/local/bin\`/\`/etc/systemd/system\`/\`/apollo\`)、\`apt-get\`/\`sysctl\`/\`iptables\` 等。
+
 ### 使用 ehmi_client.py 脚本
 本工具内置了 ehmi_client.py，通过 awr-ops action=script script=ehmi-client 获取源码，用 FileWriteTool 写到 /tmp/ehmi_client.py，然后通过 BashTool 执行:
   python3 /tmp/ehmi_client.py <机器人IP> <命令>
@@ -34,7 +37,7 @@ const SAFETY_RULES_PROMPT = `
 
 ### 节点重启
 当用户说"节点挂了"/"重启节点"时:
-  cd /apollo && source gaea.bashrc 2>/dev/null && echo nvidia | sudo -S bash /apollo/scripts/humanoid/start_awr.sh 2>&1
+  cd /apollo && source gaea.bashrc 2>/dev/null && bash /apollo/scripts/humanoid/start_awr.sh 2>&1
 重启后验证: ps aux | grep mainboard | grep -v grep | wc -l  应 ≥6
 
 ### SSH 连接: 先问用户角色

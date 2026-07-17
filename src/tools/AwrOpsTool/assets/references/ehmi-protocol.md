@@ -343,6 +343,20 @@ recipe 位姿调整页的所有移动操作,均走 `/aw_task_manager_service`:
 - `move_to_pose`/`move_to_aruco` 是**库方法**(需传入关键点的 pose dict:joints_pos + left/right/base position+quaternion),CLI 未直接暴露(位姿数据来自 recipe 关键点)。简单三个(pose-upload/pose-cutting/move-insert)有 CLI。
 - `pose`/`points` 编码同 `safe-pose`(joint_values 32 / joint_names 33 / points 37,见上一节)。
 
+## 打点日志上报 / 问题上报 (FeedbackDialog.vue onSubmit)
+
+命令 `report-issue <描述> [operator] [tag_type] [recipe_id] [--no-mark]`。**两个 publish**(无返回):
+
+| topic | 消息 | 用途 | 关键字段 |
+|-------|------|------|---------|
+| `/tars/quickdata/request` | TSQuickDataRequest | 日志/录制数据快传上报(转外部数据平台) | request_id(1) issue_url(2) request_timestamp(3) device_id(4=X1-serial) tag_type(6) issue_detail(7) operator_name(8) take_over_type(9) location(10) purpose(11) task_type(12) hardware(13) package_version(14) test_type(15) issue_title(17) handler_name(18) recipe_id(19) |
+| `/issue_report` | IssueReport | 录制中"打点"标记(tag_type=2) | header(1) tag_type(2) issue_detail(3) operator(8) take_over_type(9) timestamp(10, uint64 ms) |
+
+- `tag_type`: 0 LOG / 1 NORMAL / 2 WARNING / 3 ERROR;`take_over_type`: 0 NONE / 1 INVALID / 2 TAKEOVER。
+- `issue_url` 硬编码 `https://open.tars-ai.com/api/v1/transform/record_upload`;location/purpose/task_type/test_type 有前端默认值。
+- `--no-mark` 只发 quickdata 快传、不打 issue_report 标记(前端仅在数据录制中 state==2 才打点)。
+- `IssueReport.header` 是 proto required 但前端不发,脚本也不发(服务端容忍)。
+
 ## eHMI 客户端完整命令表 (ehmi_client.py)
 
 ```
@@ -367,6 +381,8 @@ quality-check <mode 154|155|156|157> [arm]           # 标定质检 (task_id 关
 info | kit-result | kit-progress | issue-report | launcher-status
 # 电源/故障 (8766 JSON)
 clear-fault | read-fault-log | clear-fault-log
+# 打点日志上报 / 问题上报 (publish, 无返回)
+report-issue <描述> [operator] [tag_type 0LOG/1NORMAL/2WARN/3ERR] [recipe_id] [--no-mark]
 # 云端 REST
 recipe-list [dev] | recipe-create <name> [dev] | recipe-get <id> | recipe-status <id> <st>
 recipe-copy <id> | recipe-delete <id> | opmap-list | navmap-list | deviceconf [dev] | safepos-list

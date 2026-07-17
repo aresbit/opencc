@@ -14,15 +14,24 @@ description: Thor 开发板应用包和固件部署操作。当你需要刷大�
 - **禁止**使用 `for` 循环一次性连续下发多条质检命令
 - **禁止**在未收到上一项结果前就下发下一项
 
-```python
-# ❌ 错误: for 循环批量下发质检
-for mode in [154, 155, 156, 157]:
-    await run_qc(mode)  # 没有等待结果就发下一个
+**标定质检标准流程 (先质检 → 不通过再标定 → 再质检)**:
 
-# ✅ 正确: 逐项等待结果后再下发下一项
-result = await run_qc(154)  # 等待 154 完成
-if result.get('passed') is not None:
-    result = await run_qc(155)  # 再发 155
+```
+QC mode → passed=True? → ✅ 下一项
+        → passed=False? → calibrate 重新标定 → 再 QC → 下一项
+```
+
+**重要**: 不要 QC 不通过就直接跳过或放弃，必须先重新标定再质检。标定是解决问题的途径。
+
+**左手/右手顺序**: 完成左手四个项目 (check_type 4/7/10/13, arm=0) 的质检标定后，再开始右手 (arm=1)。
+
+```python
+# ✅ 正确: 逐项等待结果后再下发下一项，不通过则标定后重试
+result = await run_qc(154, arm=0)  # 等待 154 完成
+if not result.get('passed'):
+    await run_calibrate(4, arm=0)   # 重新标定
+    result = await run_qc(154, arm=0)  # 再质检
+result = await run_qc(155, arm=0)  # 再发 155
 ```
 
 ### 规则 2: 机器人操作指令高度安全优先级
@@ -46,6 +55,16 @@ async def main():
 "
 ```
 
+### 规则 3: 机器人运行时操作禁止 sudo
+
+在 nvidia 机器人上，**运行时/应用层操作**（解压部署大包 `.run`、起 AWR 节点 `start_awr.sh`、跑 ehmi 脚本、执行 job 等）**禁止用 sudo 执行**，必须直接以 nvidia 用户运行。用 sudo 会让产物/进程归属 root，破坏运行环境。
+
+- ✅ `bash awr_*.run`（解压大包，不加 sudo）
+- ✅ `bash /apollo/scripts/humanoid/start_awr.sh`（起节点，不加 sudo）
+- ❌ `sudo bash awr_*.run` / `echo pass | sudo -S bash start_awr.sh`
+
+**例外（确实需要 root 的系统管理操作，不在此规则）**：`tars_flash` 烧录镜像、`sudo systemctl restart/enable` systemd 服务、写入 `/usr/local/bin`·`/etc/systemd/system`·`/apollo` 符号链接、`apt-get install`、`sysctl/iptables`、`nvidia-ctk` 等。
+
 违反以上规则可能导致：机器人异常动作、机械臂碰撞、硬件损坏或人员伤害。
 
 ---
@@ -54,14 +73,36 @@ async def main():
 
 当用户说"节点挂了"/"重启节点"/"节点起不来"时，执行以下命令重启 AWR 节点：
 
+**重要**: 重启节点前必须先 `source gaea.bashrc` 加载环境变量，否则 PMU/MCU 固件校验等依赖会失败。
+
 ```bash
-cd /apollo && source gaea.bashrc 2>/dev/null && echo nvidia | sudo -S bash /apollo/scripts/humanoid/start_awr.sh 2>&1
+# 先 source gaea 环境
+cd /apollo && source gaea.bashrc
+# 再启动节点 (推荐自动模式 -y)
+bash /apollo/scripts/humanoid/start_awr.sh -f --skip-coredump --region shanghai -y 2>&1
 ```
 
 **注意**：
-- 此命令会自动处理 sudo 密码输入，无需交互
+- 直接以 nvidia 用户执行，不加 sudo（加 sudo 会破坏运行环境，见规则 3）
 - 重启后验证：`ps aux | grep mainboard | grep -v grep | wc -l` 应 ≥6
 - 如果重启失败，检查 `journalctl -u humanoid-startup -f` 查看错误日志
+
+---
+
+## 轨迹生成: 必须先查询实际线束列表
+
+**重要**: 每个 recipe 的 wire_id 不同，**绝对不能假设默认值** (如 30103-30114 仅适用于 recipe 1841)。轨迹生成前必须先查询实际线束列表。
+
+```bash
+# 1. 查询 recipe 的实际线束列表
+curl -s 'https://awr-backend-test.tars-ai.com/api/wireInfo/getList?recipe_id=<recipe_id>&page_size=0' \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'wire_id={w[\"id\"]}  name={w.get(\"wire_name\",\"?\")}') for w in d.get('data',d) if isinstance(w,dict) and 'id' in w]" 2>/dev/null
+
+# 2. 确认线束 5 对应的 wire_id 后再生成轨迹
+# 3. 逐条生成: single-traj <实际wire_id> <recipe_id>
+```
+
+**常见陷阱**: 线束编号 ≠ wire_id。线束5 在 recipe 2004 中 wire_id=31499，而在 recipe 1841 中 wire_id=30105。**永远先查再生成**。板载确认: 轨迹生成后 `ls /apollo/data/trajectories/*_joint.npz | grep <wire_id>` 必须有 3 个文件。
 
 ---
 
@@ -94,15 +135,38 @@ cd /apollo && source gaea.bashrc 2>/dev/null && echo nvidia | sudo -S bash /apol
 质检操作 (`quality-check`, mode 154/155/156/157) **不能只输出 pass/fail**，必须把详细数据写入 report.md：
 
 ```markdown
-| 8 | 质检 mode=155 (手眼左手) | ✅ | std=0.87mm (<1.5mm), validate_success=True, 耗时 48s | 14:45:10 |
-| 9 | 质检 mode=154 (双目) | ❌ | std=2.3mm (≥1.5mm), task_id=xxx, 日志见 /apollo/data/log/qualitycheck/ | 14:46:30 |
+| 8 | 质检 mode=155 (鱼眼手眼左手) | ✅ | overall_std_mm=0.24mm (<1.5mm), validate_success=True, 耗时 48s | 14:45:10 |
+| 9 | 质检 mode=154 (鱼眼双目) | ❌ | std=2.3mm (≥1.5mm), task_id=xxx, 重新标定后通过 | 14:46:30 |
 ```
 
+**QC 各模式通过标准**:
+
+| mode | 名称 | 判定来源 | 通过标准 |
+|------|------|----------|----------|
+| 154 | 鱼眼双目 | stereo_validation_report (field 2) | report 存在且非空 |
+| 155 | 鱼眼手眼 | handeye_validation_report (field 3) | validate_success=1 **且 overall_std_mm < 1.5mm** |
+| 156 | 内窥镜双目 | stereo_validation_report (field 2) | report 存在且非空 |
+| 157 | 鱼眼左目→内窥镜左目 | fisheye_pinhole_left (field 4) | report 存在且非空 |
+
 **QC 详细数据必须包含**：
-- `std` 值 (标准差，单位 mm) 和阈值 (1.5mm)
+- `std` 值 (标准差，单位 mm) 和阈值 (1.5mm，仅 mode=155)
 - `validate_success` / 各校验项逐项结果
 - 耗时
 - 失败时附上 `task_id` 和日志路径，方便后续排查
+
+**标定各模式 (calibrate)**:
+
+| check_type | 名称 | mode | 说明 |
+|------------|------|------|------|
+| 4 | 鱼眼双目 | 150 | 左手 arm=0，右手 arm=1 |
+| 7 | 鱼眼手眼 | 151 | 左手 arm=0，右手 arm=1 |
+| 10 | 内窥镜双目 | 152 | 左手 arm=0，右手 arm=1 |
+| 13 | 鱼眼左目→内窥镜左目 | 153 | 左手 arm=0，右手 arm=1 |
+
+**左手/右手完整流程**:
+1. 先完成左手 (arm=0) 四个 check_type 的 质检→标定→质检 循环
+2. 再完成右手 (arm=1) 四个 check_type 的 质检→标定→质检 循环
+3. 每个 check_type 的 QC 通过后才进入下一个
 
 ---
 
@@ -111,7 +175,7 @@ cd /apollo && source gaea.bashrc 2>/dev/null && echo nvidia | sudo -S bash /apol
 ```
 测试同学给你 IP
   ├── 节点挂了？
-  │     └── cd /apollo && source gaea.bashrc 2>/dev/null && echo nvidia | sudo -S bash /apollo/scripts/humanoid/start_awr.sh 2>&1
+  │     └── cd /apollo && source gaea.bashrc 2>/dev/null && bash /apollo/scripts/humanoid/start_awr.sh 2>&1
   ├── 需要新编译？
   │     └── 优先板载编译 (aarch64 原生) ← 不要用 x86_64 容器产物给测试!
   │           1. 在板子上 cd /mnt/dji/partitions/user/gaea/repo && source gaea.bashrc
@@ -198,7 +262,7 @@ bash awr-rsync-transfer.sh --jump susan@192.168.85.183 --jump-pass 777888 <run�
 ```bash
 ssh thor
 cd /mnt/dji/partitions/user/gaea/repo
-sudo bash awr_*.run
+bash awr_*.run
 # 重启服务
 sudo systemctl restart humanoid-startup
 # 检查
@@ -324,7 +388,7 @@ ls -d *_output *_release_output 2>/dev/null  # 先看有哪些旧目录
 # 手动指定要删除的旧目录名，不要用通配符 rm -rf
 
 # 部署
-sudo bash awr_*.run
+bash awr_*.run
 sudo systemctl restart humanoid-startup
 ```
 
