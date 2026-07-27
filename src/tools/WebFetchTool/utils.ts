@@ -1,12 +1,13 @@
 import axios, { type AxiosResponse } from 'axios'
 import { LRUCache } from 'lru-cache'
-import { resolve } from 'path'
-import { existsSync } from 'fs'
-import { homedir } from 'os'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
+import {
+  findCDPScriptPath,
+  getCDPScriptCandidates,
+} from '../../utils/cdpScript.js'
 import { queryHaiku } from '../../services/api/claude.js'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
@@ -17,7 +18,6 @@ import {
 } from '../../utils/mcpOutputStorage.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
 
@@ -901,29 +901,6 @@ export async function fetchContent(
 // For JavaScript-rendered pages and anti-bot protected sites
 // ============================================================================
 
-// Find the CDP script path (shared with ChromeCDPTool)
-function findCDPScriptPath(): string | null {
-  // Try multiple possible paths in order of likelihood
-  const possiblePaths = [
-    // Project root scripts directory (development/bundled mode)
-    resolve(process.cwd(), 'scripts/cdp.mjs'),
-    // Relative to this file's location
-    resolve(__dirname, '../../../scripts/cdp.mjs'),
-    // Absolute project path
-    resolve(homedir(), 'yyscode/opencc/scripts/cdp.mjs'),
-    // Skill directory (user-installed skill)
-    resolve(getClaudeConfigHomeDir(), 'skills/chrome-cdp/scripts/cdp.mjs'),
-  ]
-
-  for (const path of possiblePaths) {
-    if (existsSync(path)) {
-      return path
-    }
-  }
-
-  return null
-}
-
 const CDP_SCRIPT_PATH = findCDPScriptPath()
 
 interface CDPResult {
@@ -967,11 +944,7 @@ async function runCDPCommand(
 
 export async function isCDPAvailable(): Promise<boolean> {
   if (!CDP_SCRIPT_PATH) {
-    console.error('[WebFetch] CDP script not found. Searched paths:', [
-      resolve(process.cwd(), 'scripts/cdp.mjs'),
-      resolve(__dirname, '../../../scripts/cdp.mjs'),
-      resolve(homedir(), 'yyscode/opencc/scripts/cdp.mjs'),
-    ])
+    console.error('[WebFetch] CDP script not found. Searched paths:', getCDPScriptCandidates())
     return false
   }
 
@@ -1035,15 +1008,9 @@ export async function fetchViaCDP(
 
   // Check if CDP is available
   if (!CDP_SCRIPT_PATH) {
-    const searchedPaths = [
-      resolve(process.cwd(), 'scripts/cdp.mjs'),
-      resolve(__dirname, '../../../scripts/cdp.mjs'),
-      resolve(homedir(), 'yyscode/opencc/scripts/cdp.mjs'),
-      resolve(getClaudeConfigHomeDir(), 'skills/chrome-cdp/scripts/cdp.mjs'),
-    ]
     throw new Error(
       'CDP script not found. Searched paths:\n' +
-      searchedPaths.map(p => '  - ' + p).join('\n') +
+      getCDPScriptCandidates().map(p => '  - ' + p).join('\n') +
       '\n\nTo fetch JavaScript-rendered pages:\n' +
       '1. Ensure the chrome-cdp skill is installed\n' +
       '2. Or use WebSearch tool to find alternative sources',

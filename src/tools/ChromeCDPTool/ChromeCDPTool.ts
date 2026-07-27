@@ -1,27 +1,8 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { findCDPScriptPath } from '../../utils/cdpScript.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
-import { resolve, join, dirname } from 'path'
-import { existsSync } from 'fs'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-
-// Find the CDP script path
-function findCDPScriptPath(): string | null {
-  // Try project root scripts directory first (development/bundled mode)
-  const projectScriptPath = resolve(process.cwd(), 'scripts/cdp.mjs')
-  if (existsSync(projectScriptPath)) {
-    return projectScriptPath
-  }
-
-  // Try skill directory (user-installed skill)
-  const skillScriptPath = join(getClaudeConfigHomeDir(), 'skills/chrome-cdp/scripts/cdp.mjs')
-  if (existsSync(skillScriptPath)) {
-    return skillScriptPath
-  }
-
-  return null
-}
 
 const CDP_SCRIPT_PATH = findCDPScriptPath()
 

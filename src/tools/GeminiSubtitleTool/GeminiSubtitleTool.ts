@@ -1,10 +1,8 @@
-import { existsSync } from 'fs'
-import { resolve, join } from 'path'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import { findCDPScriptPath } from '../../utils/cdpScript.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import {
   DESCRIPTION,
@@ -64,20 +62,6 @@ type ProcResult = { code: number | null; stdout: string; stderr: string }
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function findCDPScriptPath(): string | null {
-  const candidates = [
-    resolve(process.cwd(), 'scripts/cdp.mjs'),
-    resolve(__dirname, '../../../scripts/cdp.mjs'),
-    join(getClaudeConfigHomeDir(), 'skills/chrome-cdp/scripts/cdp.mjs'),
-  ]
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate
-    }
-  }
-  return null
 }
 
 async function runProcess(command: string, args: string[], timeoutMs = 30000): Promise<ProcResult> {

@@ -224,15 +224,18 @@ ifeq ($(DETECTED_OS),Windows)
 	@echo Installing $(PROJECT_NAME) v$(VERSION) to $(PREFIX)...
 	@if not exist "$(BIN_DIR)" $(MKDIR) "$(BIN_DIR)"
 	@if not exist "$(SHARE_DIR)" $(MKDIR) "$(SHARE_DIR)"
+	@if not exist "$(SHARE_DIR)\scripts" $(MKDIR) "$(SHARE_DIR)\scripts"
 	$(CP) "$(DIST_DIR)\cli.js" "$(SHARE_DIR)\"
+	$(CP) "$(SCRIPTS_DIR)\cdp.mjs" "$(SHARE_DIR)\scripts\"
 	@echo @echo off > "$(BIN_DIR)\$(PROJECT_NAME).bat"
 	@echo $(BUN) run "$(SHARE_DIR)\cli.js" --dangerously-skip-permissions %%* >> "$(BIN_DIR)\$(PROJECT_NAME).bat"
 	@echo Installation complete. Add $(BIN_DIR) to your PATH.
 	@echo Run '$(PROJECT_NAME)' to start.
 else
 	@echo "Installing $(PROJECT_NAME) v$(VERSION) to $(PREFIX)..."
-	@$(MKDIR) $(BIN_DIR) $(SHARE_DIR)
+	@$(MKDIR) $(BIN_DIR) $(SHARE_DIR)/scripts
 	@$(CP) $(DIST_DIR)/cli.js $(SHARE_DIR)/
+	@$(CP) $(SCRIPTS_DIR)/cdp.mjs $(SHARE_DIR)/scripts/
 
 	# Create wrapper script
 	@echo '#!/bin/sh' > $(BIN_DIR)/$(PROJECT_NAME)
@@ -248,7 +251,9 @@ ifeq ($(DETECTED_OS),Windows)
 	@echo Installing $(PROJECT_NAME) v$(VERSION) to user directory...
 	@if not exist "$(USERPROFILE)\.local\bin" $(MKDIR) "$(USERPROFILE)\.local\bin"
 	@if not exist "$(USERPROFILE)\.local\share\$(PROJECT_NAME)" $(MKDIR) "$(USERPROFILE)\.local\share\$(PROJECT_NAME)"
+	@if not exist "$(USERPROFILE)\.local\share\$(PROJECT_NAME)\scripts" $(MKDIR) "$(USERPROFILE)\.local\share\$(PROJECT_NAME)\scripts"
 	$(CP) "$(DIST_DIR)\cli.js" "$(USERPROFILE)\.local\share\$(PROJECT_NAME)\"
+	$(CP) "$(SCRIPTS_DIR)\cdp.mjs" "$(USERPROFILE)\.local\share\$(PROJECT_NAME)\scripts\"
 	@echo @echo off > "$(USERPROFILE)\.local\bin\$(PROJECT_NAME).bat"
 	@echo $(BUN) run "$(USERPROFILE)\.local\share\$(PROJECT_NAME)\cli.js" --dangerously-skip-permissions %%* >> "$(USERPROFILE)\.local\bin\$(PROJECT_NAME).bat"
 	@echo Installation complete. Make sure %USERPROFILE%\.local\bin is in your PATH.
@@ -257,8 +262,9 @@ else
 	@USER_LOCAL_BIN="$$HOME/.local/bin"; \
 	USER_SHARE_DIR="$$HOME/.local/share/$(PROJECT_NAME)"; \
 	echo "Installing $(PROJECT_NAME) v$(VERSION) to user directory..."; \
-	$(MKDIR) "$$USER_LOCAL_BIN" "$$USER_SHARE_DIR"; \
+	$(MKDIR) "$$USER_LOCAL_BIN" "$$USER_SHARE_DIR/scripts"; \
 	$(CP) $(DIST_DIR)/cli.js "$$USER_SHARE_DIR"/; \
+	$(CP) $(SCRIPTS_DIR)/cdp.mjs "$$USER_SHARE_DIR"/scripts/; \
 	echo '#!/bin/sh' > "$$USER_LOCAL_BIN"/$(PROJECT_NAME); \
 	echo 'exec $(BUN) run "'"$$USER_SHARE_DIR"'/cli.js" --dangerously-skip-permissions "$$@"' >> "$$USER_LOCAL_BIN"/$(PROJECT_NAME); \
 	$(CHMOD) "$$USER_LOCAL_BIN"/$(PROJECT_NAME); \
@@ -391,4 +397,3 @@ ifneq ($(DETECTED_OS),Windows)
 $(DIST_DIR)/cli.js: $(TS_SOURCES) $(PACKAGE_FILES)
 	@$(MAKE) build
 endif
-

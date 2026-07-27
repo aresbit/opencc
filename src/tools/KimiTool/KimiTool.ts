@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import { findCDPScriptPath } from '../../utils/cdpScript.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 
@@ -628,7 +629,12 @@ async function readRefreshTokenFromCdpSession(input: {
   authorization?: string
   message: string
 }> {
-  const cdpScriptPath = path.resolve(process.cwd(), 'scripts/cdp.mjs')
+  const cdpScriptPath = findCDPScriptPath()
+  if (!cdpScriptPath) {
+    throw new Error(
+      'CDP script not found. Ensure scripts/cdp.mjs is installed or set OPENCC_CDP_SCRIPT.',
+    )
+  }
 
   const targetPrefix = input.target?.trim()
   let target = targetPrefix
