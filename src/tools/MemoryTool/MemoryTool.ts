@@ -307,7 +307,11 @@ export const MemoryTool = buildTool({
   userFacingName() {
     return 'MemoryTool'
   },
-  shouldDefer: true,
+  // Core infrastructure: schema must always reach the model.
+  // With shouldDefer: true, tool-search withholds the JSON schema from the
+  // API for non-Claude models (e.g. glm-5.2, not in the unsupported-patterns
+  // list), so array/number params arrive as strings and fail validation.
+  shouldDefer: false,
   isEnabled() {
     // Always enabled for now
     return true

@@ -210,7 +210,7 @@ ifeq ($(DETECTED_OS),Windows)
 else
 	@if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ] || [ "bun.lock" -nt "node_modules" ]; then \
 		echo "Installing dependencies..."; \
-		$(BUN) install; \
+		$(BUN) install --ignore-scripts; \
 	fi
 endif
 

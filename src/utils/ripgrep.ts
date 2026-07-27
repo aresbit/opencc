@@ -7,7 +7,7 @@ import { logEvent } from 'src/services/analytics/index.js'
 import { fileURLToPath } from 'url'
 import { isInBundledMode } from './bundledMode.js'
 import { logForDebugging } from './debug.js'
-import { isEnvDefinedFalsy } from './envUtils.js'
+import { isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
@@ -29,12 +29,16 @@ type RipgrepConfig = {
 }
 
 const getRipgrepConfig = memoize((): RipgrepConfig => {
-  const userWantsSystemRipgrep = isEnvDefinedFalsy(
-    process.env.USE_BUILTIN_RIPGREP,
-  )
+  // Default: prefer a system-installed ripgrep when one is on PATH (no env var
+  // needed). Set USE_BUILTIN_RIPGREP=1 to force the bundled/vendor binary.
+  // Historically the default was the bundled binary and USE_BUILTIN_RIPGREP=0
+  // opted into system rg; inverting this so a present system rg "just works",
+  // because env vars exported in shell rc files are not reliably inherited by
+  // non-interactive launch paths (the failure mode that motivated this change).
+  const forceBuiltin = isEnvTruthy(process.env.USE_BUILTIN_RIPGREP)
 
-  // Try system ripgrep if user wants it
-  if (userWantsSystemRipgrep) {
+  // Try system ripgrep first, unless the user explicitly forced the builtin
+  if (!forceBuiltin) {
     const { cmd: systemPath } = findExecutable('rg', [])
     if (systemPath !== 'rg') {
       // SECURITY: Use command name 'rg' instead of systemPath to prevent PATH hijacking

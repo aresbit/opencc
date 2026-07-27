@@ -200,8 +200,24 @@ export function getToolSearchMode(): ToolSearchMode {
 /**
  * Default patterns for models that do NOT support tool_reference.
  * New models are assumed to support tool_reference unless explicitly listed here.
+ *
+ * tool_reference / defer_loading are Claude-API beta shapes. Non-Claude
+ * serving endpoints (incl. 国产模型 proxied via OpenAI-compatible APIs)
+ * reject or silently ignore them, which breaks tool-search deferral — the
+ * model never receives deferred tool schemas, so array/number params arrive
+ * as strings and fail client-side validation. Listing a model here disables
+ * tool search for it so ALL tool schemas are sent upfront.
  */
-const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = ['haiku']
+const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = [
+  'haiku',
+  // 国产模型 (domestic, non-Claude)
+  'glm', // 智谱 (glm-5.2, glm-4, chatglm)
+  'deepseek',
+  'kimi', // 月之暗面 / Moonshot
+  'moonshot',
+  'qwen', // 阿里通义千问
+  'minimax',
+]
 
 /**
  * Get the list of model patterns that do NOT support tool_reference.
@@ -230,8 +246,9 @@ function getUnsupportedToolReferencePatterns(): string[] {
  * UNLESS they match a pattern in the unsupported list. This ensures new
  * models work by default without code changes.
  *
- * Currently, Haiku models do NOT support tool_reference. This can be
- * updated via GrowthBook feature 'tengu_tool_search_unsupported_models'.
+ * Currently, Haiku models and listed 国产/non-Claude models do NOT support
+ * tool_reference. This can be updated via GrowthBook feature
+ * 'tengu_tool_search_unsupported_models'.
  *
  * @param model The model name to check
  * @returns true if the model supports tool_reference, false otherwise
