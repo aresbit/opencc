@@ -55,6 +55,42 @@ export function isAutoMemoryEnabled(): boolean {
 }
 
 /**
+ * Whether relevant memories are surfaced into context automatically each turn.
+ *
+ * Upstream this hangs off the `tengu_moth_copse` GrowthBook flag, but
+ * GrowthBook is stubbed to `defaultValue` in this build, so the flag is
+ * permanently false and the prefetch never ran — memory was only ever as
+ * proactive as the one-line MEMORY.md index. This gate restores it with a
+ * local switch:
+ *   1. CLAUDE_CODE_DISABLE_MEMORY_RECALL (1/true → OFF, 0/false → ON)
+ *   2. autoMemoryRecall in settings.json
+ *   3. Default: enabled
+ *
+ * Note this is deliberately *not* wired to `filterInjectedMemoryFiles` /
+ * `loadMemoryPrompt`'s `skipIndex`, which upstream flips off in the same
+ * breath. Keeping MEMORY.md in the system prompt as well costs a few hundred
+ * tokens and means the model always knows what it knows, even on the turns
+ * where the relevance selector picks nothing.
+ */
+export function isRelevantMemoryRecallEnabled(): boolean {
+  if (!isAutoMemoryEnabled()) {
+    return false
+  }
+  const envVal = process.env.CLAUDE_CODE_DISABLE_MEMORY_RECALL
+  if (isEnvTruthy(envVal)) {
+    return false
+  }
+  if (isEnvDefinedFalsy(envVal)) {
+    return true
+  }
+  const settings = getInitialSettings() as { autoMemoryRecall?: boolean }
+  if (settings.autoMemoryRecall !== undefined) {
+    return settings.autoMemoryRecall
+  }
+  return true
+}
+
+/**
  * Whether the extract-memories background agent will run this session.
  *
  * The main agent's prompt always has full save instructions regardless of

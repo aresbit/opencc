@@ -44,7 +44,7 @@ import {
   getConditionalRulesForCwdLevelDirectory,
   type MemoryFileInfo,
 } from './claudemd.js'
-import { dirname, parse, relative, resolve } from 'path'
+import { dirname, join, parse, relative, resolve } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { getViewedTeammateTask } from '../state/selectors.js'
 import { logError } from './log.js'
@@ -231,7 +231,11 @@ import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { findRelevantMemories } from '../memdir/findRelevantMemories.js'
 import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
+import {
+  getAutoMemPath,
+  isAutoMemoryEnabled,
+  isRelevantMemoryRecallEnabled,
+} from '../memdir/paths.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import {
   readUnreadMessages,
@@ -2201,6 +2205,7 @@ async function getRelevantMemoryAttachments(
   recentTools: readonly string[],
   signal: AbortSignal,
   alreadySurfaced: ReadonlySet<string>,
+  surfacedContent: ReadonlyMap<string, string>,
 ): Promise<Attachment[]> {
   // If an agent is @-mentioned, search only its memory dir (isolation).
   // Otherwise search the auto-memory dir.
@@ -2212,6 +2217,17 @@ async function getRelevantMemoryAttachments(
       : []
   })
   const dirs = memoryDirs.length > 0 ? memoryDirs : [getAutoMemPath()]
+
+  // REHEARSAL.md / SCRATCHPAD.md are the working- and temporary-memory layers
+  // MemoryTool writes. They are unconditional (no ranker call): the model
+  // asked for these to be in front of it. They are also the only memories
+  // allowed to re-surface, because their whole purpose is to sit near the end
+  // of context — but only when the content actually changed, so an unchanged
+  // rehearsal does not bust the prompt cache every turn.
+  const rehearsalFiles = dirs.flatMap(dir => [
+    join(dir, 'REHEARSAL.md'),
+    join(dir, 'SCRATCHPAD.md'),
+  ])
 
   const allResults = await Promise.all(
     dirs.map(dir =>
@@ -2234,12 +2250,46 @@ async function getRelevantMemoryAttachments(
     .filter(m => !readFileState.has(m.path) && !alreadySurfaced.has(m.path))
     .slice(0, 5)
 
-  const memories = await readMemoriesForSurfacing(selected, signal)
+  const rehearsals = await readRehearsalFiles(
+    rehearsalFiles,
+    surfacedContent,
+    signal,
+  )
+  const memories = [
+    ...rehearsals,
+    ...(await readMemoriesForSurfacing(selected, signal)),
+  ]
 
   if (memories.length === 0) {
     return []
   }
   return [{ type: 'relevant_memories' as const, memories }]
+}
+
+/**
+ * Read the working-memory files, skipping any whose exact content is already
+ * sitting in context from an earlier turn.
+ */
+async function readRehearsalFiles(
+  paths: readonly string[],
+  surfacedContent: ReadonlyMap<string, string>,
+  signal: AbortSignal,
+): Promise<Awaited<ReturnType<typeof readMemoriesForSurfacing>>> {
+  const present = await Promise.all(
+    paths.map(async filePath => {
+      try {
+        const stats = await stat(filePath)
+        return stats.size > 0 ? { path: filePath, mtimeMs: stats.mtimeMs } : null
+      } catch {
+        return null
+      }
+    }),
+  )
+  const existing = present.filter(p => p !== null)
+  if (existing.length === 0) return []
+
+  const read = await readMemoriesForSurfacing(existing, signal)
+  return read.filter(m => surfacedContent.get(m.path) !== m.content)
 }
 
 /**
@@ -2252,18 +2302,22 @@ async function getRelevantMemoryAttachments(
 export function collectSurfacedMemories(messages: ReadonlyArray<Message>): {
   paths: Set<string>
   totalBytes: number
+  /** Latest surfaced content per path, so re-surfacing can be content-aware. */
+  contentByPath: Map<string, string>
 } {
   const paths = new Set<string>()
+  const contentByPath = new Map<string, string>()
   let totalBytes = 0
   for (const m of messages) {
     if (m.type === 'attachment' && m.attachment.type === 'relevant_memories') {
       for (const mem of m.attachment.memories as { path: string; content: string; mtimeMs: number }[]) {
         paths.add(mem.path)
+        contentByPath.set(mem.path, mem.content)
         totalBytes += mem.content.length
       }
     }
   }
-  return { paths, totalBytes }
+  return { paths, totalBytes, contentByPath }
 }
 
 /**
@@ -2363,10 +2417,7 @@ export function startRelevantMemoryPrefetch(
   messages: ReadonlyArray<Message>,
   toolUseContext: ToolUseContext,
 ): MemoryPrefetch | undefined {
-  if (
-    !isAutoMemoryEnabled() ||
-    !getFeatureValue_CACHED_MAY_BE_STALE('tengu_moth_copse', false)
-  ) {
+  if (!isRelevantMemoryRecallEnabled()) {
     return undefined
   }
 
@@ -2397,6 +2448,7 @@ export function startRelevantMemoryPrefetch(
     collectRecentSuccessfulTools(messages, lastUserMessage),
     controller.signal,
     surfaced.paths,
+    surfaced.contentByPath,
   ).catch(e => {
     if (!isAbortError(e)) {
       logError(e)

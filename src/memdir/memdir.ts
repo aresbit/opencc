@@ -15,7 +15,10 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
+import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
+import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { GREP_TOOL_NAME } from '../tools/GrepTool/prompt.js'
+import { MEMORY_TOOL_NAME } from '../tools/MemoryTool/constants.js'
 import { isReplModeEnabled } from '../tools/REPLTool/constants.js'
 import { logForDebugging } from '../utils/debug.js'
 import { hasEmbeddedSearchTools } from '../utils/embeddedTools.js'
@@ -266,6 +269,36 @@ export function buildMemoryLines(
 }
 
 /**
+ * Guidance for MemoryTool, appended to the auto-memory prompt only.
+ *
+ * Without this the memory instructions describe the directory and then say
+ * "write to it directly with the Write tool" — so the model never learns that
+ * a tool exists which does the write, the MEMORY.md index update, and the
+ * ranked recall in one call. MemoryTool was effectively invisible, and recall
+ * meant reading files by hand, which the model rarely bothered to do.
+ *
+ * Not applied to agent memory dirs: MemoryTool always operates on the
+ * auto-memory directory, so pointing an agent at it would cross the isolation
+ * boundary that gives agents their own dir in the first place.
+ */
+function buildMemoryToolSection(): string[] {
+  return [
+    `## Using ${MEMORY_TOOL_NAME}`,
+    '',
+    `\`${MEMORY_TOOL_NAME}\` operates on this directory and is the preferred way to read and write memories — it handles the file naming, the frontmatter, and the ${ENTRYPOINT_NAME} index entry in a single call, so the two-step save above collapses to one.`,
+    '',
+    `- Recall: \`${MEMORY_TOOL_NAME}\` with \`action: "search"\` and a \`query\`, or \`action: "list"\`. Results come back with content, so you do not need to follow up with a read. Reach for this whenever ${ENTRYPOINT_NAME} shows an index entry that looks related to the task — the index is a table of contents, not the memory.`,
+    `- Save: \`action: "save"\` with \`type\`, \`name\`, \`description\`, \`content\`.`,
+    `- Correct: \`action: "update"\` to revise, \`action: "delete"\` to remove something that turned out to be wrong.`,
+    `- Scratchpad: \`action: "temp_save"\` / \`"temp_read"\` for notes that only matter this session. These are never indexed.`,
+    `- Rehearse: \`action: "rehearse"\` writes the memories you name into a file that is re-injected at the end of context every turn. Use it when a constraint must not be forgotten over a long task.`,
+    '',
+    `Falling back to ${FILE_READ_TOOL_NAME}/${FILE_WRITE_TOOL_NAME} on these files directly is still correct when you need something the tool does not cover, such as editing a file's raw frontmatter.`,
+    '',
+  ]
+}
+
+/**
  * Build the typed-memory prompt with MEMORY.md content included.
  * Used by agent memory (which has no getClaudeMds() equivalent).
  */
@@ -484,7 +517,7 @@ export async function loadMemoryPrompt(): Promise<string | null> {
     return buildMemoryLines(
       'auto memory',
       autoDir,
-      extraGuidelines,
+      [...buildMemoryToolSection(), ...(extraGuidelines ?? [])],
       skipIndex,
     ).join('\n')
   }

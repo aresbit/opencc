@@ -3,6 +3,7 @@ import { join, basename, dirname, relative, resolve } from 'path'
 import { existsSync } from 'fs'
 import { MEMORY_TYPES, type MemoryType } from '../../memdir/memoryTypes.js'
 import { getAutoMemPath } from '../../memdir/paths.js'
+import { scoreMemory, tokenizeQuery } from './ranking.js'
 
 export interface Memory {
   id: string
@@ -23,6 +24,26 @@ export interface MemoryIndexEntry {
   description: string
   filePath: string
   createdAt: Date
+}
+
+/** Files in the memory directory that are not themselves memories. */
+const RESERVED_FILES = new Set(['MEMORY.md', 'REHEARSAL.md', 'SCRATCHPAD.md'])
+
+/** Vocabulary overlap above which two memories are worth a second look. */
+const DUPLICATE_THRESHOLD = 0.7
+
+/** `[[some-memory-name]]` — the link syntax used in memory bodies. */
+const WIKILINK = /\[\[([^\]]+)\]\]/g
+
+function normalizeForCompare(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9一-鿿]/g, '')
+}
+
+/** Extract the `[[name]]` targets referenced by a memory's content. */
+export function extractLinks(content: string): string[] {
+  return [...new Set(
+    [...content.matchAll(WIKILINK)].map(m => m[1].trim()).filter(Boolean),
+  )]
 }
 
 export class MemoryStore {
@@ -74,7 +95,16 @@ ${memory.content}
     return frontmatter
   }
 
-  private parseMemoryFile(content: string, filePath: string): Memory | null {
+  /**
+   * `times` carries the real file timestamps. Without it every parse reported
+   * `new Date()`, so every memory looked like it was written this instant —
+   * which defeats staleness checks and makes "updated" in tool output a lie.
+   */
+  private parseMemoryFile(
+    content: string,
+    filePath: string,
+    times?: { createdAt: Date; updatedAt: Date },
+  ): Memory | null {
     try {
       const lines = content.split('\n')
       if (!lines[0].startsWith('---')) return null
@@ -90,12 +120,19 @@ ${memory.content}
       const frontmatterLines = lines.slice(1, frontmatterEnd)
       const memoryContent = lines.slice(frontmatterEnd + 1).join('\n').trim()
 
+      // Indented keys are captured too: memories written through the memory
+      // system prompt nest the type under `metadata:`, and the old top-level-
+      // only regex missed it, so every such file fell back to guessing the
+      // type from its filename prefix.
       const frontmatter: Record<string, string> = {}
       for (const line of frontmatterLines) {
-        const match = line.match(/^(\w+):\s*(.+)$/)
+        const match = line.match(/^\s*([\w-]+):\s*(.*)$/)
         if (match) {
           const [, key, value] = match
-          frontmatter[key] = value
+          const unquoted = value.trim().replace(/^["'](.*)["']$/, '$1')
+          if (unquoted !== '' && frontmatter[key] === undefined) {
+            frontmatter[key] = unquoted
+          }
         }
       }
 
@@ -113,21 +150,98 @@ ${memory.content}
       const [type, ...nameParts] = filename.split('_')
       const name = nameParts.join('_').replace(/_(\d+)$/, '') // Remove timestamp
 
+      // Files written by the memory system prompt (Write tool) carry
+      // `metadata.type`; files written by this store carry a flat `type`.
+      const rawType = frontmatter.type ?? type
+      const parsedType = MEMORY_TYPES.find(t => t === rawType)
+
+      const now = new Date()
       return {
         id: filename,
-        type: type as Memory['type'],
+        type: parsedType ?? 'project',
         name: frontmatter.name || name,
         description: frontmatter.description || '',
         content: memoryContent,
         tags,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: times?.createdAt ?? now,
+        updatedAt: times?.updatedAt ?? now,
         filePath
       }
     } catch (error) {
       console.error('Failed to parse memory file:', error)
       return null
     }
+  }
+
+  /** Read + parse one memory file, threading in its real mtime/birthtime. */
+  private async readMemory(filePath: string): Promise<Memory | null> {
+    try {
+      const [content, stats] = await Promise.all([
+        readFile(filePath, 'utf-8'),
+        stat(filePath),
+      ])
+      return this.parseMemoryFile(content, filePath, {
+        createdAt: stats.birthtime ?? stats.mtime,
+        updatedAt: stats.mtime,
+      })
+    } catch (error) {
+      console.error(`Failed to read memory file ${filePath}:`, error)
+      return null
+    }
+  }
+
+  /** Memory files in the directory, excluding the index and scratch files. */
+  private async listMemoryFilenames(): Promise<string[]> {
+    if (!existsSync(this.memoryDir)) return []
+    const files = await readdir(this.memoryDir)
+    return files.filter(f => f.endsWith('.md') && !RESERVED_FILES.has(f))
+  }
+
+  /**
+   * Find memories that likely already cover what is about to be saved.
+   *
+   * The memory instructions say "check if there is an existing memory you can
+   * update before writing a new one", but nothing enforced it, so `save` was
+   * append-only in practice — the live memory directory already carries two
+   * near-identical `wiki-autonomous-mobile-pentesting` entries written 6
+   * minutes apart. Surfacing the collision to the model at save time is what
+   * turns that instruction into something with teeth.
+   *
+   * This reports rather than blocks: near-duplicate is a judgement call, and
+   * the model has context the string comparison does not.
+   */
+  async findDuplicates(
+    name: string,
+    description: string,
+    type?: Memory['type'],
+  ): Promise<Memory[]> {
+    const terms = tokenizeQuery(`${name} ${description}`)
+    if (terms.length === 0) return []
+
+    const files = await this.listMemoryFilenames()
+    const loaded = await Promise.all(
+      files.map(f => this.readMemory(join(this.memoryDir, f))),
+    )
+
+    const wanted = normalizeForCompare(name)
+    return loaded
+      .filter((m): m is Memory => m !== null && (!type || m.type === type))
+      .map(memory => {
+        // Name equality after normalization is a certain duplicate; otherwise
+        // fall back to how much of the new memory's vocabulary already exists
+        // in the old one's name + description.
+        if (normalizeForCompare(memory.name) === wanted) {
+          return { memory, similarity: 1 }
+        }
+        const haystack =
+          `${memory.name} ${memory.description}`.toLowerCase()
+        const overlap = terms.filter(t => haystack.includes(t)).length
+        return { memory, similarity: overlap / terms.length }
+      })
+      .filter(e => e.similarity >= DUPLICATE_THRESHOLD)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 3)
+      .map(e => e.memory)
   }
 
   async saveMemory(
@@ -170,67 +284,97 @@ ${memory.content}
     return { ...memory, filePath }
   }
 
+  /**
+   * Append (or replace) one entry in MEMORY.md.
+   *
+   * MEMORY.md is loaded into context verbatim every session, so corruption
+   * here is corruption of what the model sees. Two bugs lived in the old
+   * concatenation: an index whose last line lacked a trailing newline had the
+   * next entry welded onto it ("…数据合成- [chrome_cdp…"), and re-saving a
+   * memory appended a duplicate line pointing at a different file.
+   */
   private async updateIndex(entry: MemoryIndexEntry): Promise<void> {
     await this.ensureMemoryDir()
 
-    let indexContent = ''
+    let existing = ''
     if (existsSync(this.indexFile)) {
-      indexContent = await readFile(this.indexFile, 'utf-8')
+      existing = await readFile(this.indexFile, 'utf-8')
     }
 
-    const indexLine = `- [${entry.name}](${basename(entry.filePath)}) — ${entry.description}\n`
-    indexContent += indexLine
+    const filename = basename(entry.filePath)
+    const indexLine = `- [${entry.name}](${filename}) — ${entry.description}`
 
-    await writeFile(this.indexFile, indexContent, 'utf-8')
-  }
-
-  async searchMemories(query: string, type?: string, limit: number = 20): Promise<Memory[]> {
-    await this.ensureMemoryDir()
-
-    if (!existsSync(this.memoryDir)) {
-      return []
-    }
-
-    const files = await readdir(this.memoryDir)
-    const memoryFiles = files.filter(f => f.endsWith('.md') && f !== 'MEMORY.md' && f !== 'REHEARSAL.md' && f !== 'SCRATCHPAD.md')
-
-    const memories: Memory[] = []
-    for (const file of memoryFiles) {
-      if (memories.length >= limit) break
-
-      const filePath = join(this.memoryDir, file)
-      try {
-        const content = await readFile(filePath, 'utf-8')
-        const memory = this.parseMemoryFile(content, filePath)
-
-        if (memory) {
-          // Word-level search: each query word must match somewhere
-          const searchableText = `${memory.name} ${memory.description} ${memory.content} ${(memory.tags || []).join(' ')}`.toLowerCase()
-          const queryWords = query.toLowerCase().split(/\s+/).filter(Boolean)
-          const matches = queryWords.length === 0 || queryWords.some(word => searchableText.includes(word))
-          if (matches) {
-            if (!type || memory.type === type) {
-              memories.push(memory)
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`Failed to read memory file ${file}:`, error)
+    const lines = existing.split('\n')
+    const target = lines.findIndex(l => l.includes(`(${filename})`))
+    if (target >= 0) {
+      lines[target] = indexLine
+    } else {
+      while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+        lines.pop()
       }
+      lines.push(indexLine)
     }
 
-    return memories
+    await writeFile(this.indexFile, `${lines.join('\n')}\n`, 'utf-8')
   }
 
-  async listMemories(offset: number = 0, limit: number = 20): Promise<Memory[]> {
+  /**
+   * Search memories, ranked by relevance.
+   *
+   * The previous implementation walked the directory in readdir order and
+   * kept the first `limit` files where *any* query word appeared anywhere.
+   * Two consequences: a natural-language query ("how do we handle the
+   * deepseek cache") matched almost everything through its stopwords, and
+   * whichever files the filesystem happened to list first won regardless of
+   * how well they matched. It also never scored Chinese queries, because
+   * splitting on whitespace yields one long token that matches nothing.
+   *
+   * `query` is optional — omitting it returns all memories of `type`,
+   * newest first.
+   */
+  async searchMemories(query?: string, type?: string, limit: number = 20): Promise<Memory[]> {
     await this.ensureMemoryDir()
 
-    if (!existsSync(this.memoryDir)) {
-      return []
+    const memoryFiles = await this.listMemoryFilenames()
+    const loaded = await Promise.all(
+      memoryFiles.map(file => this.readMemory(join(this.memoryDir, file))),
+    )
+    const candidates = loaded.filter(
+      (m): m is Memory => m !== null && (!type || m.type === type),
+    )
+
+    const terms = tokenizeQuery(query ?? '')
+    if (terms.length === 0) {
+      return candidates
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+        .slice(0, limit)
     }
 
-    const files = await readdir(this.memoryDir)
-    const memoryFiles = files.filter(f => f.endsWith('.md') && f !== 'MEMORY.md' && f !== 'REHEARSAL.md' && f !== 'SCRATCHPAD.md')
+    return candidates
+      .map(memory => ({ memory, score: scoreMemory(memory, terms) }))
+      .filter(entry => entry.score > 0)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          b.memory.updatedAt.getTime() - a.memory.updatedAt.getTime(),
+      )
+      .slice(0, limit)
+      .map(entry => entry.memory)
+  }
+
+  /**
+   * List memories newest-first. Returns `total` alongside the page so the
+   * caller can report "1-20 of 57" instead of mislabelling the page size as
+   * the total.
+   */
+  async listMemories(
+    offset: number = 0,
+    limit: number = 20,
+    type?: string,
+  ): Promise<{ memories: Memory[]; total: number }> {
+    await this.ensureMemoryDir()
+
+    const memoryFiles = await this.listMemoryFilenames()
 
     // Sort by modification time (newest first)
     const filesWithStats = await Promise.all(
@@ -243,64 +387,128 @@ ${memory.content}
 
     filesWithStats.sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
 
-    const memories: Memory[] = []
-    for (let i = offset; i < Math.min(offset + limit, filesWithStats.length); i++) {
-      const { filePath } = filesWithStats[i]
-      try {
-        const content = await readFile(filePath, 'utf-8')
-        const memory = this.parseMemoryFile(content, filePath)
-        if (memory) {
-          memories.push(memory)
-        }
-      } catch (error) {
-        console.error(`Failed to read memory file ${filePath}:`, error)
+    // The type filter needs the parsed frontmatter, so when one is requested
+    // we parse everything and paginate after filtering.
+    if (type) {
+      const all = await Promise.all(
+        filesWithStats.map(({ filePath }) => this.readMemory(filePath)),
+      )
+      const matching = all.filter((m): m is Memory => m !== null && m.type === type)
+      return {
+        memories: matching.slice(offset, offset + limit),
+        total: matching.length,
       }
     }
 
-    return memories
+    const page = filesWithStats.slice(offset, offset + limit)
+    const loaded = await Promise.all(
+      page.map(({ filePath }) => this.readMemory(filePath)),
+    )
+    return {
+      memories: loaded.filter((m): m is Memory => m !== null),
+      total: filesWithStats.length,
+    }
+  }
+
+  /**
+   * Resolve an id to a file on disk.
+   *
+   * Ids are generated with a `_<timestamp>` suffix that models rarely echo
+   * back verbatim, so a bare prefix match is a deliberate affordance. Matching
+   * is ordered strongest-first — an exact filename never loses to a prefix —
+   * and reserved files are excluded, because the old `f.startsWith(id)` scan
+   * would happily resolve id "MEM" to MEMORY.md and then delete the index.
+   */
+  private async resolveMemoryFile(id: string): Promise<string | null> {
+    const files = await this.listMemoryFilenames()
+    if (files.length === 0) return null
+
+    const wanted = id.endsWith('.md') ? id.slice(0, -3) : id
+    const slug = wanted.toLowerCase().replace(/[^a-z0-9]/g, '-')
+
+    const exact = files.find(f => basename(f, '.md') === wanted)
+    if (exact) return join(this.memoryDir, exact)
+
+    const prefixed = files.find(f => basename(f, '.md').startsWith(wanted))
+    if (prefixed) return join(this.memoryDir, prefixed)
+
+    // Fall back to the sanitized-name segment of the generated filename, so
+    // `id: "deepseek-optimizer-known-gaps"` finds
+    // `project_deepseek-optimizer-known-gaps.md`.
+    const bySlug = files.find(f => basename(f, '.md').toLowerCase().includes(slug))
+    return bySlug ? join(this.memoryDir, bySlug) : null
   }
 
   async getMemory(id: string): Promise<Memory | null> {
     await this.ensureMemoryDir()
 
-    if (!existsSync(this.memoryDir)) {
+    const filePath = await this.resolveMemoryFile(id)
+    if (!filePath) {
       return null
     }
 
-    // Look for file with matching id (filename without extension)
-    const files = await readdir(this.memoryDir)
-    const matchingFile = files.find(f => f.startsWith(id) || f === `${id}.md`)
+    return this.readMemory(filePath)
+  }
 
-    if (!matchingFile) {
-      return null
+  /**
+   * Resolve the `[[name]]` links in a memory, plus the memories that link
+   * back to it.
+   *
+   * The store already had a knowledge graph — `overcomes:` / `source:` tags
+   * walked by getGenealogy — but it was single-parent, only ever written by
+   * evolve/summarize, and nothing consulted it during recall, so it was inert
+   * structure. Wikilinks make the graph general and, surfaced on `get`, make
+   * it do work: pulling up one memory tells you which neighbours exist.
+   *
+   * Unresolved links are returned as-is rather than dropped. A dangling
+   * `[[name]]` is a deliberate marker for a memory worth writing, so hiding
+   * it would delete the signal.
+   */
+  async getLinks(memory: Memory): Promise<{
+    outbound: Memory[]
+    backlinks: Memory[]
+    unresolved: string[]
+  }> {
+    const targets = extractLinks(memory.content)
+    const files = await this.listMemoryFilenames()
+    const all = (
+      await Promise.all(files.map(f => this.readMemory(join(this.memoryDir, f))))
+    ).filter((m): m is Memory => m !== null && m.id !== memory.id)
+
+    const outbound: Memory[] = []
+    const unresolved: string[] = []
+    for (const target of targets) {
+      const wanted = normalizeForCompare(target)
+      const hit = all.find(
+        m =>
+          normalizeForCompare(m.name) === wanted ||
+          normalizeForCompare(m.id).includes(wanted),
+      )
+      if (hit) {
+        if (!outbound.some(o => o.id === hit.id)) outbound.push(hit)
+      } else {
+        unresolved.push(target)
+      }
     }
 
-    const filePath = join(this.memoryDir, matchingFile)
-    try {
-      const content = await readFile(filePath, 'utf-8')
-      return this.parseMemoryFile(content, filePath)
-    } catch (error) {
-      console.error(`Failed to read memory file ${filePath}:`, error)
-      return null
-    }
+    const self = normalizeForCompare(memory.name)
+    const backlinks = all.filter(
+      m =>
+        !outbound.some(o => o.id === m.id) &&
+        extractLinks(m.content).some(l => normalizeForCompare(l) === self),
+    )
+
+    return { outbound, backlinks, unresolved }
   }
 
   async deleteMemory(id: string): Promise<boolean> {
     await this.ensureMemoryDir()
 
-    if (!existsSync(this.memoryDir)) {
+    const filePath = await this.resolveMemoryFile(id)
+    if (!filePath) {
       return false
     }
 
-    // Look for file with matching id (filename without extension)
-    const files = await readdir(this.memoryDir)
-    const matchingFile = files.find(f => f.startsWith(id) || f === `${id}.md`)
-
-    if (!matchingFile) {
-      return false
-    }
-
-    const filePath = join(this.memoryDir, matchingFile)
     try {
       await unlink(filePath)
 
@@ -325,22 +533,13 @@ ${memory.content}
   ): Promise<Memory | null> {
     await this.ensureMemoryDir()
 
-    if (!existsSync(this.memoryDir)) {
+    const filePath = await this.resolveMemoryFile(id)
+    if (!filePath) {
       return null
     }
 
-    // Find existing memory
-    const files = await readdir(this.memoryDir)
-    const matchingFile = files.find(f => f.startsWith(id) || f === `${id}.md`)
-
-    if (!matchingFile) {
-      return null
-    }
-
-    const filePath = join(this.memoryDir, matchingFile)
     try {
-      const content = await readFile(filePath, 'utf-8')
-      const existing = this.parseMemoryFile(content, filePath)
+      const existing = await this.readMemory(filePath)
 
       if (!existing) {
         return null
@@ -370,35 +569,43 @@ ${memory.content}
     }
   }
 
+  /**
+   * Rebuild MEMORY.md from the files on disk.
+   *
+   * Any non-entry prose already in the index (the `# Project Memory Index`
+   * heading, hand-written notes) is preserved: this used to overwrite the
+   * file with bare entry lines, silently destroying whatever the user or the
+   * memory prompt had put at the top.
+   */
   private async regenerateIndex(): Promise<void> {
     await this.ensureMemoryDir()
 
-    if (!existsSync(this.memoryDir)) {
-      return
-    }
+    const memoryFiles = await this.listMemoryFilenames()
 
-    const files = await readdir(this.memoryDir)
-    const memoryFiles = files.filter(f => f.endsWith('.md') && f !== 'MEMORY.md' && f !== 'REHEARSAL.md' && f !== 'SCRATCHPAD.md')
+    const loaded = await Promise.all(
+      memoryFiles.map(file => this.readMemory(join(this.memoryDir, file))),
+    )
+    const entries = loaded
+      .filter((m): m is Memory => m !== null)
+      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+      .map(m => `- [${m.name}](${basename(m.filePath)}) — ${m.description}`)
 
-    const indexEntries: string[] = []
-
-    for (const file of memoryFiles) {
-      const filePath = join(this.memoryDir, file)
+    let preamble: string[] = []
+    if (existsSync(this.indexFile)) {
       try {
-        const content = await readFile(filePath, 'utf-8')
-        const memory = this.parseMemoryFile(content, filePath)
-
-        if (memory) {
-          const indexLine = `- [${memory.name}](${basename(filePath)}) — ${memory.description}\n`
-          indexEntries.push(indexLine)
-        }
-      } catch (error) {
-        console.error(`Failed to read memory file ${file} for index regeneration:`, error)
+        const existing = await readFile(this.indexFile, 'utf-8')
+        const lines = existing.split('\n')
+        const firstEntry = lines.findIndex(l => l.trimStart().startsWith('- ['))
+        preamble = (firstEntry >= 0 ? lines.slice(0, firstEntry) : lines).filter(
+          l => l.trim() !== '',
+        )
+      } catch {
+        // Unreadable index — fall through and write entries only.
       }
     }
 
-    const indexContent = indexEntries.join('')
-    await writeFile(this.indexFile, indexContent, 'utf-8')
+    const body = [...preamble, ...(preamble.length > 0 ? [''] : []), ...entries]
+    await writeFile(this.indexFile, `${body.join('\n')}\n`, 'utf-8')
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -494,7 +701,7 @@ ${newContent}
   ): Promise<{ rehearsal: string; memories: Memory[] }> {
     const memories = query
       ? await this.searchMemories(query, type, limit)
-      : await this.listMemories(0, limit)
+      : (await this.listMemories(0, limit, type)).memories
 
     if (memories.length === 0) {
       return { rehearsal: '', memories: [] }
@@ -657,7 +864,7 @@ ${keyPoints.map(p => `- ${p}`).join('\n')}
     // Try to find memories matching current context
     const memories = query
       ? await this.searchMemories(query, type, limit)
-      : await this.listMemories(0, limit)
+      : (await this.listMemories(0, limit, type)).memories
 
     if (memories.length === 0) {
       return { rehearsal: '', memories: [] }
@@ -721,10 +928,7 @@ ${keyPoints.map(p => `- ${p}`).join('\n')}
     let archived = 0
 
     try {
-      const files = await readdir(this.memoryDir)
-      const memoryFiles = files.filter(
-        f => f.endsWith('.md') && f !== 'MEMORY.md' && f !== 'REHEARSAL.md' && f !== 'SCRATCHPAD.md',
-      )
+      const memoryFiles = await this.listMemoryFilenames()
 
       for (const file of memoryFiles) {
         const filePath = join(this.memoryDir, file)
@@ -733,9 +937,7 @@ ${keyPoints.map(p => `- ${p}`).join('\n')}
           const age = now - stats.mtime.getTime()
 
           if (age > maxAge) {
-            // Read the memory
-            const content = await readFile(filePath, 'utf-8')
-            const memory = this.parseMemoryFile(content, filePath)
+            const memory = await this.readMemory(filePath)
             if (!memory) continue
 
             // Ensure archive dir exists

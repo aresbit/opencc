@@ -1,9 +1,13 @@
 import { MEMORY_TYPES } from '../../memdir/memoryTypes.js'
+import { getAutoMemPath } from '../../memdir/paths.js'
 
 export const DESCRIPTION = 'Manage memory system for persistent storage of user, feedback, project, and reference information'
 
 export function getPrompt(): string {
-  return `Use this tool to interact with the persistent memory system. Memories are stored in a file-based system at \`/home/ares/.claude/projects/<encoded-project-path>/memory/\`. This directory already exists — write to it directly.
+  // Resolved, not hardcoded: this string used to name one developer's home
+  // directory, which is wrong for every other user and misleads the model
+  // about where its memories actually live.
+  return `Use this tool to interact with the persistent memory system. Memories are stored in a file-based system at \`${getAutoMemPath()}\`. This directory already exists — write to it directly.
 
 You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.
 
