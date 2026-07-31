@@ -1,1 +1,0 @@
-I'm ready to help. You sent an empty message — what would you like me to work on?

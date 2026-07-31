@@ -1,1 +1,0 @@
-The user didn't include any message content. How can I help you today? Feel free to share what you'd like me to work on in this codebase.

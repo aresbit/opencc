@@ -1,1 +1,0 @@
-It looks like your message came through empty. I'm here and ready to help -- what would you like to work on in the opencc project?

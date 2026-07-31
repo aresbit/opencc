@@ -1,1 +1,0 @@
-I didn't receive a message with your request — it looks like the input came through empty. Could you repost what you'd like me to help with? I'm ready to look into the OpenCC / Claude Code codebase or anything else you need.
