@@ -16,3 +16,9 @@ CLAUDE.md
 .self_improving_performance.json
 vendor/
 packages/quant/src/hmm/build/
+# Mythos deep-research output (machine-generated, regenerable scratch)
+mythos_output/
+# Session planning / research notes (ephemeral, not part of the codebase)
+findings.md
+progress.md
+task_plan.md
