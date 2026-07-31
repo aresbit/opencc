@@ -396,11 +396,11 @@ function loadTokensFromEnv(): string[] {
   return parseTokensFromUnknown(raw)
 }
 
-function resolveAuthorizationInput(authorization?: string): {
+async function resolveAuthorizationInput(authorization?: string): Promise<{
   tokens: string[]
   authorization: string
-  source: 'input' | 'env' | 'file'
-} {
+  source: 'input' | 'env' | 'file' | 'cdp'
+}> {
   if (authorization && authorization.trim()) {
     const tokens = parseTokensFromUnknown(authorization)
     assertTokens(tokens)
@@ -425,8 +425,27 @@ function resolveAuthorizationInput(authorization?: string): {
     }
   }
 
+  // Last resort: auto-load from a logged-in Kimi tab in Chrome (zero-config on any device).
+  try {
+    const cdp = await readRefreshTokenFromCdpSession({ localStorageKey: 'refresh_token' })
+    if (cdp.ok && cdp.token && cdp.authorization) {
+      const tokens = tokenSplit(cdp.authorization)
+      if (tokens.length) {
+        // Persist so subsequent calls work even without Chrome open.
+        try {
+          saveKimiConfig(cdp.authorization)
+        } catch {
+          // non-fatal: config save is a convenience
+        }
+        return { tokens, authorization: cdp.authorization, source: 'cdp' }
+      }
+    }
+  } catch {
+    // fall through to the error below
+  }
+
   throw new Error(
-    'No authorization provided and no token found in KIMI_REFRESH_TOKENS or ~/.claude/kimi.json',
+    'No authorization provided and no token found in KIMI_REFRESH_TOKENS, ~/.claude/kimi.json, or a logged-in Kimi tab in Chrome',
   )
 }
 
@@ -1530,7 +1549,7 @@ export const KimiTool = buildTool({
     return 'Kimi web reverse API toolkit (compatible with kimi-free-api capabilities): token split/random selection, token live check, OpenAI-compatible chat completion, stream-like chunk result, file/image URL and base64 upload parsing, search toggle, and conversation continuation/cleanup.'
   },
   async prompt() {
-    return 'Use KimiTool for kimi-free-api style operations. Supported actions: pick_token, build_auth_header, check_token_live, chat_completion, chat_completion_stream. For chat actions pass authorization with one or more refresh_tokens, plus messages/use_search/conversation_id.'
+    return 'Use KimiTool for kimi-free-api style operations. Supported actions: pick_token, build_auth_header, check_token_live, chat_completion, chat_completion_stream. For chat actions pass authorization with one or more refresh_tokens, plus messages/use_search/conversation_id. When no authorization is passed, the tool auto-loads a refresh_token from KIMI_REFRESH_TOKENS, ~/.claude/kimi.json, or a logged-in Kimi tab in Chrome (from_cdp_session), so chat_completion works with zero config on any device.'
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -1606,6 +1625,15 @@ export const KimiTool = buildTool({
             message: error instanceof Error ? error.message : String(error),
           }
         }
+        // Internalize: persist a successfully loaded token so the setup
+        // step completes in one call and works offline on other devices.
+        if (result.ok && result.token && result.authorization) {
+          try {
+            saveKimiConfig(result.authorization)
+          } catch {
+            // non-fatal: config save is a convenience
+          }
+        }
         return {
           data: {
             action: 'from_cdp_session' as const,
@@ -1668,7 +1696,7 @@ export const KimiTool = buildTool({
         }
       }
       case 'chat_completion': {
-        const resolved = resolveAuthorizationInput(input.authorization)
+        const resolved = await resolveAuthorizationInput(input.authorization)
         const tokens = resolved.tokens
         const candidates = shuffleTokens(tokens)
         const maxAttempts = Math.max(MAX_RETRY_COUNT, candidates.length)
@@ -1711,7 +1739,7 @@ export const KimiTool = buildTool({
         }
       }
       case 'chat_completion_stream': {
-        const resolved = resolveAuthorizationInput(input.authorization)
+        const resolved = await resolveAuthorizationInput(input.authorization)
         const tokens = resolved.tokens
         const candidates = shuffleTokens(tokens)
         const maxAttempts = Math.max(MAX_RETRY_COUNT, candidates.length)
