@@ -237,6 +237,9 @@ export type AutoresearchProgress = {
   message: Message
 }
 
+import { createAgentId } from '../../utils/uuid.js'
+import { canKeepOn, resolveMetric } from './metricProvenance.js'
+
 const AUTORESEARCH_CONFIG = 'autoresearch.config.json'
 const AUTORESEARCH_RUNTIME = '.autoresearch.runtime.json'
 const AUTORESEARCH_JSONL = 'autoresearch.jsonl'
@@ -1076,14 +1079,33 @@ async function handleLogExperiment(
     }
   }
 
-  const primaryMetric = input.metric_value ?? lastRun.parsedPrimaryMetric
-  if (typeof primaryMetric !== 'number' || !Number.isFinite(primaryMetric)) {
+  // The measured value wins over the caller's. See ./metricProvenance.ts — this
+  // gate decides what gets committed, so it must not be assertable.
+  const resolved = resolveMetric(lastRun.parsedPrimaryMetric, input.metric_value, input.force)
+  if (!resolved.ok) {
     return {
       success: false,
       mode: runtime.mode,
       action: 'log_experiment',
-      message: `Missing primary metric for log_experiment. Provide metric or emit METRIC ${exp.metricName}=... in benchmark output.`,
+      message:
+        resolved.error ??
+        `Missing primary metric for log_experiment. Provide metric or emit METRIC ${exp.metricName}=... in benchmark output.`,
       session: await buildSessionSnapshot(cwd, workDir),
+    }
+  }
+  const primaryMetric = resolved.value!
+  const metricSource = resolved.source!
+
+  if (status === 'keep') {
+    const keepable = canKeepOn(metricSource, input.force)
+    if (!keepable.ok) {
+      return {
+        success: false,
+        mode: runtime.mode,
+        action: 'log_experiment',
+        message: keepable.error!,
+        session: await buildSessionSnapshot(cwd, workDir),
+      }
     }
   }
 
@@ -1189,6 +1211,11 @@ async function handleLogExperiment(
     timestamp: Date.now(),
     status,
     metric: primaryMetric,
+    // Provenance travels with the number. Without it a self-reported run and a
+    // measured one are indistinguishable in the log, and the whole record
+    // becomes unauditable after the fact.
+    metricSource,
+    ...(resolved.note ? { metricNote: resolved.note } : {}),
     metricName: exp.metricName,
     metrics: mergedSecondaryMetrics,
     description: input.description,
@@ -2147,7 +2174,14 @@ export const AutoresearchTool = buildTool({
       '',
       resumeContext ? `Resume context:\n${resumeContext}` : 'No prior session context found.',
     ].join('\n')
-    const userMessage = createUserMessage(strictProtocolPrompt)
+    // createUserMessage takes an options object. Passing the prompt positionally
+    // destructured `content` off a string — undefined — so the autoresearch
+    // subagent received an empty message and none of the protocol above ever
+    // reached it. Same defect as MythosTool's phase runner; tsc flagged both.
+    if (!strictProtocolPrompt.trim()) {
+      throw new Error('autoresearch built an empty protocol prompt — refusing to start a subagent with no instructions')
+    }
+    const userMessage = createUserMessage({ content: strictProtocolPrompt })
     const agentMessages: Message[] = []
     const currentRuntime = await readRuntime(cwd)
 
@@ -2169,7 +2203,11 @@ export const AutoresearchTool = buildTool({
         querySource: 'agent:custom',
         model: undefined,
         availableTools: context.options.tools,
-        override: { agentId: `autoresearch-${Date.now()}` },
+        // createAgentId enforces the `a<label>-<16 hex>` shape toAgentId()
+        // validates; the old literal matched neither half, so anything
+        // resolving this id later saw null. Date.now() also collides when two
+        // runs start in the same millisecond.
+        override: { agentId: createAgentId('autoresearch') },
       })) {
         agentMessages.push(message)
 

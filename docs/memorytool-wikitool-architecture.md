@@ -406,16 +406,18 @@ if (input.saveMemory) {  // 默认为 true
 
 生成的 article 可以喂给 WikiTool 存成结构化 wiki 页面，实现"记忆 → 结构化知识"的升华。
 
-### 6.3 桥接代理：SelfImprovingTool
+### 6.3 桥接代理：LearnTool
 
-`SelfImprovingTool` 提供两个额外的桥接操作：
+`LearnTool`（注册名 `learn-tool`，2026-08-01 前称 SelfImprovingTool）提供两个桥接操作：
 
 | 操作 | 方向 | 说明 |
 |------|------|------|
 | `ingest_memory` | MemoryDir → Learnings | 将 memory 目录中的 .md 文件转化为结构化 learnings |
-| `promote_memory` | Learnings → MemoryStore | 将经过验证的 learnings 提升为长期记忆文件 |
+| `promote_memory` | Learnings → MemoryStore | 将经过验证的 learnings 提升为长期记忆。**默认 dry-run**，须显式 `dryRun: false` 才写盘 |
 
-这构成了第三条联动路径：`MemoryStore ↔ SelfImprovingTool.learnings ↔ MemoryStore`，形成了**元认知反馈回路**——记忆系统不仅能记住内容，还能反思和改进自身的记忆方式。
+这构成了第三条联动路径：`MemoryStore ↔ LearnTool.learnings ↔ MemoryStore`。
+
+注意这条回路**刻意不是自动的**：晋升会影响之后每一个会话，而写条目的和判断该不该晋升的是同一个模型，因此提交权留给人——详见 [LearnTool & AutoresearchTool 架构](learntool-autoresearch-tools-architecture.md) 的 RSI 安全四支柱。
 
 ---
 
@@ -484,7 +486,7 @@ isAutoMemoryEnabled():
 ┌──────────────────────────────────────────────────────────────────┐
 │                      Claude Code Agent                          │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
-│  │ MemoryTool   │  │ WikiTool     │  │ SelfImprovingTool    │   │
+│  │ MemoryTool   │  │ WikiTool     │  │ LearnTool            │   │
 │  │ 14 operations│◄─┤ fetch→save   │  │ ingest ↔ promote     │   │
 │  │              │──┤              │  │                      │   │
 │  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘   │
@@ -522,13 +524,13 @@ isAutoMemoryEnabled():
 
 4. **可恢复压缩** — 所有压缩操作保留原始文件 + 回链，永不破坏性压缩。摘要可以导航回原文。
 
-5. **知识闭环** — MemoryTool ↔ WikiTool ↔ SelfImprovingTool 形成"积累→聚合→结构化→验证→再积累"的正反馈循环。
+5. **知识闭环** — MemoryTool ↔ WikiTool ↔ LearnTool 形成"积累→聚合→结构化→验证→再积累"的循环，其中"验证"一步由人把关。
 
 6. **安全优先** — 路径验证拒绝 6 种攻击向量，projectSettings 被排除在路径配置之外，写入绕过仅对用户显式配置的路径生效。
 
 7. **微模型侧查询** — `findRelevantMemories()` 用 Sonnet 小模型做无关记忆过滤，而非把所有记忆塞进主上下文，节省 token 并提升注意力精度。
 
-8. **错误即知识** — WikiTool 抓取失败时生成 Knowledge Gap 文件保留失败元数据，SelfImprovingTool 跟踪 learnings，MemoryTool 演化链保留被超越的错误理解。整个系统将"失败"视为可检索的智力资产。
+8. **错误即知识** — WikiTool 抓取失败时生成 Knowledge Gap 文件保留失败元数据，LearnTool 跟踪 learnings，MemoryTool 演化链保留被超越的错误理解。整个系统将"失败"视为可检索的智力资产。
 
 ---
 
@@ -551,5 +553,5 @@ isAutoMemoryEnabled():
 | `src/memdir/memoryAge.ts` | 记忆年龄追踪 |
 | `src/memdir/memoryShapeTelemetry.ts` | 记忆召回模式的遥测 |
 | `src/services/extractMemories/extractMemories.ts` | 后台 Agent：每轮对话后自动提取记忆 |
-| `src/tools/SelfImprovingTool/SelfImprovingTool.ts` | ingest_memory / promote_memory 桥接操作 |
+| `src/tools/LearnTool/LearnTool.ts` | ingest_memory / promote_memory 桥接操作 |
 | `src/utils/claudemd.ts` | 加载 CLAUDE.md 和 MEMORY.md 注入上下文 |

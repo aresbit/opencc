@@ -6,67 +6,31 @@ import { join } from 'path'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { DESCRIPTION, getLearnToolPrompt } from './prompt.js'
+import {
+  isVerifiedEffective as isVerifiedBody,
+  VERIFIED_PLACEHOLDER,
+} from './verification.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { MemoryStore } from '../MemoryTool/MemoryStore.js'
 import { MEMORY_TYPES, type MemoryType } from '../../memdir/memoryTypes.js'
 import { getAutoMemPath } from '../../memdir/paths.js'
 
-const SELF_IMPROVING_TOOL_NAME = 'learn-tool'
+const LEARN_TOOL_NAME = 'learn-tool'
 
-const DESCRIPTION =
-  'Self-improving system tool. Initializes observability files, records tool execution performance, analyzes trends, applies PID-style parameter suggestions, predicts degradation, and logs learnings/errors/feature requests.'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
     action: z
       .enum([
-        'monitor',
-        'record',
-        'analyze',
-        'adjust',
-        'predict',
-        'report',
         'learn',
         'ingest_memory',
         'promote_memory',
         'demote_memory',
       ])
       .describe(
-        'monitor initializes self-improving workspace; record logs one execution sample; analyze summarizes historical metrics; adjust generates PID-based parameter adjustments; predict forecasts performance; report returns recommendations; learn logs a learning/error/feature request entry; ingest_memory converts memory markdown docs into structured learnings; promote_memory promotes validated learnings into long-term memory; demote_memory reverses a previous promotion by entry id.',
+        'learn logs a learning/error/feature-request entry to .learnings/; ingest_memory converts existing memory markdown into structured learnings; promote_memory promotes a verified learning into long-term memory (dry-run by default); demote_memory reverses a previous promotion by entry id.',
       ),
-    toolName: z
-      .string()
-      .optional()
-      .describe('Optional tool name to focus on (e.g., Bash, se-tool).'),
-    metric: z
-      .enum(['execution_time', 'success_rate'])
-      .optional()
-      .describe('Primary metric used by analyze/adjust/predict. Default: execution_time.'),
-    targetValue: z
-      .number()
-      .optional()
-      .describe('Target metric value. For execution_time lower is better, for success_rate higher is better.'),
-    predictionHorizon: z
-      .number()
-      .int()
-      .min(1)
-      .max(50)
-      .optional()
-      .describe('Future steps to forecast (default: 5).'),
-
-    executionTimeMs: z
-      .number()
-      .nonnegative()
-      .optional()
-      .describe('Used by action=record: observed execution time in ms.'),
-    success: z
-      .boolean()
-      .optional()
-      .describe('Used by action=record: whether the tool execution succeeded.'),
-    error: z
-      .string()
-      .optional()
-      .describe('Used by action=record: error summary if failed.'),
     sourceAction: z
       .string()
       .optional()
@@ -148,45 +112,9 @@ type Trend = 'improving' | 'stable' | 'degrading'
 const outputSchema = lazySchema(() =>
   z.object({
     success: z.boolean(),
-    action: z.enum([
-      'monitor',
-      'record',
-      'analyze',
-      'adjust',
-      'predict',
-      'report',
-      'learn',
-      'ingest_memory',
-      'promote_memory',
-      'demote_memory',
-    ]),
+    action: z.enum(['learn', 'ingest_memory', 'promote_memory', 'demote_memory']),
     summary: z.string(),
     projectRoot: z.string(),
-    metrics: z.record(z.string(), z.unknown()).optional(),
-    adjustments: z
-      .array(
-        z.object({
-          tool: z.string(),
-          parameter: z.string(),
-          oldValue: z.number(),
-          newValue: z.number(),
-          reason: z.string(),
-        }),
-      )
-      .optional(),
-    predictions: z
-      .array(
-        z.object({
-          tool: z.string(),
-          metric: z.enum(['execution_time', 'success_rate']),
-          currentValue: z.number(),
-          predictedValue: z.number(),
-          confidence: z.number(),
-          trend: z.enum(['improving', 'stable', 'degrading']),
-        }),
-      )
-      .optional(),
-    recommendations: z.array(z.string()).optional(),
     filesCreated: z.array(z.string()).optional(),
     loggedEntryId: z.string().optional(),
     importedCount: z.number().optional(),
@@ -201,8 +129,11 @@ const outputSchema = lazySchema(() =>
 type OutputSchema = ReturnType<typeof outputSchema>
 export type Output = z.infer<OutputSchema>
 
-const PERFORMANCE_DATA_FILE = '.self_improving_performance.json'
-const ADJUSTMENTS_LOG_FILE = '.self_improving_adjustments.log'
+// Deliberately keeps the old name after the SelfImprovingTool → LearnTool
+// rename. `demote_memory` reads this log to reverse a past promotion, so
+// renaming the file would orphan every existing entry and silently break the
+// reversibility that makes promotion safe. A cosmetic filename is not worth
+// breaking the audit trail.
 const PROMOTIONS_LOG_FILE = '.self_improving_promotions.log'
 const LEARNINGS_DIR = '.learnings'
 const LEARNINGS_FILE = 'LEARNINGS.md'
@@ -225,15 +156,6 @@ interface PromotionLogEntry {
 }
 
 type LearningKind = NonNullable<Input['learningType']>
-
-interface PerformanceRecord {
-  timestamp: string
-  toolName: string
-  action: string
-  executionTimeMs: number
-  success: boolean
-  error?: string
-}
 
 interface LearningEntry {
   id: string
@@ -335,66 +257,6 @@ function nextId(prefix: 'LRN' | 'ERR' | 'FEAT', existing: string, iso: string): 
   return `${prefix}-${datePart}-${seq}`
 }
 
-function calculateTrend(values: number[]): number {
-  if (values.length < 2) return 0
-  const n = values.length
-  const xs = Array.from({ length: n }, (_, i) => i)
-  const sumX = xs.reduce((a, b) => a + b, 0)
-  const sumY = values.reduce((a, b) => a + b, 0)
-  const sumXY = xs.reduce((a, x, i) => a + x * values[i], 0)
-  const sumX2 = xs.reduce((a, x) => a + x * x, 0)
-  const den = n * sumX2 - sumX * sumX
-  return den === 0 ? 0 : (n * sumXY - sumX * sumY) / den
-}
-
-function classifyTrend(slope: number, metric: 'execution_time' | 'success_rate'): Trend {
-  const threshold = metric === 'execution_time' ? 0.1 : 0.005
-  if (Math.abs(slope) <= threshold) return 'stable'
-  if (metric === 'execution_time') return slope > 0 ? 'degrading' : 'improving'
-  return slope > 0 ? 'improving' : 'degrading'
-}
-
-class PIDController {
-  private integral = 0
-  private lastError = 0
-
-  constructor(
-    private readonly kp: number,
-    private readonly ki: number,
-    private readonly kd: number,
-    private readonly setpoint: number,
-  ) {}
-
-  update(measurement: number, dtSec = 1): number {
-    const error = this.setpoint - measurement
-    this.integral += error * dtSec
-    const derivative = (error - this.lastError) / dtSec
-    this.lastError = error
-    return this.kp * error + this.ki * this.integral + this.kd * derivative
-  }
-}
-
-async function loadPerformanceData(projectRoot: string): Promise<PerformanceRecord[]> {
-  const dataPath = join(projectRoot, PERFORMANCE_DATA_FILE)
-  if (!(await exists(dataPath))) return []
-  try {
-    const content = await readFile(dataPath, 'utf-8')
-    const parsed = JSON.parse(content)
-    return Array.isArray(parsed) ? (parsed as PerformanceRecord[]) : []
-  } catch {
-    return []
-  }
-}
-
-async function savePerformanceData(projectRoot: string, data: PerformanceRecord[]): Promise<void> {
-  await writeFile(join(projectRoot, PERFORMANCE_DATA_FILE), JSON.stringify(data, null, 2), 'utf-8')
-}
-
-async function logAdjustment(projectRoot: string, adj: Output['adjustments'][number]): Promise<void> {
-  const line = `${nowISO()} ${JSON.stringify(adj)}\n`
-  await appendFile(join(projectRoot, ADJUSTMENTS_LOG_FILE), line, 'utf-8')
-}
-
 async function ensureLearningFiles(projectRoot: string): Promise<string[]> {
   const created: string[] = []
   const dirPath = join(projectRoot, LEARNINGS_DIR)
@@ -422,298 +284,6 @@ async function ensureLearningFiles(projectRoot: string): Promise<string[]> {
   }
 
   return created
-}
-
-async function runMonitor(projectRoot: string): Promise<Output> {
-  const created = await ensureLearningFiles(projectRoot)
-
-  const perfPath = join(projectRoot, PERFORMANCE_DATA_FILE)
-  if (!(await exists(perfPath))) {
-    await writeFile(perfPath, '[]\n', 'utf-8')
-    created.push(PERFORMANCE_DATA_FILE)
-  }
-
-  const adjPath = join(projectRoot, ADJUSTMENTS_LOG_FILE)
-  if (!(await exists(adjPath))) {
-    await writeFile(adjPath, '', 'utf-8')
-    created.push(ADJUSTMENTS_LOG_FILE)
-  }
-
-  return {
-    success: true,
-    action: 'monitor',
-    projectRoot,
-    summary:
-      created.length > 0
-        ? `Self-improving workspace initialized. Created: ${created.join(', ')}`
-        : 'Self-improving workspace already initialized.',
-    filesCreated: created,
-  }
-}
-
-async function runRecord(projectRoot: string, input: Input): Promise<Output> {
-  if (!input.toolName) {
-    return {
-      success: false,
-      action: 'record',
-      projectRoot,
-      summary: 'action=record requires toolName.',
-    }
-  }
-  if (typeof input.executionTimeMs !== 'number' || typeof input.success !== 'boolean') {
-    return {
-      success: false,
-      action: 'record',
-      projectRoot,
-      summary: 'action=record requires executionTimeMs and success.',
-    }
-  }
-
-  const data = await loadPerformanceData(projectRoot)
-  const rec: PerformanceRecord = {
-    timestamp: nowISO(),
-    toolName: input.toolName,
-    action: input.sourceAction || 'call',
-    executionTimeMs: input.executionTimeMs,
-    success: input.success,
-    error: input.error,
-  }
-  data.push(rec)
-  await savePerformanceData(projectRoot, data)
-
-  return {
-    success: true,
-    action: 'record',
-    projectRoot,
-    summary: `Recorded performance sample for ${input.toolName}.`,
-    metrics: {
-      totalRecords: data.length,
-      lastRecord: rec,
-    },
-  }
-}
-
-function buildMetrics(data: PerformanceRecord[], toolName?: string): Record<string, unknown> {
-  const scoped = toolName ? data.filter(r => r.toolName === toolName) : data
-  const tools = [...new Set(scoped.map(r => r.toolName))]
-  const out: Record<string, unknown> = {}
-
-  for (const t of tools) {
-    const rows = scoped.filter(r => r.toolName === t)
-    const totalCalls = rows.length
-    const successCount = rows.filter(r => r.success).length
-    const successRate = totalCalls === 0 ? 0 : successCount / totalCalls
-    const exec = rows.map(r => r.executionTimeMs)
-    const avgExecutionTime = exec.reduce((a, b) => a + b, 0) / Math.max(exec.length, 1)
-    const trendSlope = calculateTrend(exec.slice(-10))
-
-    out[t] = {
-      totalCalls,
-      successRate,
-      avgExecutionTime,
-      lastExecutionTime: exec[exec.length - 1] ?? 0,
-      trendSlope,
-      trend: classifyTrend(trendSlope, 'execution_time'),
-    }
-  }
-
-  return out
-}
-
-async function runAnalyze(projectRoot: string, toolName?: string): Promise<Output> {
-  const data = await loadPerformanceData(projectRoot)
-  const scoped = toolName ? data.filter(r => r.toolName === toolName) : data
-  if (scoped.length === 0) {
-    return {
-      success: false,
-      action: 'analyze',
-      projectRoot,
-      summary: toolName
-        ? `No performance data found for ${toolName}.`
-        : 'No performance data found.',
-    }
-  }
-
-  return {
-    success: true,
-    action: 'analyze',
-    projectRoot,
-    summary: `Analyzed ${scoped.length} records${toolName ? ` for ${toolName}` : ''}.`,
-    metrics: buildMetrics(data, toolName),
-  }
-}
-
-async function runAdjust(
-  projectRoot: string,
-  toolName?: string,
-  metric: 'execution_time' | 'success_rate' = 'execution_time',
-  targetValue?: number,
-): Promise<Output> {
-  const data = await loadPerformanceData(projectRoot)
-  const scoped = toolName ? data.filter(r => r.toolName === toolName) : data
-  if (scoped.length === 0) {
-    return {
-      success: false,
-      action: 'adjust',
-      projectRoot,
-      summary: 'No performance data available to adjust.',
-    }
-  }
-
-  if (metric !== 'execution_time') {
-    return {
-      success: false,
-      action: 'adjust',
-      projectRoot,
-      summary: 'PID adjustment currently supports metric=execution_time only.',
-    }
-  }
-
-  const tools = toolName ? [toolName] : [...new Set(scoped.map(r => r.toolName))]
-  const adjustments: NonNullable<Output['adjustments']> = []
-
-  for (const t of tools) {
-    const rows = scoped.filter(r => r.toolName === t)
-    const exec = rows.map(r => r.executionTimeMs)
-    if (exec.length < 2) continue
-
-    const avg = exec.reduce((a, b) => a + b, 0) / exec.length
-    const setpoint = targetValue ?? Math.max(50, avg * 0.9)
-
-    const pid = new PIDController(0.6, 0.05, 0.1, setpoint)
-    // error = setpoint - avg → negative when too slow → control negative.
-    // Sign carries direction; absolute value carries magnitude. Both matter.
-    const control = pid.update(avg)
-    const direction =
-      Math.abs(control) < 0.5
-        ? 'hold'
-        : control > 0
-          ? 'expand_scope_or_relax'
-          : 'tighten_scope_or_narrow_input'
-
-    const adj = {
-      tool: t,
-      // Honest about what this is: an advisory PID signal, not a knob we own.
-      parameter: 'control_signal',
-      oldValue: 0,
-      newValue: Number(control.toFixed(2)),
-      reason: `avg=${avg.toFixed(1)}ms target=${setpoint.toFixed(1)}ms direction=${direction} (positive=under target/explore, negative=over target/tighten)`,
-    }
-
-    adjustments.push(adj)
-    await logAdjustment(projectRoot, adj)
-  }
-
-  return {
-    success: true,
-    action: 'adjust',
-    projectRoot,
-    summary: `Generated ${adjustments.length} PID-based adjustment(s).`,
-    adjustments,
-  }
-}
-
-async function runPredict(
-  projectRoot: string,
-  toolName?: string,
-  metric: 'execution_time' | 'success_rate' = 'execution_time',
-  predictionHorizon = 5,
-): Promise<Output> {
-  const data = await loadPerformanceData(projectRoot)
-  const scoped = toolName ? data.filter(r => r.toolName === toolName) : data
-  if (scoped.length < 3) {
-    return {
-      success: false,
-      action: 'predict',
-      projectRoot,
-      summary: 'Insufficient data for prediction (need at least 3 records).',
-    }
-  }
-
-  const tools = toolName ? [toolName] : [...new Set(scoped.map(r => r.toolName))]
-  const predictions: NonNullable<Output['predictions']> = []
-
-  for (const t of tools) {
-    const rows = scoped.filter(r => r.toolName === t)
-    const series =
-      metric === 'execution_time'
-        ? rows.map(r => r.executionTimeMs)
-        : rows.map(r => (r.success ? 1 : 0))
-    if (series.length < 3) continue
-
-    const slope = calculateTrend(series.slice(-10))
-    const currentValue = series[series.length - 1]
-    const predictedValue = currentValue + slope * predictionHorizon
-    const trend = classifyTrend(slope, metric)
-
-    predictions.push({
-      tool: t,
-      metric,
-      currentValue,
-      predictedValue,
-      confidence: 0.7,
-      trend,
-    })
-  }
-
-  return {
-    success: true,
-    action: 'predict',
-    projectRoot,
-    summary: `Generated ${predictions.length} ${metric} prediction(s) for horizon=${predictionHorizon}.`,
-    predictions,
-  }
-}
-
-async function runReport(projectRoot: string): Promise<Output> {
-  const data = await loadPerformanceData(projectRoot)
-  if (data.length === 0) {
-    return {
-      success: false,
-      action: 'report',
-      projectRoot,
-      summary: 'No performance data available for reporting.',
-    }
-  }
-
-  const metrics = buildMetrics(data)
-  const recommendations: string[] = []
-
-  for (const [tool, raw] of Object.entries(metrics)) {
-    const m = raw as {
-      successRate: number
-      avgExecutionTime: number
-      trend: Trend
-      totalCalls: number
-    }
-
-    if (m.totalCalls >= 5 && m.successRate < 0.8) {
-      recommendations.push(
-        `${tool}: success rate ${(m.successRate * 100).toFixed(1)}% is low; inspect .learnings/ERRORS.md and add remediation rules.`,
-      )
-    }
-
-    if (m.trend === 'degrading') {
-      recommendations.push(
-        `${tool}: execution-time trend is degrading; run action=adjust with metric=execution_time.`,
-      )
-    }
-
-    if (m.avgExecutionTime > 10_000) {
-      recommendations.push(
-        `${tool}: high average execution time (${m.avgExecutionTime.toFixed(0)}ms); consider breaking tasks into smaller tool calls.`,
-      )
-    }
-  }
-
-  return {
-    success: true,
-    action: 'report',
-    projectRoot,
-    summary: `Report generated from ${data.length} records across ${Object.keys(metrics).length} tool(s).`,
-    metrics,
-    recommendations,
-  }
 }
 
 async function runLearn(projectRoot: string, input: Input): Promise<Output> {
@@ -748,7 +318,7 @@ async function runLearn(projectRoot: string, input: Input): Promise<Output> {
   const id = nextId(prefix, existing, iso)
 
   const gitHead = currentGitHead()
-  const entry = `\n## [${id}] ${input.title}\n\n**Logged**: ${iso}\n**Priority**: ${prio}\n**Status**: pending\n**Area**: ${area}\n**Verified-By**: (none — fill in evidence before promote_memory will accept this entry)\n\n### Summary\n${input.title}\n\n### Details\n${input.details}\n\n### Metadata\n- Source: learn-tool\n- Type: ${input.learningType}\n${gitHead ? `- Git HEAD: ${gitHead}\n` : ''}\n---\n`
+  const entry = `\n## [${id}] ${input.title}\n\n**Logged**: ${iso}\n**Priority**: ${prio}\n**Status**: pending\n**Area**: ${area}\n**Verified-By**: ${VERIFIED_PLACEHOLDER}\n\n### Summary\n${input.title}\n\n### Details\n${input.details}\n\n### Metadata\n- Source: learn-tool\n- Type: ${input.learningType}\n${gitHead ? `- Git HEAD: ${gitHead}\n` : ''}\n---\n`
   await appendFile(fullPath, entry, 'utf-8')
 
   return {
@@ -1003,17 +573,7 @@ function parseLearningEntries(content: string): LearningEntry[] {
  *   **Verified-By**: regression test tests/foo.test.ts
  */
 function isVerifiedEffective(entry: LearningEntry): boolean {
-  const match = entry.body.match(
-    /\*\*Verified-By\*\*:\s*([^\n]+?)\s*(?:\n|$)/i,
-  )
-  if (!match) return false
-  const evidence = match[1]?.trim() ?? ''
-  if (evidence.length < 3) return false
-  // Reject obvious negations even when the field is present.
-  if (/^(?:none|n\/a|tbd|pending|unverified|无|待定|无效)$/i.test(evidence)) {
-    return false
-  }
-  return true
+  return isVerifiedBody(entry.body)
 }
 
 function normalizeTitle(text: string): string {
@@ -1214,15 +774,15 @@ async function runDemoteMemory(projectRoot: string, input: Input): Promise<Outpu
   }
 }
 
-export const SelfImprovingTool = buildTool({
-  name: SELF_IMPROVING_TOOL_NAME,
-  searchHint: 'self-improvement loop with metrics, prediction, adjustment, and learnings logs',
+export const LearnTool = buildTool({
+  name: LEARN_TOOL_NAME,
+  searchHint: 'capture learnings corrections errors promote into long-term memory',
   maxResultSizeChars: 100_000,
   async description() {
     return DESCRIPTION
   },
   async prompt() {
-    return DESCRIPTION
+    return getLearnToolPrompt()
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -1245,38 +805,12 @@ export const SelfImprovingTool = buildTool({
     return false
   },
   toAutoClassifierInput(input) {
-    return `${input.action}:${input.toolName ?? 'all'}`
+    return input.action
   },
   async call(input: Input) {
     const projectRoot = getLearnToolRoot()
 
     switch (input.action) {
-      case 'monitor':
-        return { data: await runMonitor(projectRoot) }
-      case 'record':
-        return { data: await runRecord(projectRoot, input) }
-      case 'analyze':
-        return { data: await runAnalyze(projectRoot, input.toolName) }
-      case 'adjust':
-        return {
-          data: await runAdjust(
-            projectRoot,
-            input.toolName,
-            input.metric ?? 'execution_time',
-            input.targetValue,
-          ),
-        }
-      case 'predict':
-        return {
-          data: await runPredict(
-            projectRoot,
-            input.toolName,
-            input.metric ?? 'execution_time',
-            input.predictionHorizon ?? 5,
-          ),
-        }
-      case 'report':
-        return { data: await runReport(projectRoot) }
       case 'learn':
         return { data: await runLearn(projectRoot, input) }
       case 'ingest_memory':
@@ -1326,31 +860,6 @@ export const SelfImprovingTool = buildTool({
       }
       if (output.dryRunPreview.length > 10) {
         lines.push(`- ...and ${output.dryRunPreview.length - 10} more`)
-      }
-    }
-
-    if (output.adjustments?.length) {
-      lines.push('Adjustments:')
-      for (const adj of output.adjustments) {
-        lines.push(
-          `- ${adj.tool} ${adj.parameter}: ${adj.oldValue} -> ${adj.newValue} (${adj.reason})`,
-        )
-      }
-    }
-
-    if (output.predictions?.length) {
-      lines.push('Predictions:')
-      for (const pred of output.predictions) {
-        lines.push(
-          `- ${pred.tool} ${pred.metric}: current=${pred.currentValue.toFixed(2)} predicted=${pred.predictedValue.toFixed(2)} trend=${pred.trend}`,
-        )
-      }
-    }
-
-    if (output.recommendations?.length) {
-      lines.push('Recommendations:')
-      for (const rec of output.recommendations) {
-        lines.push(`- ${rec}`)
       }
     }
 
