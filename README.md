@@ -1,43 +1,35 @@
 # opencc
-## 编译运行
 
- 1. 构建项目：make build - 运行 bun run build 生成 dist/cli.js
-  2. 系统安装：make install - 安装到 /usr/local（需要 sudo）
-  3. 用户安装：make install-local - 安装到 ~/.local/（无需 sudo）
-  4. 卸载功能：make uninstall / make uninstall-local
-  5. 其他功能：make clean、make dev、make test、make lint 等
+`opencc` 是 Anthropic Claude Code CLI 的逆向工程重建版：恢复核心功能，裁剪次要能力。构建与安装由仓库根目录的 `Makefile` 驱动。
 
-  满足的特定需求
+## 编译与安装
 
-  - 编译产物叫 opencc：可执行文件名为 opencc（通过 PROJECT_NAME := opencc 配置）
-  - 默认参数：包装脚本自动添加 --dangerously-skip-permissions 参数
-  - 两种安装方式：
-    - 系统级：sudo make install（安装到 /usr/local/bin/opencc）
-    - 用户级：make install-local（安装到 ~/.local/bin/opencc）
+| 命令 | 作用 |
+|------|------|
+| `make build` | 运行 `bun run build`，生成 `dist/cli.js` |
+| `make install` | 安装到 `/usr/local`（需要 sudo） |
+| `make install-local` | 安装到 `~/.local/`（无需 sudo，推荐） |
+| `make uninstall` / `make uninstall-local` | 卸载系统级 / 用户级安装 |
+| `make clean` / `make dev` / `make test` / `make lint` | 清理 / 开发 / 测试 / 检查 |
 
-  使用方法
+### 约定
 
-  # 查看所有命令
-  make help
+- 可执行文件名为 `opencc`（`Makefile` 中 `PROJECT_NAME := opencc`）。
+- 包装脚本自动追加 `--dangerously-skip-permissions` 参数。
+- 两种安装路径：系统级 `/usr/local/bin/opencc`，用户级 `~/.local/bin/opencc`。
 
-  # 构建项目
-  make build
+### 使用
 
-  # 用户安装（推荐，无需 sudo）
-  make install-local
+```bash
+make help          # 查看所有命令
+make build         # 构建项目
+make install-local # 用户安装（推荐，无需 sudo）
+sudo make install  # 系统安装（需要 sudo）
+make clean         # 清理构建文件
+make uninstall-local
+```
 
-  # 系统安装（需要 sudo）
-  sudo make install
-
-  # 清理构建文件
-  make clean
-
-  # 卸载用户安装
-  make uninstall-local
-
-  安装验证
-
-  安装后，运行 opencc --help 即可使用。包装脚本会自动添加 --dangerously-skip-permissions 参数。
+安装后运行 `opencc --help` 即可使用。
 
 ## 快速开始
 
@@ -71,7 +63,7 @@ echo "say hello" | bun run src/entrypoints/cli.tsx -p
 bun run build
 ```
 
-构建产物输出到 `dist/cli.js`（~25.75 MB，5326 模块）。
+构建产物输出到 `dist/cli.js`（约 24 MB）。
 
 ## MCP-FS：基于文件系统的 MCP 工具桥接
 
@@ -125,30 +117,26 @@ ChatWise SQLite DB (~/.config/app.chatwise/app.db)
 
 ## LearnTool：受控的自我改进工具
 
-`learn-tool`（注册名 `LearnTool`，源码 `src/tools/SelfImprovingTool/`）是一个"提案—审查—持久化—可撤回"的自我改进闭环。设计原则对齐 Anthropic Institute 关于
-[Recursive Self-Improvement](https://www.anthropic.com/institute/recursive-self-improvement) 的立场：跨会话生效的写入必须**人工显式批准**、**可审计**、**可逆**。
+`learn-tool`（注册名 `LearnTool`，源码 `src/tools/LearnTool/`）是一个"记录—验证—晋升—撤回"的自我改进闭环。设计原则对齐 Anthropic Institute 关于
+[Recursive Self-Improvement](https://www.anthropic.com/institute/recursive-self-improvement) 的立场：跨会话生效的写入必须**有证据支撑**、**可审计**、**可逆**。
 
-### 默认行为（重要）
+### 默认行为
 
 | 维度 | 默认 | 含义 |
 |------|------|------|
-| `promote_memory` 是否真写 | `dryRun: true` | 默认只返回 preview，不写长期记忆。必须显式传 `dryRun: false` 才会落盘 |
+| `promote_memory` 是否真写 | 写盘 | 默认直接晋升；准入闸是 `**Verified-By**` 证据，无真实证据的条目一律跳过。`dryRun: true` 可先预览 |
 | 写入哪种 memory type | `project` | `feedback` 类型对未来会话的行为影响最大，需要显式指定 |
-| 「已验证」判定 | 严格 | 条目正文必须包含显式字段 `**Verified-By**: <evidence>`（关键词正则猜测已废除） |
-| `autoCapture`（每次工具调用后台写 learnings） | **关闭** | 需 `export CLAUDE_CODE_LEARN_AUTOCAPTURE=1` 才启动 |
-| `ingest_memory` 的 `topic` 参数 | 必填 | 不传会报错（以前默认硬编码 `cdp` 是项目特定遗留） |
-| `adjust` 的 PID 控制信号 | 保留符号 | 输出字段名 `control_signal`，magnitude=紧迫度，sign=方向（正=放宽 / 负=收紧），不再伪装成 `timeout_ms` |
+| 「已验证」判定 | 严格 | 条目正文必须包含显式字段 `**Verified-By**: <evidence>`；`learn` 自动打上的占位符与各种否定写法一律拒绝 |
+| `ingest_memory` 的 `topic` 参数 | 必填 | 不传会报错 |
 
 ### 状态目录
 
 所有状态写在 `~/.claude/projects/<project>/learn-tool/`：
 
 ```
-.self_improving_performance.json   # record 写入的性能样本
-.self_improving_adjustments.log    # adjust 写入的 PID 建议（仅记录，不实施）
-.self_improving_promotions.log     # 每次真实 promotion 的审计日志（JSON Lines）
+.self_improving_promotions.log     # 每次真实晋升的审计日志（JSON Lines）
 .learnings/
-  ├─ LEARNINGS.md                  # learn / ingest_memory / autoCapture 写入
+  ├─ LEARNINGS.md                  # learn / ingest_memory 写入
   ├─ ERRORS.md
   └─ FEATURE_REQUESTS.md
 ```
@@ -160,44 +148,59 @@ ChatWise SQLite DB (~/.config/app.chatwise/app.db)
 ### 日常使用姿势
 
 ```bash
-# 1) Day-to-day：让模型记 learning（只写本地 .learnings/，不影响后续会话）
+# 1) 让模型记 learning（只写本地 .learnings/，不影响后续会话）
 learn-tool action=learn learningType=insight title="..." details="..."
 
 # 2) 你 review 后觉得真有用，编辑 .learnings/LEARNINGS.md 在那条目里加：
-#    **Verified-By**: user
-#    （或 "regression test tests/foo.test.ts" / "3 passing CI runs" 等具体证据）
+#    **Verified-By**: regression test tests/foo.test.ts
+#    证据必须是真实的——模型不能给自己写证据，否则整个机制失效
 
-# 3) 让模型先看一眼会 promote 哪些（默认 dryRun=true，只返回 preview）
+# 3) 晋升（默认写盘，无证据的条目跳过）：
 learn-tool action=promote_memory
 
-# 4) 你确认无误，真写入长期记忆：
-learn-tool action=promote_memory dryRun=false
+# 4) 想先看会晋升哪些，再决定：
+learn-tool action=promote_memory dryRun=true
 
 # 5) 后悔了？按 entryId 撤回：
 learn-tool action=demote_memory entryId=LRN-20260606-001
 #    会删除从该条目 promote 出去的所有记忆文件，并在 promotions.log 留下反向记录
-
-# 6) 启用后台自动捕获（默认关，每次工具调用后会自动写 .learnings/LEARNINGS.md）：
-export CLAUDE_CODE_LEARN_AUTOCAPTURE=1
 ```
 
 ### action 速查
 
 | action | 写入位置 | 跨会话影响 |
 |--------|----------|------------|
-| `monitor` | 仅创建空文件 | 无 |
-| `record` | `.self_improving_performance.json` | 无 |
-| `analyze` / `predict` / `report` | 只读 | 无 |
-| `adjust` | `.self_improving_adjustments.log`（建议，不实施） | 无 |
 | `learn` | `.learnings/{LEARNINGS,ERRORS,FEATURE_REQUESTS}.md` | 无（除非后续 promote） |
 | `ingest_memory` | `.learnings/LEARNINGS.md` | 无（除非后续 promote） |
-| `promote_memory` (默认 dryRun) | 无 | 无 |
-| `promote_memory dryRun=false` | `~/.claude/projects/<proj>/memory/*.md` + `MEMORY.md` + promotions.log | **有**（所有后续会话都会加载） |
+| `promote_memory` | `~/.claude/projects/<proj>/memory/*.md` + `MEMORY.md` + promotions.log | **有**（所有后续会话都会加载） |
 | `demote_memory` | 删除 memory 文件 + 追加反向 promotions.log | **有**（反向） |
 
 ## 能力清单
 
 > ✅ = 已实现  ⚠️ = 部分实现 / 条件启用  ❌ = stub / 移除 / feature flag 关闭
+
+### 自定义工具（本仓库新增，始终注册）
+
+| 工具 | 注册名 | 说明 |
+|------|--------|------|
+| CodeActTool | `CodeAct` | 沙箱内多语言代码执行（TypeScript / Python / Bash / C / C++），内置 fs/shell/fetch 工具，stderr 与错误行号映射回用户坐标 |
+| ActionTool | `Action` | 执行 `~/.claude/action/` 下可复用的 Actions 脚本 |
+| MythosTool | `mythos` | 六阶段深度研究：结构化 claim + 证据 + 对抗性验证，带运行完整性自检 |
+| AutoresearchTool | `autoresearch` | Karpathy 式自主迭代优化：改 → 验证 → keep/discard，可跑实验队列 |
+| WikiTool | `wikitool` | 三层个人 wiki 知识库：`save` 抓取归档，`search` / `list` / `get` 检索，`distill` / `compare` 提炼 |
+| MemoryTool | `MemoryTool` | 四层记忆系统（临时 / 工作 / 长期 / 主动），支持搜索、晋级、降级、合成 |
+| KimiTool | `kimitool` | 免费 Kimi 对话 API，跨设备自动加载 refresh_token |
+| GeminiSubtitleTool | `geminisubtitle` | 经浏览器 Chrome CDP 调 Gemini 生成中文字幕 |
+| PMTool | `pm-tool` | 项目管理：任务依赖图 + ready/blocked 推导 + 决策日志与防陷阱 |
+| SETool | `se-tool` | 系统工程规划：与 PMTool 共享同一套任务依赖图引擎 |
+| LearnTool | `learn-tool` | 受控自我改进闭环，见上文专章 |
+| Paper2CodeTool | `paper2code` | arXiv 论文 → 可执行代码（逐行标注出处 + 运行验证） |
+| RedoTool | `redotool` | 重放仓库早期提交历史，生成可发布的教学讲解 |
+| GoalTool | `create_goal` 等 | 长期目标追踪（create / get / update / clear），带 token 预算 |
+| McpFsTool | `mcpfs` 等 | MCP 工具桥接：本地注册表按需 bridge 执行，见上文 MCP-FS 节 |
+| ChromeCDPTool | `ChromeCDP` | 控制本机 Chrome：导航、截图、点击、执行 JS、抓取网络请求 |
+| ContentAnalystTool | `ContentAnalyst` | 爆款内容结构 / 标题公式 / 情绪触发分析 |
+| StrategyDBTool | `StrategyDB` | 内容策略知识库：模板、头条模式、竞品情报归档 |
 
 ### 核心系统
 
@@ -440,20 +443,28 @@ export CLAUDE_CODE_LEARN_AUTOCAPTURE=1
 | `@ant/computer-use-input` | ❌ | stub，仅类型声明 |
 | `@ant/computer-use-swift` | ❌ | stub，仅类型声明 |
 
-### Feature Flags（30 个，全部返回 `false`）
+### Feature Flags（`feature()` 恒为 `false`）
 
 `ABLATION_BASELINE` `AGENT_MEMORY_SNAPSHOT` `BG_SESSIONS` `BRIDGE_MODE` `BUDDY` `CCR_MIRROR` `CCR_REMOTE_SETUP` `CHICAGO_MCP` `COORDINATOR_MODE` `DAEMON` `DIRECT_CONNECT` `EXPERIMENTAL_SKILL_SEARCH` `FORK_SUBAGENT` `HARD_FAIL` `HISTORY_SNIP` `KAIROS` `KAIROS_BRIEF` `KAIROS_CHANNELS` `KAIROS_GITHUB_WEBHOOKS` `LODESTONE` `MCP_SKILLS` `PROACTIVE` `SSH_REMOTE` `TORCH` `TRANSCRIPT_CLASSIFIER` `UDS_INBOX` `ULTRAPLAN` `UPLOAD_USER_SETTINGS` `VOICE_MODE` `WEB_BROWSER_TOOL` `WORKFLOW_SCRIPTS`
+
+`feature()` 在本构建中被 polyfill 为始终返回 `false`，代码中全部 86 个 feature flag 都关闭。上面是与工具 / 命令开关直接相关的 30 个；完整集合以代码为准。
 
 
 ## 项目结构
 
 ```
-claude-code/
+opencc/
 ├── src/
 │   ├── entrypoints/
 │   │   ├── cli.tsx          # 入口文件（含 MACRO/feature polyfill）
 │   │   └── sdk/             # SDK 子模块 stub
 │   ├── main.tsx             # 主 CLI 逻辑（Commander 定义）
+│   ├── tools/               # 工具目录，一工具一目录，含大量自定义工具
+│   │   ├── CodeActTool/     # 沙箱代码执行
+│   │   ├── MythosTool/      # 六阶段深度研究
+│   │   ├── planning/        # SE/PM 共享的任务依赖图引擎
+│   │   └── …                # 其余见上方"自定义工具"清单
+│   ├── services/            # API / MCP / OAuth 等服务层
 │   └── types/
 │       ├── global.d.ts      # 全局变量/宏声明
 │       └── internal-modules.d.ts  # 内部 npm 包类型声明
@@ -468,7 +479,7 @@ claude-code/
 │       ├── computer-use-mcp/
 │       ├── computer-use-input/
 │       └── computer-use-swift/
-├── scripts/                 # 自动化 stub 生成脚本
+├── scripts/                 # 构建、类型 stub 修复、MCP 导入等脚本
 ├── dist/                    # 构建输出
 └── package.json             # Bun workspaces monorepo 配置
 ```
@@ -484,6 +495,8 @@ claude-code/
 
 ### Monorepo
 
+项目采用 Bun workspaces 管理内部包。原先手工放在 `node_modules/` 下的 stub 已统一迁入 `packages/`，通过 `workspace:*` 解析。
+
 ## IPFS Mirror
 
 A full copy of this repository is permanently pinned on IPFS via Filecoin:
@@ -493,11 +506,9 @@ A full copy of this repository is permanently pinned on IPFS via Filecoin:
 
 If this repo gets taken down, the code lives on.
 
-项目采用 Bun workspaces 管理内部包。原先手工放在 `node_modules/` 下的 stub 已统一迁入 `packages/`，通过 `workspace:*` 解析。
-
 ## Feature Flags 详解
 
-原版 Claude Code 通过 `bun:bundle` 的 `feature()` 在构建时注入 feature flag，由 GrowthBook 等 A/B 实验平台控制灰度发布。本项目中 `feature()` 被 polyfill 为始终返回 `false`，因此以下 30 个 flag 全部关闭。
+原版 Claude Code 通过 `bun:bundle` 的 `feature()` 在构建时注入 feature flag，由 GrowthBook 等 A/B 实验平台控制灰度发布。本项目中 `feature()` 被 polyfill 为始终返回 `false`，代码中 86 个 flag 全部关闭。下面分类说明的是与工具 / 命令开关直接相关的 30 个；其余 flag 同样恒不执行。
 
 ### 自主 Agent
 
