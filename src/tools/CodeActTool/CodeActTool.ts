@@ -105,9 +105,19 @@ export const CodeActTool = buildTool({
     }
     const parts: string[] = []
     if (out.stdout) parts.push(out.stdout)
-    if (!out.success && out.stderr) {
+    // stderr is surfaced on failure AND on success-with-warnings. Previously a
+    // successful run that wrote diagnostics to stderr (deprecations, compiler
+    // notes, a caught-and-logged exception) dropped them silently, so the
+    // model never saw why its "working" script behaved oddly.
+    if (out.stderr) {
+      parts.push(`\n<!-- stderr (exit ${out.exitCode}): -->\n${out.stderr}`)
+    }
+    // A script that exits 0 with no stdout is almost always a mistake — the
+    // model forgot to print its result. Say so, rather than returning a bare
+    // "exit code 0" the model reads as success.
+    if (out.success && !out.stdout && !out.stderr) {
       parts.push(
-        `\n<!-- stderr (exit ${out.exitCode}): -->\n${out.stderr}`,
+        'CodeAct exited 0 but produced no output. Only stdout (console.log / print / echo / printf / std::cout) reaches you — add a print of the result you need.',
       )
     }
     return {

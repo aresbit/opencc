@@ -26,6 +26,7 @@ import { ensureCodeActBuiltinsPythonSync } from './codeActBuiltins_py.js'
 import { ensureCodeActBuiltinsBashSync } from './codeActBuiltins_bash.js'
 import { ensureCodeActBuiltinsCSync } from './codeActBuiltins_c.js'
 import { compileC, compileCpp } from './codeActCompile.js'
+import { remapCodeActError, userFacingName } from './codeActErrorRemap.js'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -240,8 +241,20 @@ export async function executeCodeActCode(
   await copyDirContents(getActionsSrcDir(), join(sandboxDir, 'actions'))
 
   // Write agent code with appropriate extension and import hint
-  const agentPath = join(sandboxDir, `agent${config.extension}`)
+  const agentBasename = `agent${config.extension}`
+  const agentPath = join(sandboxDir, agentBasename)
   await writeFile(agentPath, config.importHint + code, 'utf-8')
+
+  // Number of lines the import hint prepends, so error locations reported by
+  // the runtime can be mapped back to the coordinate system the model wrote in.
+  const headerLines = (config.importHint.match(/\n/g) ?? []).length
+  const remapCtx = {
+    headerLines,
+    agentBasename,
+    sandboxDir,
+    displayName: userFacingName(agentBasename),
+  }
+  const remap = (s: string) => remapCodeActError(s, remapCtx)
 
   // Compile if needed (C/C++)
   if (config.needsCompile && config.compile) {
@@ -255,7 +268,7 @@ export async function executeCodeActCode(
       return {
         success: false,
         stdout: '',
-        stderr: `Compilation failed:\n${compResult.stderr}`,
+        stderr: `Compilation failed:\n${remap(compResult.stderr)}`,
         exitCode: compResult.exitCode,
       }
     }
@@ -278,12 +291,13 @@ export async function executeCodeActCode(
       options?.signal,
       options?.cwd,
     )
-    return result
+    // Rewrite sandbox line numbers / paths in stderr back to user coordinates.
+    return { ...result, stderr: remap(result.stderr) }
   } catch (err) {
     return {
       success: false,
       stdout: '',
-      stderr: err instanceof Error ? err.message : String(err),
+      stderr: remap(err instanceof Error ? err.message : String(err)),
       exitCode: -1,
     }
   } finally {

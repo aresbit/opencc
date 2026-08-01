@@ -7,7 +7,7 @@
 
 import { join } from 'path'
 import { mkdir, writeFile, access } from 'fs/promises'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { getCodeActBaseDir } from './codeActBuiltins.js'
 
 function builtinsBashDir(): string {
@@ -118,22 +118,38 @@ homedir() {
 tmpdir() {
   echo "\${TMPDIR:-/tmp}"
 }
-
-echo "CodeAct bash builtins loaded."
 `
 }
 
+// Bump when bashScript() changes so cached copies are regenerated. Without
+// this, `if (!existsSync)` meant a fix to the builtins (e.g. removing the
+// "builtins loaded." echo that was polluting every script's stdout) never
+// reached a machine that already had the old file cached.
+const BUILTINS_BASH_VERSION = '2'
+
 // ── Bootstrap ──────────────────────────────────────────────────────
+
+function bashVersionPath(dir: string): string {
+  return join(dir, '.version')
+}
+
+function bashCacheStale(dir: string): boolean {
+  const filepath = join(dir, 'bash.sh')
+  if (!existsSync(filepath)) return true
+  try {
+    return readFileSync(bashVersionPath(dir), 'utf-8').trim() !== BUILTINS_BASH_VERSION
+  } catch {
+    return true
+  }
+}
 
 export async function ensureCodeActBuiltinsBash(): Promise<string> {
   const dir = builtinsBashDir()
   await mkdir(dir, { recursive: true })
 
-  const filepath = join(dir, 'bash.sh')
-  try {
-    await access(filepath)
-  } catch {
-    await writeFile(filepath, bashScript(), 'utf-8')
+  if (bashCacheStale(dir)) {
+    await writeFile(join(dir, 'bash.sh'), bashScript(), 'utf-8')
+    await writeFile(bashVersionPath(dir), BUILTINS_BASH_VERSION, 'utf-8')
   }
   return dir
 }
@@ -142,9 +158,9 @@ export function ensureCodeActBuiltinsBashSync(): string {
   const dir = builtinsBashDir()
   mkdirSync(dir, { recursive: true })
 
-  const filepath = join(dir, 'bash.sh')
-  if (!existsSync(filepath)) {
-    writeFileSync(filepath, bashScript(), 'utf-8')
+  if (bashCacheStale(dir)) {
+    writeFileSync(join(dir, 'bash.sh'), bashScript(), 'utf-8')
+    writeFileSync(bashVersionPath(dir), BUILTINS_BASH_VERSION, 'utf-8')
   }
   return dir
 }
