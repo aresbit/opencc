@@ -69,20 +69,26 @@ The entry is written to \`.learnings/\` with a placeholder
 \`**Verified-By**: (none — …)\`. That placeholder is deliberately not accepted as
 evidence.
 
-### Promotion is the human's call, not yours
+### Promotion: the evidence is the gate
 
 \`promote_memory\` copies a learning into long-term memory, which affects every
-later session. Because you both write the entry and would be judging it, the
-commit is not yours to make:
+later session. It writes by default — the admission control is not a
+confirmation flag, it is the \`**Verified-By**\` line:
 
-1. A human replaces the \`**Verified-By**\` placeholder with real evidence — a
-   test name, a CI run, an explicit confirmation.
-2. \`learn-tool action="promote_memory"\` — **defaults to a dry run** and only
-   previews what would be promoted.
-3. Only an explicit \`dryRun: false\` persists it. Do not pass that flag on your
-   own initiative; propose the promotion and let the user decide.
+1. A human replaces the placeholder with real evidence — a test name, a CI run,
+   an explicit confirmation. **This is the human's step, and you cannot do it
+   for them.** Writing your own evidence into an entry you also wrote defeats
+   the entire mechanism.
+2. \`learn-tool action="promote_memory"\` promotes every entry that carries real
+   evidence and skips the rest, reporting both counts.
+3. \`dryRun: true\` previews without writing, when you want to show the user what
+   would be promoted before doing it.
 4. \`action: "demote_memory" entryId="LRN-…"\` reverses a promotion, and the
    reversal is itself logged.
+
+So the honest sequence is: log the entry, tell the user what evidence would
+justify promoting it, and promote once they have supplied it. An entry whose
+\`Verified-By\` you filled in yourself is not verified, whatever it says.
 
 Every real promotion appends to \`.self_improving_promotions.log\` with a content
 hash and the git HEAD, so any promotion can be traced and undone later.

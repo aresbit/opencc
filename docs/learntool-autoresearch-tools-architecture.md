@@ -22,7 +22,7 @@
 |------|------|
 | `learn` | 将学习/错误/需求写入 `.learnings/{LEARNINGS,ERRORS,FEATURE_REQUESTS}.md`，自动打上 `**Verified-By**` 占位符 |
 | `ingest_memory` | 从记忆目录按主题提取相关段落，转成结构化学习条目（`topic` 必填） |
-| `promote_memory` | 将**已验证**条目晋升为长期记忆。**默认 dry-run** |
+| `promote_memory` | 将**已验证**条目晋升为长期记忆。默认写盘;未带证据的条目一律跳过 |
 | `demote_memory` | 按 entryId 反转一次晋升，反转本身也记日志 |
 
 `learn` 会自愈创建 `.learnings/` 骨架，无需前置初始化动作。
@@ -34,7 +34,7 @@
 
 | 支柱 | 机制 |
 |---|---|
-| 显式提交 | `promote_memory` 默认 `dryRun: true`，必须显式 `dryRun: false` 才写盘 |
+| 准入闸 | `**Verified-By**` 证据。无证据的条目不晋升，`dryRun: true` 可先预览 |
 | 显式验证 | 条目须含 `**Verified-By**: <证据>`，占位符与各种否定写法一律拒绝 |
 | 审计日志 | 每次真实晋升追加 `.self_improving_promotions.log`：内容 SHA、memoryType、git HEAD |
 | 可逆 | `demote_memory entryId=…` 删除该条目晋升出的全部记忆文件 |
@@ -51,13 +51,18 @@
 
 ```
 learn → .learnings/*.md（带 Verified-By 占位符）
-  ↓  【人工】填入真实证据
-promote_memory（dry-run 预览）
-  ↓  【人工】dryRun: false
+  ↓  【人工】填入真实证据 ← 唯一的准入闸
+promote_memory（默认写盘，无证据的跳过）
+  ↓
 MemoryStore 长期记忆 + 晋升审计日志
   ↓  需要时
 demote_memory → 反转
 ```
+
+> **2026-08-01 变更**：`dryRun` 默认由 `true` 改为 `false`。原先需要人工填证据*并且*显式传
+> `dryRun: false`，是双重确认。现在闸门收敛到一处——证据本身。这个默认值只在 Verified-By
+> 门真正生效之后才成立（见上方修订说明）；在那之前每条条目都算"已验证"，默认写盘会把所有
+> 记录过的东西全部自动晋升。
 
 ### 1.5 已移除的能力（2026-08-01）
 
@@ -168,7 +173,7 @@ AutoresearchTool 跑实验
   ↓ 【人工或模型判断值得记】
 learn → .learnings/
   ↓ 【人工填证据】
-promote_memory dryRun:false → 长期记忆
+promote_memory → 长期记忆（无证据的跳过）
   ↓ 影响未来会话的决策
 ```
 

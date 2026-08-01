@@ -29,7 +29,7 @@ const inputSchema = lazySchema(() =>
         'demote_memory',
       ])
       .describe(
-        'learn logs a learning/error/feature-request entry to .learnings/; ingest_memory converts existing memory markdown into structured learnings; promote_memory promotes a verified learning into long-term memory (dry-run by default); demote_memory reverses a previous promotion by entry id.',
+        'learn logs a learning/error/feature-request entry to .learnings/; ingest_memory converts existing memory markdown into structured learnings; promote_memory promotes verified learnings into long-term memory (entries without real Verified-By evidence are skipped); demote_memory reverses a previous promotion by entry id.',
       ),
     sourceAction: z
       .string()
@@ -87,7 +87,7 @@ const inputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe(
-        'Used by action=promote_memory: preview promotions without writing memory files. DEFAULTS TO TRUE — caller must explicitly pass dryRun: false to actually persist memories (RSI safety).',
+        'Used by action=promote_memory: set true to preview which entries would be promoted without writing anything. Defaults to false — verified entries are persisted. The gate is the **Verified-By** evidence, not this flag: entries without real evidence are skipped either way.',
       ),
     memoryType: z
       .enum(MEMORY_TYPES)
@@ -624,8 +624,16 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
   const maxEntries = input.maxEntries ?? 30
   // RSI-safety default: never persist unless caller is explicit. Mirrors
   // Anthropic's "humans shift to oversight/verification" principle — the
-  // model proposes, the human (via explicit dryRun:false) commits.
-  const dryRun = input.dryRun ?? true
+  // Promotion writes by default; the admission control is `isVerifiedEffective`,
+  // which requires a human to have written real **Verified-By** evidence into
+  // the entry. An unverified entry is skipped whatever this flag says, so the
+  // human act is supplying evidence rather than repeating a confirmation.
+  //
+  // This default is only defensible because that gate actually works. Until
+  // 2026-08-01 the placeholder `learn` auto-stamps passed the anchored
+  // /^none$/ check, so every entry read as verified — defaulting to write then
+  // would have auto-promoted everything ever logged.
+  const dryRun = input.dryRun ?? false
   // 'feedback' has the strongest behavioral effect on future sessions, so
   // it must be explicitly requested. Default to 'project' which is scoped
   // to factual context rather than steering rules.
@@ -709,7 +717,7 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
     action: 'promote_memory',
     projectRoot,
     summary: dryRun
-      ? `Dry-run (default): would promote ${promotedCount} entries (skipped ${skippedCount}) from ${sourcePath} as memoryType=${memoryType}. Pass dryRun:false to actually persist.`
+      ? `Dry-run: would promote ${promotedCount} entries (skipped ${skippedCount}) from ${sourcePath} as memoryType=${memoryType}. Omit dryRun to persist.`
       : `Promoted ${promotedCount} entries into MemoryTool store as memoryType=${memoryType} (skipped ${skippedCount}) from ${sourcePath}.`,
     promotedCount,
     skippedCount,
