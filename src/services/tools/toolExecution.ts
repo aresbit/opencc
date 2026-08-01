@@ -129,22 +129,7 @@ import {
   runPostToolUseHooks,
   runPreToolUseHooks,
 } from './toolHooks.js'
-import { capturePostToolUseSample } from '../../tools/SelfImprovingTool/autoCapture.js'
 import { getCwd } from '../../utils/cwd.js'
-
-function extractContextSnippet(
-  input: Record<string, unknown> | undefined,
-): string | undefined {
-  if (!input) return undefined
-  const candidates = ['query', 'q', 'url', 'command', 'pattern', 'tool', 'toolName']
-  for (const key of candidates) {
-    const value = input[key]
-    if (typeof value === 'string' && value.trim().length > 0) {
-      return `${key}=${value.trim().slice(0, 120)}`
-    }
-  }
-  return undefined
-}
 
 /** Minimum total hook duration (ms) to show inline timing summary */
 export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500
@@ -1317,22 +1302,6 @@ async function checkPermissionsAndCallTool(
         : jsonStringify(mappedContent).length
     const inputSizeBytes = jsonStringify(processedInput).length
 
-    void capturePostToolUseSample({
-      projectRoot: getCwd(),
-      toolName: tool.name,
-      success: true,
-      durationMs,
-      action:
-        typeof (processedInput as Record<string, unknown>)?.action === 'string'
-          ? String((processedInput as Record<string, unknown>).action)
-          : undefined,
-      contextSnippet: extractContextSnippet(
-        processedInput as Record<string, unknown> | undefined,
-      ),
-      inputSizeBytes,
-      outputSizeBytes: toolResultSizeBytes,
-    }).catch(() => {})
-
     // Extract file extension for file-related tools
     let fileExtension: ReturnType<typeof getFileExtensionForAnalytics>
     if (processedInput && typeof processedInput === 'object') {
@@ -1624,23 +1593,6 @@ async function checkPermissionsAndCallTool(
     addToToolDuration(durationMs)
     const inputSizeBytes = jsonStringify(processedInput).length
     const errStr = errorMessage(error)
-    void capturePostToolUseSample({
-      projectRoot: getCwd(),
-      toolName: tool.name,
-      success: false,
-      durationMs,
-      action:
-        typeof (processedInput as Record<string, unknown>)?.action === 'string'
-          ? String((processedInput as Record<string, unknown>).action)
-          : undefined,
-      error: errStr,
-      contextSnippet: extractContextSnippet(
-        processedInput as Record<string, unknown> | undefined,
-      ),
-      inputSizeBytes,
-      outputSizeBytes: errStr.length,
-    }).catch(() => {})
-
     endToolExecutionSpan({
       success: false,
       error: errorMessage(error),

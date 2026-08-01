@@ -24,7 +24,7 @@ import { StrategyDBTool } from './tools/StrategyDBTool/StrategyDBTool.js'
 import { RedoTool } from './tools/RedoTool/RedoTool.js'
 import { SETool } from './tools/SETool/SETool.js'
 import { PMTool } from './tools/PMTool/PMTool.js'
-import { SelfImprovingTool } from './tools/SelfImprovingTool/SelfImprovingTool.js'
+import { LearnTool } from './tools/LearnTool/LearnTool.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
@@ -248,7 +248,7 @@ export function getAllBaseTools(): Tools {
     RedoTool,
     SETool,
     PMTool,
-    SelfImprovingTool,
+    LearnTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
