@@ -8,6 +8,8 @@ import { runAgent } from '../AgentTool/runAgent.js'
 import type { Message } from '../../types/message.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getCwd } from '../../utils/cwd.js'
+import { isAbortError } from '../../utils/errors.js'
+import { createAgentId } from '../../utils/uuid.js'
 import {
   renderToolResultMessage,
   renderToolUseMessage,
@@ -23,6 +25,18 @@ import {
   PRELUDE_SYSTEM_PROMPT,
   RECURRENT_BLOCK_SYSTEM_PROMPT,
 } from './prompt.js'
+import {
+  assessRunHealth,
+  checkPhaseOutput,
+  decideHalting,
+  type HaltDecision,
+} from './runIntegrity.js'
+import {
+  addClaims,
+  addSources,
+  findDanglingReferences,
+  mergeClaimInto,
+} from './stateMerge.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -153,11 +167,18 @@ const latentStateSchema = z.object({
   allSources: z.array(sourceRecordSchema).default([]),
   // Convergence tracking
   convergenceScore: z.number().default(0),
+  /**
+   * Claim count observed at the end of each completed depth, indexed by depth.
+   * Without this the loop cannot tell "no new findings this depth" from
+   * "few findings overall", which is the difference between halting and
+   * extending.
+   */
+  claimCountByDepth: z.record(z.string(), z.number()).default({}),
   haltingDecisions: z
     .array(
       z.object({
         depth: z.number(),
-        decision: z.enum(['halt', 'continue', 'extend']),
+        decision: z.enum(['halt', 'continue', 'extend', 'abort']),
         rationale: z.string(),
         timestamp: z.number(),
       }),
@@ -171,6 +192,18 @@ const latentStateSchema = z.object({
   // Legacy bullet-list compat (kept for older readers)
   accumulatedFindings: z.array(z.string()).default([]),
   contradictionsLegacy: z.array(z.string()).default([]),
+  // Non-fatal failures of individual directions / phases, kept so a degraded
+  // run can report exactly what was lost instead of silently missing it.
+  directionFailures: z
+    .array(
+      z.object({
+        directionId: z.string(),
+        depth: z.number(),
+        error: z.string(),
+        timestamp: z.number(),
+      }),
+    )
+    .default([]),
 })
 
 const runtimeStateSchema = z.object({
@@ -222,6 +255,36 @@ type Claim = z.infer<typeof claimSchema>
 type Contradiction = z.infer<typeof contradictionSchema>
 type Direction = z.infer<typeof directionSchema>
 
+/**
+ * Never return an empty description.
+ *
+ * The outer catch reported `${error instanceof Error ? error.message : String(error)}`,
+ * which is blank whenever a phase throws an Error with an empty `.message`, or
+ * a subagent rejects with `undefined`/`null` — exactly what happened when a
+ * WebFetch inside a recurrent iteration failed with an internal error. The
+ * user saw "Mythos research failed:" with nothing after the colon, and every
+ * artifact on disk was discarded. A diagnosable message is the difference
+ * between "flew away" and "failed at depth 2 because WebFetch errored".
+ */
+export function describeError(e: unknown): string {
+  if (e instanceof Error) {
+    const name = e.name && e.name !== 'Error' ? `${e.name}: ` : ''
+    if (e.message) return `${name}${e.message}`
+    // Error with an empty message — surface the class and first stack frame.
+    const frame = e.stack?.split('\n')[1]?.trim().replace(/^at\s+/, '')
+    return `${e.name || 'Error'} (no message)${frame ? ` at ${frame}` : ''}`
+  }
+  if (e === undefined) return 'threw undefined (likely an aborted or crashed subagent)'
+  if (e === null) return 'threw null'
+  if (typeof e === 'string') return e || 'threw an empty string'
+  try {
+    const json = JSON.stringify(e)
+    return json && json !== '{}' ? json : `non-error value of type ${typeof e}`
+  } catch {
+    return `unstringifiable ${typeof e} value`
+  }
+}
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -235,13 +298,24 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-function defaultOutputDir(topic: string): string {
+/**
+ * `cwd` must be the session working directory (getCwd()), not process.cwd().
+ *
+ * This used to resolve against process.cwd(), which is the directory the CLI
+ * process was launched in and never changes. getCwd() tracks `/cd` and the
+ * per-agent runWithCwdOverride. When the two differ, `research` created its
+ * workspace under the process cwd while `status`, `clear`, `continue` and any
+ * relative `outputDir` all resolved against the session cwd — so the run
+ * appeared to leave no working directory behind, and a follow-up `status`
+ * found nothing.
+ */
+function defaultOutputDir(topic: string, cwd: string): string {
   const sanitized = topic
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .slice(0, 50)
     .replace(/^_+|_+$/g, '')
-  return resolve(process.cwd(), 'mythos_output', sanitized || 'research')
+  return resolve(cwd, 'mythos_output', sanitized || 'research')
 }
 
 async function readRuntimeState(workDir: string): Promise<z.infer<typeof runtimeStateSchema> | null> {
@@ -283,7 +357,18 @@ async function initWorkspace(
   depth: number,
   breadth: number,
 ): Promise<void> {
-  await mkdir(workDir, { recursive: true })
+  // Surface the real errno and path. The caller previously reported only
+  // "Failed to initialize Mythos workspace", which is indistinguishable
+  // between an unwritable parent, a path collision with a file, and a state
+  // file that failed to read back.
+  try {
+    await mkdir(workDir, { recursive: true })
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException
+    throw new Error(
+      `could not create the Mythos working directory at ${workDir}: ${err.code ?? ''} ${err.message}`.trim(),
+    )
+  }
 
   const initialState: z.infer<typeof runtimeStateSchema> = {
     mode: 'active',
@@ -294,6 +379,7 @@ async function initWorkspace(
       topic,
       claims: [],
       contradictions: [],
+      claimCountByDepth: {},
       directions: [],
       completedDirectionIds: [],
       pendingDirectionIds: [],
@@ -309,6 +395,7 @@ async function initWorkspace(
       breadth,
       accumulatedFindings: [],
       contradictionsLegacy: [],
+      directionFailures: [],
     },
   }
   await writeRuntimeState(workDir, initialState)
@@ -402,6 +489,46 @@ function parseNumberedList(text: string): string[] {
 // State-mutation helpers
 // ============================================================
 
+/**
+ * Turn whatever the model put in a `directions` array into Direction records.
+ *
+ * The old code spread each element directly — `{ ...raw, source: 'prelude' }`
+ * on an `unknown`. TypeScript flagged it (TS2698) and the runtime consequence
+ * is worse than the type error suggests: the prompt asks for objects but calls
+ * each one a "concise direction title", so a bare string array is a natural
+ * thing for the model to emit. Spreading a string yields `{0:'B',1:'y',...}`,
+ * which fails schema validation and is dropped silently — and once every
+ * direction is dropped, runPrelude falls through to its single-direction
+ * fallback and the whole run explores one topic instead of five.
+ *
+ * Bare strings are therefore accepted as titles rather than discarded. Ids are
+ * synthesized when missing, since the model omits them more often than not.
+ */
+export function coerceDirections(
+  raw: readonly unknown[],
+  source: 'prelude' | 'adaptive',
+): Direction[] {
+  const out: Direction[] = []
+  for (const [i, item] of raw.entries()) {
+    const candidate =
+      typeof item === 'string'
+        ? { title: item }
+        : item !== null && typeof item === 'object' && !Array.isArray(item)
+          ? { ...(item as Record<string, unknown>) }
+          : null
+    if (!candidate) continue
+
+    const prefix = source === 'prelude' ? 'd' : 'd_adapt_'
+    const parsed = directionSchema.safeParse({
+      id: `${prefix}${i + 1}`,
+      ...candidate,
+      source,
+    })
+    if (parsed.success && parsed.data.title.trim()) out.push(parsed.data)
+  }
+  return out
+}
+
 function findClaim(state: LatentState, id: string): Claim | undefined {
   return state.claims.find(c => c.id === id)
 }
@@ -485,7 +612,15 @@ async function runSubagentPhase(
   direction?: string,
 ): Promise<string> {
   const { GENERAL_PURPOSE_AGENT } = await import('../AgentTool/built-in/generalPurposeAgent.js')
-  const userMessage = createUserMessage(promptText)
+  // createUserMessage takes an options object, not a string. Passing the
+  // prompt positionally destructured `content` off a string — i.e. undefined —
+  // so every phase of every Mythos run sent an empty message and the subagent
+  // replied "you didn't enter anything". See mythos_output/*/mythos_prelude.md
+  // for the artifacts of that failure.
+  if (!promptText.trim()) {
+    throw new Error(`Mythos ${phase} phase built an empty prompt — refusing to run a research phase with no instructions`)
+  }
+  const userMessage = createUserMessage({ content: promptText })
   const agentMessages: Message[] = []
 
   for await (const message of runAgent({
@@ -497,7 +632,13 @@ async function runSubagentPhase(
     querySource: 'agent:custom',
     model: undefined,
     availableTools: context.options.tools,
-    override: { agentId: `mythos-${phase}-${Date.now()}` },
+    // createAgentId enforces the `a<label>-<16 hex>` shape that toAgentId()
+    // validates. The previous literal — `mythos-<phase>-<Date.now()>` — was a
+    // bare string that satisfied neither half of that pattern, so anything
+    // resolving this id later (agent transcripts, metadata, SendMessage
+    // addressing) would fail to recognise it. Date.now() also collides
+    // outright when two phases start inside the same millisecond.
+    override: { agentId: createAgentId(`mythos${phase}`) },
   })) {
     agentMessages.push(message)
 
@@ -690,11 +831,17 @@ async function runPrelude(
   // Parse structured directions from JSON block
   let directions: Direction[] = []
   const json = extractFencedJson(preludeText) as { directions?: unknown[] } | null
+
+  // Checked after the artifact is written so the bad output is on disk for
+  // diagnosis, and before any of it is treated as a landscape map.
+  const check = checkPhaseOutput('prelude', preludeText, json, false)
+  if (!check.ok) {
+    throw new Error(
+      `Mythos aborted at the prelude: ${check.reason}\nRaw output saved to ${join(workDir, 'mythos_prelude.md')}`,
+    )
+  }
   if (json && Array.isArray(json.directions)) {
-    for (const raw of json.directions) {
-      const parsed = directionSchema.safeParse({ ...raw, source: 'prelude' })
-      if (parsed.success) directions.push(parsed.data)
-    }
+    directions.push(...coerceDirections(json.directions, 'prelude'))
   }
 
   // Fallback to legacy text parsing if JSON missing
@@ -713,7 +860,12 @@ async function runPrelude(
     }))
   }
 
-  // Final fallback
+  // Final fallback. Reaching here means the prelude passed the output check
+  // (so it is real research prose) but emitted neither a JSON block nor a
+  // parseable directions section. Restating the topic as a single direction is
+  // a reasonable recovery *only* under that condition — before the check
+  // existed, this line is what turned "您没有输入任何内容" into a run with one
+  // direction and seven depths.
   if (directions.length === 0) {
     directions = [{ id: 'd1', title: topic, starting_queries: [], source: 'prelude' }]
   }
@@ -817,11 +969,11 @@ async function runRecurrentDepth(
     for (const q of fallbackQuestions) newQuestions.push(q)
   }
 
-  // Merge into latent state
-  const claimIdsBefore = new Set(state.claims.map(c => c.id))
-  for (const c of newClaims) {
-    if (!claimIdsBefore.has(c.id)) state.claims.push(c)
-  }
+  // Merge into latent state. addClaims renames on id collision rather than
+  // dropping — two directions at the same depth readily generate the same
+  // `c<depth>_<short>_<n>` label, and the old skip-if-exists discarded real
+  // findings whenever that happened.
+  const storedClaims = addClaims(state, newClaims)
   for (const x of newContradictions) {
     if (!state.contradictions.find(e => e.id === x.id)) state.contradictions.push(x)
   }
@@ -833,24 +985,22 @@ async function runRecurrentDepth(
     if (idx !== -1) state.openQuestions.splice(idx, 1)
     if (!state.resolvedQuestions.includes(q)) state.resolvedQuestions.push(q)
   }
-  for (const s of sourcesIter) {
-    state.allSources.push(s)
-    incrementSourceTypes(state, [s.source_type])
-  }
-  // Also count source_types embedded inside claims
-  for (const c of newClaims) {
-    if (c.source_types?.length) incrementSourceTypes(state, c.source_types)
-  }
+  // Sources are deduplicated by normalized citation and the type histogram is
+  // derived from the list, not accumulated. Re-reading the canonical paper on
+  // a topic at depth 3 is not a new source, and claim-level `source_types` are
+  // not source records at all — counting both inflated the diversity map that
+  // the halting rule reads.
+  const newSourceCount = addSources(state, sourcesIter)
 
   // Legacy compat: keep bullet-list summaries for older readers
-  for (const c of newClaims) state.accumulatedFindings.push(`[${c.id}] ${c.statement}`)
+  for (const c of storedClaims) state.accumulatedFindings.push(`[${c.id}] ${c.statement}`)
   for (const x of newContradictions) state.contradictionsLegacy.push(`[${x.id}] ${x.description}`)
 
   await appendFindings(workDir, {
     depth,
     direction: direction.title,
     narrative,
-    new_claims: newClaims,
+    new_claims: storedClaims,
     new_contradictions: newContradictions,
     new_open_questions: newQuestions,
     resolved_open_questions: resolvedQuestions,
@@ -858,7 +1008,7 @@ async function runRecurrentDepth(
     timestamp: Date.now(),
   })
 
-  return { added: newClaims.length, sources: sourcesIter.length }
+  return { added: storedClaims.length, sources: newSourceCount }
 }
 
 async function runDistillation(
@@ -906,27 +1056,14 @@ async function runDistillation(
       const keptId = dedup.kept_claim_id
       const mergedIds = dedup.merged_claim_ids ?? []
       if (!keptId) continue
-      const kept = findClaim(state, keptId)
-      if (!kept) continue
+      if (!findClaim(state, keptId)) continue
       for (const mid of mergedIds) {
-        const merged = findClaim(state, mid)
-        if (!merged || merged.id === keptId) continue
-        // Merge sources/evidence/types into kept
-        for (const s of merged.sources) if (!kept.sources.includes(s)) kept.sources.push(s)
-        for (const e of merged.evidence) if (!kept.evidence.includes(e)) kept.evidence.push(e)
-        for (const t of merged.source_types) if (!kept.source_types.includes(t)) kept.source_types.push(t)
-        // Remove merged claim
-        state.claims = state.claims.filter(c => c.id !== mid)
-        // Rewrite references in other claims
-        for (const c of state.claims) {
-          c.confirms = c.confirms.map(r => (r === mid ? keptId : r))
-          c.extends = c.extends.map(r => (r === mid ? keptId : r))
-          c.challenged_by = c.challenged_by.map(r => (r === mid ? keptId : r))
-        }
-        // Rewrite references in contradictions
-        for (const x of state.contradictions) {
-          x.claim_ids_involved = x.claim_ids_involved.map(r => (r === mid ? keptId : r))
-        }
+        // mergeClaimInto folds sources/evidence across, rewrites every
+        // inbound reference, drops self-references created by the rewrite,
+        // and rebuilds the source histogram — which the inline version never
+        // did, so a merged claim left its source-type contribution behind
+        // forever.
+        mergeClaimInto(state, keptId, mid)
       }
     }
 
@@ -953,10 +1090,14 @@ async function runDistillation(
     }
 
     // Extract adaptive directions
-    for (const raw of json.adaptive_directions_next_depth ?? []) {
-      const parsed = directionSchema.safeParse({ ...(raw as object), source: 'adaptive' })
-      if (parsed.success) newDirections.push(parsed.data)
-    }
+    // Same coercion as the prelude: `...(raw as object)` silenced the type
+    // error without changing the runtime behaviour, so a bare-string direction
+    // still became {0:'B',1:'y',...} and was dropped. Losing an adaptive
+    // direction is losing the one the distillation chose to target a
+    // contradiction with.
+    newDirections.push(
+      ...coerceDirections(json.adaptive_directions_next_depth ?? [], 'adaptive'),
+    )
 
     if (typeof json.convergence_score === 'number') {
       newConvergence = Math.max(0, Math.min(1, json.convergence_score))
@@ -976,7 +1117,7 @@ async function runHaltingJudge(
   canUseTool: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[2] : never,
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
   onProgress: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[4] : never,
-): Promise<{ decision: 'halt' | 'continue' | 'extend'; rationale: string; focus?: string }> {
+): Promise<{ decision: HaltDecision; rationale: string; focus?: string }> {
   const text = await runSubagentPhase(
     buildHaltingPrompt(state, depthJustCompleted, maxDepth, extendCap),
     context,
@@ -991,24 +1132,36 @@ async function runHaltingJudge(
     | { decision?: string; rationale?: string; next_depth_focus?: string }
     | null
 
-  // Defensive defaults using the rule book
   const unresolved = state.contradictions.filter(x => x.resolution === 'unresolved').length
-  const sourceTypes = Object.keys(state.sourceTypeCounts).length
-  let decision: 'halt' | 'continue' | 'extend' = 'continue'
-  if (json?.decision === 'halt' || json?.decision === 'extend' || json?.decision === 'continue') {
-    decision = json.decision
-  } else {
-    if (state.convergenceScore >= 0.9 && unresolved <= 1 && sourceTypes >= 3) decision = 'halt'
-    else if (state.convergenceScore < 0.5 || unresolved >= 4 || sourceTypes <= 1) decision = 'extend'
-  }
-  const rationale = json?.rationale ?? 'rule-based fallback'
+
+  // The judge is asked to reason about the latent state; when there is no
+  // latent state its answer carries no information, so structural facts win.
+  // This is deliberately the opposite of the usual "trust the model" default.
+  const result = decideHalting({
+    claimCount: state.claims.length,
+    sourceCount: state.allSources.length,
+    depthsCompleted: depthJustCompleted,
+    claimCountPrevDepth: state.claimCountByDepth?.[String(depthJustCompleted - 1)],
+    convergenceScore: state.convergenceScore,
+    unresolvedContradictions: unresolved,
+    sourceTypeCount: Object.keys(state.sourceTypeCounts).length,
+    depthJustCompleted,
+    maxDepth,
+    extendCap,
+    judgeDecision: json?.decision,
+  })
+
+  const rationale = result.overrodeJudge
+    ? `${result.rationale} (overrode judge decision "${json?.decision}")`
+    : (json?.rationale ?? result.rationale)
+
   state.haltingDecisions.push({
     depth: depthJustCompleted,
-    decision,
+    decision: result.decision,
     rationale,
     timestamp: Date.now(),
   })
-  return { decision, rationale, focus: json?.next_depth_focus }
+  return { decision: result.decision, rationale, focus: json?.next_depth_focus }
 }
 
 async function runAdversarialProbe(
@@ -1204,7 +1357,7 @@ export const MythosTool = buildTool({
         ? input.outputDir
         : resolve(cwd, input.outputDir)
       : topic
-        ? defaultOutputDir(topic)
+        ? defaultOutputDir(topic, cwd)
         : resolve(cwd, 'mythos_output')
 
     if (action === 'status') {
@@ -1294,7 +1447,18 @@ export const MythosTool = buildTool({
     if (action === 'research' || !isContinue) {
       const depth = input.depth ?? DEFAULT_DEPTH
       const breadth = input.breadth ?? DEFAULT_BREADTH
-      await initWorkspace(workDir, topic!, depth, breadth)
+      try {
+        await initWorkspace(workDir, topic!, depth, breadth)
+      } catch (e) {
+        return {
+          data: {
+            success: false,
+            mode: 'inactive',
+            action,
+            message: `Mythos could not start: ${e instanceof Error ? e.message : String(e)}\nWorking directory is resolved relative to ${cwd}; pass an absolute outputDir to override.`,
+          },
+        }
+      }
       runtime = await readRuntimeState(workDir)
     }
 
@@ -1304,7 +1468,9 @@ export const MythosTool = buildTool({
           success: false,
           mode: 'inactive',
           action,
-          message: 'Failed to initialize Mythos workspace.',
+          message:
+            `Mythos could not read back the state it just wrote at ${join(workDir, MYTHOS_STATE)}.\n` +
+            `The directory exists but ${MYTHOS_STATE} is missing or unparseable — check disk space and permissions.`,
         },
       }
     }
@@ -1352,7 +1518,24 @@ export const MythosTool = buildTool({
         }
 
         for (const dir of selected) {
-          await runRecurrentDepth(workDir, dir, d, state, context, canUseTool, parentMessage, onProgress)
+          // Fault isolation. One direction's subagent hitting a WebFetch
+          // internal error (or any transient failure) previously threw all the
+          // way out and discarded the whole run — including every other
+          // direction that had already succeeded. A single flaky fetch is not
+          // grounds to lose a completed prelude and N depths of claims. A user
+          // interrupt is different: it must stop the run, so aborts re-throw.
+          try {
+            await runRecurrentDepth(workDir, dir, d, state, context, canUseTool, parentMessage, onProgress)
+          } catch (e) {
+            if (isAbortError(e)) throw e
+            state.directionFailures ??= []
+            state.directionFailures.push({
+              directionId: dir.id,
+              depth: d,
+              error: describeError(e),
+              timestamp: Date.now(),
+            })
+          }
           if (!state.completedDirectionIds.includes(dir.id)) state.completedDirectionIds.push(dir.id)
           const pendIdx = state.pendingDirectionIds.indexOf(dir.id)
           if (pendIdx !== -1) state.pendingDirectionIds.splice(pendIdx, 1)
@@ -1360,24 +1543,40 @@ export const MythosTool = buildTool({
 
         state.currentDepth = d
 
-        // Distillation
-        const distillResult = await runDistillation(
-          workDir,
-          state,
-          d,
-          context,
-          canUseTool,
-          parentMessage,
-          onProgress,
-        )
+        // Distillation is a consolidation pass over claims already collected;
+        // if it fails, the claims are still valid, so a failure here degrades
+        // the run (no dedup/adaptive directions this depth) rather than ending
+        // it. Aborts still propagate.
+        try {
+          const distillResult = await runDistillation(
+            workDir,
+            state,
+            d,
+            context,
+            canUseTool,
+            parentMessage,
+            onProgress,
+          )
 
-        // Inject adaptive directions for next depth
-        for (const nd of distillResult.newDirections) {
-          if (!state.directions.find(x => x.id === nd.id)) {
-            state.directions.push(nd)
-            state.pendingDirectionIds.push(nd.id)
+          // Inject adaptive directions for next depth
+          for (const nd of distillResult.newDirections) {
+            if (!state.directions.find(x => x.id === nd.id)) {
+              state.directions.push(nd)
+              state.pendingDirectionIds.push(nd.id)
+            }
           }
+        } catch (e) {
+          if (isAbortError(e)) throw e
+          state.directionFailures ??= []
+          state.directionFailures.push({
+            directionId: `distillation@d${d}`,
+            depth: d,
+            error: describeError(e),
+            timestamp: Date.now(),
+          })
         }
+
+        state.claimCountByDepth[String(d)] = state.claims.length
 
         // Persist state after each depth
         await writeRuntimeState(workDir, {
@@ -1386,6 +1585,28 @@ export const MythosTool = buildTool({
           updatedAt: nowIso(),
           latentState: state,
         })
+
+        // Starvation is checked every depth, not only when the depth budget
+        // runs out. The broken run burned seven depths before anything looked
+        // at whether the first one had produced a single claim.
+        const health = assessRunHealth({
+          claimCount: state.claims.length,
+          sourceCount: state.allSources.length,
+          depthsCompleted: d,
+          claimCountPrevDepth: state.claimCountByDepth[String(d - 1)],
+          convergenceScore: state.convergenceScore,
+          unresolvedContradictions: state.contradictions.filter(
+            x => x.resolution === 'unresolved',
+          ).length,
+          sourceTypeCount: Object.keys(state.sourceTypeCounts).length,
+        })
+        if (health.starved) {
+          throw new Error(
+            `Mythos aborted after depth ${d}: ${health.problems[0]}\n` +
+              `Artifacts for diagnosis are in ${workDir}. ` +
+              `The usual cause is a research phase whose output did not parse — check mythos_findings.jsonl.`,
+          )
+        }
 
         // Halting judge (skip if we are already at the hard cap)
         const reachedHardCap = state.extendedDepth >= extendCap
@@ -1401,6 +1622,9 @@ export const MythosTool = buildTool({
             onProgress,
           )
 
+          if (halt.decision === 'abort') {
+            throw new Error(`Mythos aborted after depth ${d}: ${halt.rationale}`)
+          }
           if (halt.decision === 'extend' && !reachedHardCap) {
             effectiveMaxDepth += 1
             state.extendedDepth += 1
@@ -1439,6 +1663,27 @@ export const MythosTool = buildTool({
       // ============================================================
       // PHASE 7: CODA
       // ============================================================
+      // A citation-anchored report synthesized from zero claims and zero
+      // sources is not a weak report, it is a fabrication — and it was
+      // previously written without complaint. The gate is here rather than
+      // only inside runCoda so the failure names the run, not the phase.
+      const finalHealth = assessRunHealth({
+        claimCount: state.claims.length,
+        sourceCount: state.allSources.length,
+        depthsCompleted: state.currentDepth,
+        convergenceScore: state.convergenceScore,
+        unresolvedContradictions: state.contradictions.filter(
+          x => x.resolution === 'unresolved',
+        ).length,
+        sourceTypeCount: Object.keys(state.sourceTypeCounts).length,
+      })
+      if (finalHealth.starved) {
+        throw new Error(
+          `Mythos refused to synthesize a report: ${finalHealth.problems[0]}\n` +
+            `Partial artifacts are in ${workDir}.`,
+        )
+      }
+
       const reportPath = await runCoda(
         workDir,
         effectiveTopic,
@@ -1459,6 +1704,31 @@ export const MythosTool = buildTool({
       const unresolved = state.contradictions.filter(x => x.resolution === 'unresolved').length
       const resolved = state.contradictions.length - unresolved
 
+      // Caveats reported alongside a successful run. A run can complete and
+      // still have produced something the reader should not take at face
+      // value — the previous summary reported only the flattering counters,
+      // so a monoculture of blogs and a claim graph full of broken edges both
+      // rendered as unqualified success.
+      const caveats: string[] = [...finalHealth.problems]
+      if (state.directionFailures?.length) {
+        const f = state.directionFailures
+        caveats.push(
+          `${f.length} direction/phase failure(s) were tolerated during the run (e.g. ${f[0].directionId} at depth ${f[0].depth}: ${f[0].error}); coverage is thinner than the depth count implies`,
+        )
+      }
+      const dangling = findDanglingReferences(state)
+      if (dangling.length > 0) {
+        caveats.push(
+          `${dangling.length} claim reference(s) point at ids that do not exist (e.g. ${dangling[0].claimId}.${dangling[0].field} → ${dangling[0].missing}); the claim graph in the report has broken edges`,
+        )
+      }
+      const unprobed = state.claims.filter(c => c.probe_verdict === 'unprobed').length
+      if (!skipAdversarial && unprobed === state.claims.length && state.claims.length > 0) {
+        caveats.push(
+          'the adversarial probe returned no verdicts — every claim is still unprobed, so the robustness figure is not meaningful',
+        )
+      }
+
       return {
         data: {
           success: true,
@@ -1469,8 +1739,11 @@ export const MythosTool = buildTool({
             `Depth: ${state.currentDepth} / ${baseMaxDepth} (+${state.extendedDepth} extended)\n` +
             `Claims: ${state.claims.length} | Contradictions: ${state.contradictions.length} (${resolved} resolved)\n` +
             `Open questions: ${state.openQuestions.length} | Convergence: ${state.convergenceScore.toFixed(2)}\n` +
-            `Source-type variety: ${Object.keys(state.sourceTypeCounts).length} (${JSON.stringify(state.sourceTypeCounts)})\n` +
+            `Sources: ${state.allSources.length} across ${Object.keys(state.sourceTypeCounts).length} type(s) (${JSON.stringify(state.sourceTypeCounts)})\n` +
             `Adversarial probe: survived=${probeStats.survived}, wounded=${probeStats.wounded}, broken=${probeStats.broken} (robustness=${probeStats.robustness})\n` +
+            (caveats.length > 0
+              ? `\nCAVEATS — treat the report accordingly:\n${caveats.map(c => `  - ${c}`).join('\n')}\n\n`
+              : '') +
             `Report: ${reportPath}`,
           reportPath,
           depthReached: state.currentDepth,
@@ -1481,18 +1754,82 @@ export const MythosTool = buildTool({
         },
       }
     } catch (error) {
+      // Persist whatever was accumulated before the throw — this is what makes
+      // the run resumable with action="continue".
       await writeRuntimeState(workDir, {
         ...runtime,
         mode: 'inactive',
         updatedAt: nowIso(),
         latentState: state,
       })
+
+      const detail = describeError(error)
+      const aborted = isAbortError(error)
+
+      // Salvage. A fatal error after real research has been done should not
+      // vaporize it. If claims were collected, or at least a prelude landscape
+      // exists, write a best-effort report from what is on disk and return a
+      // degraded success that points at it. The user's run produced a 22KB
+      // prelude and 33KB of state and got an empty "failed:" — that work was
+      // recoverable the whole time; nothing was offering it back.
+      const hasSalvageableWork =
+        state.claims.length > 0 || !!state.landscapeMap
+      if (!aborted && hasSalvageableWork) {
+        let reportPath: string | undefined
+        try {
+          reportPath = await runCoda(
+            workDir,
+            effectiveTopic,
+            state,
+            context,
+            canUseTool,
+            parentMessage,
+            onProgress,
+          )
+        } catch {
+          // Coda itself failed (e.g. the same flaky network). Fall back to the
+          // prelude, which is already on disk, so there is still a report path.
+          reportPath = state.landscapeMap
+            ? join(workDir, 'mythos_prelude.md')
+            : undefined
+        }
+
+        return {
+          data: {
+            success: true,
+            mode: 'inactive',
+            action,
+            message:
+              `Mythos was interrupted by an error but salvaged a partial result.\n` +
+              `Error: ${detail}\n` +
+              `Recovered: ${state.claims.length} claim(s), ${state.allSources.length} source(s), depth ${state.currentDepth}.\n` +
+              (state.directionFailures?.length
+                ? `Non-fatal failures along the way: ${state.directionFailures.length} (see mythos_state.json).\n`
+                : '') +
+              `Resume with action="continue" to extend this run.\n` +
+              (reportPath ? `Partial report: ${reportPath}\n` : '') +
+              `Work dir: ${workDir}`,
+            reportPath,
+            depthReached: state.currentDepth,
+            findingsCount: state.claims.length,
+            convergenceScore: state.convergenceScore,
+          },
+        }
+      }
+
       return {
         data: {
           success: false,
           mode: 'inactive',
           action,
-          message: `Mythos research failed: ${error instanceof Error ? error.message : String(error)}\nWork dir: ${workDir}`,
+          message:
+            (aborted
+              ? `Mythos was cancelled.`
+              : `Mythos research failed: ${detail}`) +
+            `\nWork dir: ${workDir}` +
+            (state.claims.length > 0 || state.landscapeMap
+              ? `\nPartial state was saved — resume with action="continue".`
+              : ''),
         },
       }
     }
