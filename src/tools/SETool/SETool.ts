@@ -1,53 +1,90 @@
-import { access, appendFile, readFile, writeFile } from 'fs/promises'
-import { constants as fsConstants } from 'fs'
-import { join } from 'path'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { getCwd } from '../../utils/cwd.js'
-import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
+import {
+  engineAddTask,
+  engineAdvance,
+  engineCatchup,
+  engineInit,
+  engineStatus,
+  engineSync,
+  renderStatus,
+  resolveProjectRoot,
+  withPlanFile,
+  type PlanningProfile,
+} from '../planning/engine.js'
+import { formatChanges } from '../planning/feedback.js'
+import { STORED_STATUSES } from '../planning/taskGraph.js'
+import { SE_PROFILE } from './profile.js'
 
 const SE_TOOL_NAME = 'se-tool'
 
 const DESCRIPTION =
-  'System engineering planning tool based on planning-with-files. Initializes planning files, checks completion status, and generates session catchup from git diff stats.'
+  'System engineering planner with a real task dependency graph. Tracks tasks with dependencies, derives what is startable now, enforces legal state transitions, and closes the loop by verifying claimed progress against the workspace.'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
     action: z
-      .enum(['init', 'status', 'catchup', 'sync'])
+      .enum(['init', 'status', 'catchup', 'sync', 'add-task', 'advance'])
       .describe(
-        'Action to run: init creates planning files, status checks phase completion, catchup summarizes unsynced workspace changes, sync appends current diff status to progress.md.',
+        'init scaffolds planning files; status shows the task graph with ready/blocked derivation; add-task appends a task with dependencies; advance moves a task between states; sync verifies the plan against the workspace and writes back; catchup shows the raw diff.',
       ),
-    projectName: z
+    projectName: z.string().optional().describe('Project name used in the generated task_plan.md title during init.'),
+    projectRoot: z
       .string()
       .optional()
-      .describe('Optional project name used in the generated task_plan.md title during init.'),
+      .describe('Directory to operate on. Absolute, or relative to the session cwd. Must already exist. Defaults to the session cwd.'),
+    planFile: z
+      .string()
+      .optional()
+      .describe('Plan filename to use instead of task_plan.md, so one repository can carry several independent plans.'),
+    title: z.string().optional().describe('Required for add-task. The task description.'),
+    dependsOn: z
+      .array(z.string())
+      .optional()
+      .describe('Task ids this new task depends on, e.g. ["T1","T2"]. Used by add-task.'),
+    verify: z
+      .string()
+      .optional()
+      .describe(
+        'Verification expression that means this task is done, checked by sync. One of: exists:<path>, missing:<path>, contains:<path>:<text>, changed:<path-fragment>.',
+      ),
+    taskId: z.string().optional().describe('Required for advance. The task id to transition.'),
+    status: z
+      .enum(STORED_STATUSES)
+      .optional()
+      .describe('Required for advance. Target state: pending, in_progress, complete, failed.'),
+    force: z
+      .boolean()
+      .optional()
+      .describe('Allow advance to start or complete a task whose dependencies are unmet. Use deliberately.'),
+    note: z.string().optional().describe('Optional note recorded with an advance, e.g. why a task failed.'),
+    remediation: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Only with status="failed". Titles of fix-up tasks. They are created and the failed task is made to depend on them, so finishing the remediation makes the original retryable instead of leaving the plan deadlocked.',
+      ),
+    reopenRegressions: z
+      .boolean()
+      .optional()
+      .describe('During sync, reopen tasks marked complete whose verification no longer passes.'),
   }),
 )
 
 type InputSchema = ReturnType<typeof inputSchema>
 type Input = z.infer<InputSchema>
 
-type PhaseStatus = 'complete' | 'in_progress' | 'pending'
-
 const outputSchema = lazySchema(() =>
   z.object({
     success: z.boolean(),
-    action: z.enum(['init', 'status', 'catchup', 'sync']),
+    action: z.string(),
     projectRoot: z.string(),
     summary: z.string(),
+    detail: z.array(z.string()).optional(),
     filesCreated: z.array(z.string()).optional(),
-    filesExisting: z.array(z.string()).optional(),
-    phaseTotals: z
-      .object({
-        total: z.number(),
-        complete: z.number(),
-        inProgress: z.number(),
-        pending: z.number(),
-      })
-      .optional(),
     gitDiffStat: z.string().optional(),
   }),
 )
@@ -55,291 +92,132 @@ const outputSchema = lazySchema(() =>
 type OutputSchema = ReturnType<typeof outputSchema>
 export type Output = z.infer<OutputSchema>
 
-const TASK_PLAN_FILENAME = 'task_plan.md'
-const FINDINGS_FILENAME = 'findings.md'
-const PROGRESS_FILENAME = 'progress.md'
-
-type PlanningFile = typeof TASK_PLAN_FILENAME | typeof FINDINGS_FILENAME | typeof PROGRESS_FILENAME
-
-const PLANNING_FILES: PlanningFile[] = [
-  TASK_PLAN_FILENAME,
-  FINDINGS_FILENAME,
-  PROGRESS_FILENAME,
-]
-
-function nowDateString(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-
-function taskPlanTemplate(projectName: string): string {
-  return `# Task Plan: ${projectName}
-
-## Goal
-[One sentence describing the end state]
-
-## Current Phase
-Phase 1
-
-## Phases
-
-### Phase 1: Requirements & Discovery
-- [ ] Understand user intent
-- [ ] Identify constraints
-- [ ] Document in findings.md
-- **Status:** in_progress
-
-### Phase 2: Planning & Structure
-- [ ] Define approach
-- [ ] Create project structure
-- **Status:** pending
-
-### Phase 3: Implementation
-- [ ] Execute the plan
-- [ ] Write to files before executing
-- **Status:** pending
-
-### Phase 4: Testing & Verification
-- [ ] Verify requirements met
-- [ ] Document test results
-- **Status:** pending
-
-### Phase 5: Delivery
-- [ ] Review outputs
-- [ ] Deliver to user
-- **Status:** pending
-
-## Decisions Made
-| Decision | Rationale |
-|----------|-----------|
-
-## Errors Encountered
-| Error | Resolution |
-|-------|------------|
-`
-}
-
-function findingsTemplate(): string {
-  return `# Findings & Decisions
-
-## Requirements
--
-
-## Research Findings
--
-
-## Technical Decisions
-| Decision | Rationale |
-|----------|-----------|
-
-## Issues Encountered
-| Issue | Resolution |
-|-------|------------|
-
-## Resources
--
-`
-}
-
-function progressTemplate(): string {
-  const date = nowDateString()
-  return `# Progress Log
-
-## Session: ${date}
-
-### Current Status
-- **Phase:** 1 - Requirements & Discovery
-- **Started:** ${date}
-
-### Actions Taken
--
-
-### Test Results
-| Test | Expected | Actual | Status |
-|------|----------|--------|--------|
-
-### Errors
-| Error | Resolution |
-|-------|------------|
-`
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path, fsConstants.F_OK)
-    return true
-  } catch {
-    return false
+/** One line describing what a transition did, including any replanning. */
+function advanceSummary(
+  taskId: string,
+  r: { from?: string; unblocked?: string[]; remediationIds?: string[]; deadlocked?: string[] },
+  to: string,
+): string {
+  const parts = [`${taskId}: ${r.from} → ${to}.`]
+  if (r.remediationIds?.length) {
+    parts.push(`Created remediation ${r.remediationIds.join(', ')}; ${taskId} now depends on them and becomes retryable once they complete.`)
   }
+  if (r.unblocked?.length) parts.push(`Unblocked ${r.unblocked.join(', ')}.`)
+  if (r.deadlocked?.length) {
+    // Attribute the deadlock correctly: this transition caused it only when
+    // this transition was the failure. Otherwise it is pre-existing, and
+    // saying "by this failure" after a successful completion is just wrong.
+    parts.push(
+      to === 'failed'
+        ? `DEADLOCKED by this failure: ${r.deadlocked.join(', ')} — replan or add remediation.`
+        : `Still deadlocked upstream: ${r.deadlocked.join(', ')}.`,
+    )
+  }
+  return parts.join(' ')
 }
 
-function parsePhaseTotals(planContent: string): {
-  total: number
-  complete: number
-  inProgress: number
-  pending: number
-} {
-  const total = (planContent.match(/###\s+Phase/g) ?? []).length
+async function runAction(root: string, input: Input): Promise<Output> {
+  const base = { projectRoot: root, action: input.action }
+  const PROFILE: PlanningProfile = withPlanFile(SE_PROFILE, input.planFile)
 
-  const statusMatches = [...planContent.matchAll(/\*\*Status:\*\*\s*(complete|in_progress|pending)/g)]
-  let complete = 0
-  let inProgress = 0
-  let pending = 0
-
-  if (statusMatches.length > 0) {
-    for (const match of statusMatches) {
-      const status = (match[1] ?? 'pending') as PhaseStatus
-      if (status === 'complete') complete += 1
-      if (status === 'in_progress') inProgress += 1
-      if (status === 'pending') pending += 1
-    }
-  } else {
-    complete = (planContent.match(/\[complete\]/g) ?? []).length
-    inProgress = (planContent.match(/\[in_progress\]/g) ?? []).length
-    pending = (planContent.match(/\[pending\]/g) ?? []).length
-  }
-
-  return { total, complete, inProgress, pending }
-}
-
-async function runInit(projectRoot: string, projectName?: string): Promise<Output> {
-  const safeProjectName = projectName?.trim() || 'project'
-
-  const filesCreated: string[] = []
-  const filesExisting: string[] = []
-
-  const fileMap: Record<PlanningFile, string> = {
-    [TASK_PLAN_FILENAME]: taskPlanTemplate(safeProjectName),
-    [FINDINGS_FILENAME]: findingsTemplate(),
-    [PROGRESS_FILENAME]: progressTemplate(),
-  }
-
-  for (const filename of PLANNING_FILES) {
-    const fullPath = join(projectRoot, filename)
-    if (await exists(fullPath)) {
-      filesExisting.push(filename)
-      continue
+  switch (input.action) {
+    case 'init': {
+      const { created, existing } = await engineInit(root, PROFILE, input.projectName?.trim() || 'project')
+      return {
+        ...base,
+        success: true,
+        summary:
+          created.length > 0
+            ? `Initialized planning files in ${root}. Created: ${created.join(', ')}.`
+            : `Planning files already exist: ${existing.join(', ')}.`,
+        filesCreated: created,
+        detail: ['Add tasks with action="add-task", then use action="status" to see what is startable.'],
+      }
     }
 
-    await writeFile(fullPath, fileMap[filename], 'utf-8')
-    filesCreated.push(filename)
-  }
-
-  const summary =
-    filesCreated.length > 0
-      ? `Initialized planning files in ${projectRoot}. Created: ${filesCreated.join(', ')}.`
-      : `Planning files already exist in ${projectRoot}: ${filesExisting.join(', ')}.`
-
-  return {
-    success: true,
-    action: 'init',
-    projectRoot,
-    summary,
-    filesCreated,
-    filesExisting,
-  }
-}
-
-async function runStatus(projectRoot: string): Promise<Output> {
-  const planPath = join(projectRoot, TASK_PLAN_FILENAME)
-  if (!(await exists(planPath))) {
-    return {
-      success: false,
-      action: 'status',
-      projectRoot,
-      summary: 'No task_plan.md found. Run action="init" first.',
-      phaseTotals: {
-        total: 0,
-        complete: 0,
-        inProgress: 0,
-        pending: 0,
-      },
+    case 'status': {
+      const status = await engineStatus(root, PROFILE)
+      if (!status) {
+        return { ...base, success: false, summary: `No ${PROFILE.planFile} found. Run action="init" first.` }
+      }
+      const lines = renderStatus(status)
+      return { ...base, success: true, summary: lines[0], detail: lines.slice(1) }
     }
-  }
 
-  const content = await readFile(planPath, 'utf-8')
-  const totals = parsePhaseTotals(content)
-
-  const summary =
-    totals.total > 0 && totals.complete === totals.total
-      ? `All phases complete (${totals.complete}/${totals.total}).`
-      : `Task in progress (${totals.complete}/${totals.total} complete, ${totals.inProgress} in progress, ${totals.pending} pending).`
-
-  return {
-    success: true,
-    action: 'status',
-    projectRoot,
-    summary,
-    phaseTotals: totals,
-  }
-}
-
-async function runCatchup(projectRoot: string): Promise<Output> {
-  const diff = await execFileNoThrowWithCwd('git', ['diff', '--stat'], {
-    cwd: projectRoot,
-  })
-
-  if (diff.code !== 0) {
-    const errorMessage = (diff.stderr || diff.error || 'git diff --stat failed').trim()
-    return {
-      success: false,
-      action: 'catchup',
-      projectRoot,
-      summary: `Cannot generate catchup: ${errorMessage}`,
-      gitDiffStat: '',
+    case 'add-task': {
+      if (!input.title?.trim()) {
+        return { ...base, success: false, summary: 'add-task requires a title.' }
+      }
+      const r = await engineAddTask(root, PROFILE, {
+        title: input.title.trim(),
+        dependsOn: input.dependsOn,
+        verify: input.verify,
+      })
+      if (!r.ok) return { ...base, success: false, summary: r.error }
+      const status = await engineStatus(root, PROFILE)
+      return {
+        ...base,
+        success: true,
+        summary: `Added ${r.id}: ${input.title.trim()}.`,
+        detail: status ? renderStatus(status) : undefined,
+      }
     }
-  }
 
-  const gitDiffStat = diff.stdout.trim()
-  const summary = gitDiffStat
-    ? 'Unsynced workspace changes found. Reconcile task_plan.md/progress.md with current diff.'
-    : 'No unsynced workspace changes detected by git diff --stat.'
-
-  return {
-    success: true,
-    action: 'catchup',
-    projectRoot,
-    summary,
-    gitDiffStat,
-  }
-}
-
-async function runSync(projectRoot: string): Promise<Output> {
-  const progressPath = join(projectRoot, PROGRESS_FILENAME)
-  if (!(await exists(progressPath))) {
-    return {
-      success: false,
-      action: 'sync',
-      projectRoot,
-      summary: 'No progress.md found. Run action="init" first.',
-      gitDiffStat: '',
+    case 'advance': {
+      if (!input.taskId || !input.status) {
+        return { ...base, success: false, summary: 'advance requires taskId and status.' }
+      }
+      const r = await engineAdvance(root, PROFILE, input.taskId, input.status, {
+        force: input.force,
+        note: input.note,
+        remediation: input.remediation,
+      })
+      if (!r.ok) return { ...base, success: false, summary: r.error }
+      const status = await engineStatus(root, PROFILE)
+      return {
+        ...base,
+        success: true,
+        summary: advanceSummary(input.taskId, r, input.status),
+        detail: status ? renderStatus(status) : undefined,
+      }
     }
-  }
 
-  const catchup = await runCatchup(projectRoot)
-  if (!catchup.success) {
-    return {
-      ...catchup,
-      action: 'sync',
+    case 'sync': {
+      const r = await engineSync(root, PROFILE, { reopenRegressions: input.reopenRegressions })
+      if (!r.ok) return { ...base, success: false, summary: `Cannot sync: ${r.error}` }
+      const { changes, unblocked, status, diffStat } = r.result
+      const detail = [
+        ...(changes.length > 0 ? formatChanges(changes) : ['  (verification produced no state changes)']),
+        ...(unblocked.length > 0 ? [`Unblocked: ${unblocked.join(', ')}`] : []),
+        ...renderStatus(status),
+      ]
+      return {
+        ...base,
+        success: true,
+        summary: `Synced. ${changes.length} change(s) from verification.`,
+        detail,
+        gitDiffStat: diffStat,
+      }
     }
-  }
 
-  const timestamp = new Date().toISOString()
-  const diffContent = catchup.gitDiffStat || '(clean working tree)'
-  const logEntry = `\n\n### Sync ${timestamp}\n- ${catchup.summary}\n\n\`\`\`\n${diffContent}\n\`\`\`\n`
-  await appendFile(progressPath, logEntry, 'utf-8')
-
-  return {
-    success: true,
-    action: 'sync',
-    projectRoot,
-    summary: `Synced workspace state to ${PROGRESS_FILENAME}.`,
-    gitDiffStat: catchup.gitDiffStat,
+    default: {
+      const r = await engineCatchup(root)
+      if (!r.ok) return { ...base, success: false, summary: `Cannot generate catchup: ${r.error}` }
+      return {
+        ...base,
+        success: true,
+        summary: r.diffStat
+          ? 'Unsynced workspace changes found. Run action="sync" to verify the plan against them.'
+          : 'No unsynced workspace changes.',
+        gitDiffStat: r.diffStat,
+      }
+    }
   }
 }
 
 export const SETool = buildTool({
   name: SE_TOOL_NAME,
-  searchHint: 'system engineering planner with persistent markdown files',
+  searchHint: 'system engineering planner task dependency graph ready blocked orchestration',
   maxResultSizeChars: 100_000,
   async description() {
     return DESCRIPTION
@@ -351,7 +229,7 @@ export const SETool = buildTool({
     return inputSchema()
   },
   get inputJSONSchema() {
-    const schema = zodToJsonSchema(inputSchema())
+    const schema = zodToJsonSchema(inputSchema(), { io: 'input' })
     schema.type = 'object'
     return schema
   },
@@ -364,54 +242,36 @@ export const SETool = buildTool({
   isConcurrencySafe() {
     return false
   },
-  isReadOnly() {
-    return false
+  isReadOnly(input) {
+    return input.action === 'status' || input.action === 'catchup'
   },
   toAutoClassifierInput(input) {
     return `${input.action}`
   },
-  async call(input: Input, context) {
-    const projectRoot = getCwd()
-
-    if (input.action === 'init') {
-      return { data: await runInit(projectRoot, input.projectName) }
-    }
-
-    if (input.action === 'status') {
-      return { data: await runStatus(projectRoot) }
-    }
-
-    if (input.action === 'sync') {
+  async call(input: Input) {
+    const resolved = await resolveProjectRoot(getCwd(), input.projectRoot)
+    if (!resolved.ok) {
       return {
-        data: await runSync(projectRoot),
+        data: {
+          success: false,
+          action: input.action,
+          projectRoot: getCwd(),
+          summary: resolved.error!,
+        },
       }
     }
-
-    return {
-      data: await runCatchup(projectRoot),
-    }
+    return { data: await runAction(resolved.root!, input) }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
-    const contentLines = [output.summary]
-
-    if (output.filesCreated && output.filesCreated.length > 0) {
-      contentLines.push(`Created: ${output.filesCreated.join(', ')}`)
+    const lines = [output.summary, ...(output.detail ?? [])]
+    if (typeof output.gitDiffStat === 'string' && output.gitDiffStat) {
+      lines.push(output.gitDiffStat)
     }
-
-    if (output.phaseTotals) {
-      contentLines.push(
-        `Phases: complete=${output.phaseTotals.complete}, in_progress=${output.phaseTotals.inProgress}, pending=${output.phaseTotals.pending}, total=${output.phaseTotals.total}`,
-      )
-    }
-
-    if (typeof output.gitDiffStat === 'string') {
-      contentLines.push(output.gitDiffStat || '(clean working tree)')
-    }
-
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: contentLines.join('\n'),
+      content: lines.join('\n'),
+      is_error: output.success !== true,
     }
   },
 } satisfies ToolDef<InputSchema, Output>)
