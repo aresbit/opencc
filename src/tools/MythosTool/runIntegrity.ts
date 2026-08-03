@@ -105,6 +105,10 @@ export type HaltInput = HealthInput & {
   extendCap: number
   /** The judge subagent's decision, when it produced a parseable one. */
   judgeDecision?: string
+  /** Milliseconds elapsed since the run started, when the caller tracks it. */
+  elapsedMs?: number
+  /** Wall-clock budget for the whole run. */
+  budgetMs?: number
 }
 
 export type HaltResult = {
@@ -130,6 +134,26 @@ export function decideHalting(input: HaltInput): HaltResult {
       decision: 'abort',
       rationale: `Aborting: ${health.problems[0]}`,
       overrodeJudge: input.judgeDecision !== undefined && input.judgeDecision !== 'abort',
+    }
+  }
+
+  // Time budget, checked AFTER starvation. Order matters: halting a starved
+  // run would synthesize a report over zero claims, which is precisely the
+  // failure `abort` exists to prevent — so 'out of time' must not outrank
+  // 'there is nothing here'. The extend rule
+  // keys off low convergence, so a run that is finding little earns *more*
+  // depths — the depth budget therefore does not bound wall time at all. A
+  // depth-4 run reaching depth 7 and running 38 minutes is that feedback loop,
+  // not a slow network.
+  if (
+    typeof input.elapsedMs === 'number' &&
+    typeof input.budgetMs === 'number' &&
+    input.elapsedMs >= input.budgetMs
+  ) {
+    return {
+      decision: 'halt',
+      rationale: `Halting: run exceeded its ${Math.round(input.budgetMs / 60_000)}-minute budget (${Math.round(input.elapsedMs / 60_000)}m elapsed). Synthesizing from what was gathered; resume with action="continue" to go deeper.`,
+      overrodeJudge: input.judgeDecision !== undefined && input.judgeDecision !== 'halt',
     }
   }
 

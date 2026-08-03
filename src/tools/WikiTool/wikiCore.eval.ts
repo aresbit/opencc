@@ -8,6 +8,7 @@
  * Run:  bun run src/tools/WikiTool/wikiCore.eval.ts [--verbose]
  */
 
+import { excerptCode, selectSourceFiles, shouldIncludeSourceFile } from './codeSource.js'
 import {
   mergeSourced,
   pageSlug,
@@ -436,7 +437,115 @@ const DISTILL_CASES: Case[] = [
   },
 ]
 
-CASES.push(...DISTILL_CASES)
+const CODE_CASES: Case[] = [
+  {
+    group: 'code',
+    label: 'source files are included, noise is not',
+    check: () => {
+      const paths = [
+        'src/tools/WikiTool/WikiTool.ts',
+        'node_modules/foo/index.js',
+        'dist/bundle.js',
+        '.git/config',
+        'package-lock.json',
+        'src/vendor.min.js',
+        'src/types/global.d.ts',
+        'README.md',
+        'src/api/client.py',
+      ]
+      return eq('kept', paths.filter(shouldIncludeSourceFile), [
+        'src/tools/WikiTool/WikiTool.ts',
+        'src/api/client.py',
+      ])
+    },
+  },
+  {
+    group: 'code',
+    label: 'generated files are excluded',
+    check: () =>
+      eq(
+        'kept',
+        ['a/schema_pb2.py', 'a/api.pb.go', 'a/model.generated.ts', 'a/real.ts'].filter(shouldIncludeSourceFile),
+        ['a/real.ts'],
+      ),
+  },
+  {
+    group: 'code',
+    label: 'shallow paths are sampled before deep ones, deterministically',
+    check: () => {
+      const sel = selectSourceFiles(['a/b/c/deep.ts', 'top.ts', 'a/mid.ts'], 2)
+      return eq('files', sel.files, ['top.ts', 'a/mid.ts']) ?? eq('skipped', sel.skippedForCap, 1)
+    },
+  },
+  {
+    group: 'code',
+    label: 'the cap reports what it dropped rather than hiding it',
+    check: () => {
+      const sel = selectSourceFiles(Array.from({ length: 10 }, (_, i) => `f${i}.ts`), 3)
+      return eq('skipped', sel.skippedForCap, 7)
+    },
+  },
+  {
+    group: 'code',
+    label: 'excerpt keeps the module doc comment and declarations',
+    check: () => {
+      const src = [
+        '/**',
+        ' * Settles trades against the previous close when a bar is missing.',
+        ' */',
+        "import { foo } from './foo.js'",
+        "import bar from 'bar'",
+        '',
+        'export interface Position { qty: number }',
+        '',
+        'export function markToMarket(p: Position): number {',
+        '  const noise = 1',
+        '  return noise',
+        '}',
+      ].join('\n')
+      const out = excerptCode(src)
+      return out.includes('previous close') &&
+        out.includes('export interface Position') &&
+        out.includes('export function markToMarket')
+        ? null
+        : out
+    },
+  },
+  {
+    group: 'code',
+    label: 'excerpt drops imports and function bodies',
+    check: () => {
+      const src = [
+        "import { a } from 'a'",
+        'export function f() {',
+        '  const secretNoise = 42',
+        '  return secretNoise',
+        '}',
+      ].join('\n')
+      const out = excerptCode(src)
+      return !out.includes('secretNoise') && !out.includes("from 'a'") ? null : out
+    },
+  },
+  {
+    group: 'code',
+    label: 'a file with no recognised declarations still contributes its head',
+    check: () => {
+      const out = excerptCode('key = value\nother = thing\n'.repeat(5))
+      return out.includes('key = value') ? null : `fell back to nothing: ${JSON.stringify(out)}`
+    },
+  },
+  {
+    group: 'code',
+    label: 'excerpt respects its budget',
+    check: () => {
+      const src = Array.from({ length: 500 }, (_, i) => `export const v${i} = ${i}`).join('\n')
+      const out = excerptCode(src, 500)
+      return out.length <= 520 ? null : `len=${out.length}`
+    },
+  },
+]
+
+CASES.push(...DISTILL_CASES, ...CODE_CASES)
 
 function run(verbose: boolean): number {
   const byGroup = new Map<string, { pass: number; total: number }>()

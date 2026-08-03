@@ -82,6 +82,18 @@ const inputSchema = lazySchema(() =>
       .optional()
       .default(false)
       .describe('Skip the adversarial probe phase. Default: false (probe enabled).'),
+    phaseTimeoutMinutes: z
+      .number()
+      .min(1)
+      .max(60)
+      .optional()
+      .describe('Per-phase wall-clock budget. A phase that exceeds it is recorded as a failed direction; the rest of the depth continues. Default: 12.'),
+    runBudgetMinutes: z
+      .number()
+      .min(1)
+      .max(240)
+      .optional()
+      .describe('Wall-clock budget for the whole run. On expiry the halting judge stops and synthesizes from what was gathered; resume with action="continue". Default: 20.'),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -247,6 +259,42 @@ const MYTHOS_REPORT = 'mythos_research.md'
 const MYTHOS_SOURCES = 'mythos_sources.md'
 const MYTHOS_CLAIMS = 'mythos_claims.json'
 const MYTHOS_ADVERSARIAL = 'mythos_adversarial.md'
+/**
+ * Wall-clock budget for one subagent phase.
+ *
+ * There was no timeout anywhere in this tool. A research phase whose WebFetch
+ * or search hangs blocks the whole run indefinitely, and because the parent
+ * emits almost no tokens while waiting, the failure looks like "slow research"
+ * rather than "stuck". A phase that has not finished in this long is not going
+ * to; the run continues without it and records the loss.
+ */
+const PHASE_TIMEOUT_MS = 12 * 60_000
+
+/**
+ * A phase that ran out of time, as distinct from a user cancellation.
+ *
+ * Deliberately not an AbortError: `isAbortError` is the signal every caller
+ * uses to mean "the user stopped this, unwind everything". A deadline we set
+ * ourselves is a tolerable per-direction failure, and conflating the two made
+ * every timeout look like the user had pressed Escape.
+ */
+export class PhaseTimeoutError extends Error {
+  constructor(phase: string, elapsedMs: number, budgetMs: number) {
+    super(
+      `Mythos ${phase} phase exceeded its ${Math.round(budgetMs / 60_000)}-minute budget (ran ${Math.round(elapsedMs / 1000)}s) and was cancelled. Other directions in this depth are unaffected.`,
+    )
+    this.name = 'PhaseTimeoutError'
+  }
+}
+
+/**
+ * Wall-clock budget for the whole run. The depth budget alone does not bound
+ * time: the halting judge extends depth when convergence is low, so a run that
+ * is finding little is rewarded with *more* depths. That is how a depth-4 run
+ * reached depth 7 and ran for over half an hour.
+ */
+const DEFAULT_RUN_BUDGET_MS = 20 * 60_000
+
 const DEFAULT_DEPTH = 3
 const DEFAULT_BREADTH = 2
 
@@ -610,6 +658,7 @@ async function runSubagentPhase(
   phase: MythosProgress['phase'],
   depth?: number,
   direction?: string,
+  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
 ): Promise<string> {
   const { GENERAL_PURPOSE_AGENT } = await import('../AgentTool/built-in/generalPurposeAgent.js')
   // createUserMessage takes an options object, not a string. Passing the
@@ -623,10 +672,28 @@ async function runSubagentPhase(
   const userMessage = createUserMessage({ content: promptText })
   const agentMessages: Message[] = []
 
+  // Bound the phase. The abort is chained to the caller's signal so a user
+  // interrupt still stops it immediately.
+  const phaseController = new AbortController()
+  const onParentAbort = () => phaseController.abort()
+  context.abortController.signal.addEventListener('abort', onParentAbort, { once: true })
+  const timer = setTimeout(() => phaseController.abort(), phaseTimeoutMs)
+  const phaseStartedAt = Date.now()
+
+  // A context whose abortController is the phase-scoped one, so the timeout
+  // actually reaches the subagent's in-flight requests.
+  const phaseContext = { ...context, abortController: phaseController }
+
+  // The timeout aborts `phaseController`, which makes the in-flight request
+  // reject with an AbortError. That error escapes this loop, and every caller
+  // upstream treats `isAbortError` as "the user pressed Escape" — so a phase
+  // timeout was reported as `Mythos was cancelled` and killed the whole run.
+  // Classify the abort here, at the only place that can tell the two apart.
+  try {
   for await (const message of runAgent({
     agentDefinition: GENERAL_PURPOSE_AGENT,
     promptMessages: [userMessage],
-    toolUseContext: context,
+    toolUseContext: phaseContext,
     canUseTool,
     isAsync: false,
     querySource: 'agent:custom',
@@ -654,6 +721,26 @@ async function runSubagentPhase(
         } satisfies MythosProgress,
       })
     }
+  }
+
+  } catch (e) {
+    // A real user interrupt propagates untouched — it must stop the run.
+    if (context.abortController.signal.aborted) throw e
+    // Our own deadline. Rethrown as an ordinary Error so `isAbortError` is
+    // false upstream: the direction is recorded as a failure and the other
+    // directions keep their work, instead of the run reporting a cancellation.
+    if (phaseController.signal.aborted) {
+      throw new PhaseTimeoutError(phase, Date.now() - phaseStartedAt, phaseTimeoutMs)
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+    context.abortController.signal.removeEventListener('abort', onParentAbort)
+  }
+
+  // The loop can also end without throwing while the deadline has passed.
+  if (phaseController.signal.aborted && !context.abortController.signal.aborted) {
+    throw new PhaseTimeoutError(phase, Date.now() - phaseStartedAt, phaseTimeoutMs)
   }
 
   let resultText = ''
@@ -1113,6 +1200,8 @@ async function runHaltingJudge(
   depthJustCompleted: number,
   maxDepth: number,
   extendCap: number,
+  runStartedAt: number,
+  runBudgetMs: number,
   context: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[1] : never,
   canUseTool: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[2] : never,
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
@@ -1149,6 +1238,8 @@ async function runHaltingJudge(
     maxDepth,
     extendCap,
     judgeDecision: json?.decision,
+    elapsedMs: Date.now() - runStartedAt,
+    budgetMs: runBudgetMs,
   })
 
   const rationale = result.overrodeJudge
@@ -1501,6 +1592,12 @@ export const MythosTool = buildTool({
       // ============================================================
       // PHASE 2-5: RECURRENT LOOP — recurrent → distill → halt → maybe extend
       // ============================================================
+      // Wall-clock origin for the run budget. Set here rather than at call()
+      // entry so a `continue` resumption gets a fresh budget instead of
+      // inheriting an already-exhausted one from the previous segment.
+      const runStartedAt = Date.now()
+      const phaseTimeoutMs = (input.phaseTimeoutMinutes ?? 12) * 60_000
+      const runBudgetMs = (input.runBudgetMinutes ?? 20) * 60_000
       const startDepth = isContinue ? state.currentDepth + 1 : 1
       let d = startDepth
       let effectiveMaxDepth = baseMaxDepth
@@ -1510,29 +1607,45 @@ export const MythosTool = buildTool({
 
         // Select directions for this depth (breadth-controlled)
         const available = state.directions.filter(dir => !state.completedDirectionIds.includes(dir.id))
-        let selected = available.slice(0, breadth)
+        const selected = available.slice(0, breadth)
 
-        // If all directions explored AND we are at a depth that demanded extension, recycle highest-priority
+        // No recycling. The previous version fell back to
+        // `state.directions.slice(0, breadth)` when everything was explored,
+        // which re-ran directions already marked complete — the same searches
+        // producing the same claims, one full subagent run each, for
+        // distillation to then dedup away. When the plan is exhausted the
+        // honest move is to stop and let the halting judge decide, not to
+        // burn minutes re-reading what is already in the state.
         if (selected.length === 0) {
-          selected = state.directions.slice(0, breadth)
+          state.currentDepth = d
+          break
         }
 
-        for (const dir of selected) {
-          // Fault isolation. One direction's subagent hitting a WebFetch
-          // internal error (or any transient failure) previously threw all the
-          // way out and discarded the whole run — including every other
-          // direction that had already succeeded. A single flaky fetch is not
-          // grounds to lose a completed prelude and N depths of claims. A user
-          // interrupt is different: it must stop the run, so aborts re-throw.
-          try {
-            await runRecurrentDepth(workDir, dir, d, state, context, canUseTool, parentMessage, onProgress)
-          } catch (e) {
-            if (isAbortError(e)) throw e
+        // Directions within a depth are independent by construction — the
+        // prelude produces them as disjoint sub-topics — so they run
+        // concurrently. Sequentially they cost breadth× the wall time for no
+        // benefit, which is most of why a depth-3 run took over half an hour.
+        // Each still has its own fault isolation: one direction's flaky fetch
+        // must not discard the others' work.
+        const outcomes = await Promise.all(
+          selected.map(async dir => {
+            try {
+              await runRecurrentDepth(workDir, dir, d, state, context, canUseTool, parentMessage, onProgress)
+              return { dir, error: null as string | null }
+            } catch (e) {
+              if (isAbortError(e)) throw e
+              return { dir, error: describeError(e) }
+            }
+          }),
+        )
+
+        for (const { dir, error } of outcomes) {
+          if (error) {
             state.directionFailures ??= []
             state.directionFailures.push({
               directionId: dir.id,
               depth: d,
-              error: describeError(e),
+              error,
               timestamp: Date.now(),
             })
           }
@@ -1616,6 +1729,8 @@ export const MythosTool = buildTool({
             d,
             baseMaxDepth,
             extendCap,
+            runStartedAt,
+            runBudgetMs,
             context,
             canUseTool,
             parentMessage,

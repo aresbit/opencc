@@ -7,6 +7,7 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { DESCRIPTION, getPrompt, REDO_TOOL_NAME } from './prompt.js'
+import { extractKnowledge, renderKnowledgeSection } from './knowledge.js'
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -218,53 +219,13 @@ function findCommitByPrefix(commits: CommitInfo[], prefix: string): CommitInfo |
   return matches[0] as CommitInfo
 }
 
-function inferDomainKnowledge(repoName: string, changedFiles: string[], readmeText: string): string[] {
-  const text = `${repoName}\n${changedFiles.join('\n')}\n${readmeText}`.toLowerCase()
-  const points: string[] = []
-
-  if (text.includes('quant') || text.includes('trade') || text.includes('finance') || text.includes('strategy')) {
-    points.push('项目涉及量化交易/金融分析，提交可能围绕数据、策略与回测能力演进。')
-  }
-  if (text.includes('backtest') || text.includes('回测')) {
-    points.push('出现回测语义，需关注策略输入、交易撮合和绩效指标一致性。')
-  }
-  if (text.includes('data') || text.includes('dataset') || text.includes('csv')) {
-    points.push('数据处理是核心领域能力，重点包括数据清洗、时间对齐与缺失值处理。')
-  }
-  if (text.includes('api') || text.includes('client') || text.includes('http')) {
-    points.push('含接口/客户端改动，领域上关注外部数据源稳定性与调用限流。')
-  }
-  if (points.length === 0) {
-    points.push('该批提交更偏通用工程演进，领域语义较弱，建议结合后续业务提交解读。')
-  }
-
-  return points
-}
-
-function inferCodingKnowledge(changedFiles: string[]): string[] {
-  const exts = new Set(changedFiles.map(f => path.extname(f).toLowerCase()))
-  const points: string[] = []
-
-  if (exts.has('.py')) points.push('Python 代码演进：关注模块边界、函数纯度和异常路径处理。')
-  if (exts.has('.ts') || exts.has('.tsx') || exts.has('.js')) points.push('JS/TS 代码演进：关注类型契约、异步流程与边界校验。')
-  if (exts.has('.md')) points.push('文档随代码演进，建议把 README 视作架构入口而非附属品。')
-  if (changedFiles.some(f => /test|spec/i.test(f))) points.push('该批提交包含测试线索，可从测试反推设计意图与稳定性目标。')
-  if (changedFiles.some(f => /config|yaml|yml|toml|json/i.test(f))) points.push('出现配置变更，关注默认值策略与部署环境一致性。')
-
-  if (points.length === 0) {
-    points.push('本批提交偏小，建议从命名、目录结构和 commit message 训练代码阅读能力。')
-  }
-
-  return points
-}
-
 function formatLecture(
   repoName: string,
   batchIndex: number,
   batch: CommitInfo[],
   changedFiles: string[],
-  codingPoints: string[],
-  domainPoints: string[],
+  codingSection: string,
+  domainSection: string,
 ): string {
   const first = batch[0]
   const last = batch[batch.length - 1]
@@ -277,8 +238,6 @@ function formatLecture(
     ? changedFiles.slice(0, 120).map(f => `- ${f}`).join('\n')
     : '- (no changed files parsed)'
 
-  const coding = codingPoints.map(p => `- ${p}`).join('\n')
-  const domain = domainPoints.map(p => `- ${p}`).join('\n')
 
   return `---
 layout: default
@@ -299,10 +258,10 @@ ${timeline}
 ${files}
 
 ## 编码知识（Coding Knowledge）
-${coding}
+${codingSection}
 
 ## 领域知识（Domain Knowledge）
-${domain}
+${domainSection}
 
 ## 阅读练习
 1. 按时间顺序阅读本讲提交，标注“新增能力”和“重构行为”。
@@ -327,18 +286,6 @@ async function aggregateChangedFiles(repoPath: string, commits: CommitInfo[], si
   }
 
   return [...files]
-}
-
-async function readmeSnippet(repoPath: string): Promise<string> {
-  const candidates = ['README.md', 'README.MD', 'readme.md']
-  for (const c of candidates) {
-    const p = join(repoPath, c)
-    if (await exists(p)) {
-      const content = await readFile(p, 'utf-8')
-      return content.slice(0, 6000)
-    }
-  }
-  return ''
 }
 
 export const RedoTool = buildTool({
@@ -614,15 +561,34 @@ export const RedoTool = buildTool({
         'auto: dense commit => single lecture; sparse commits => grouped (up to 5 commits)'
     }
 
-    const readmeText = await readmeSnippet(repoPath)
     const lectureFiles: string[] = []
 
     for (let i = 0; i < batches.length; i += 1) {
       const batch = batches[i] as CommitInfo[]
       const changedFiles = await aggregateChangedFiles(repoPath, batch, signal)
-      const coding = inferCodingKnowledge(changedFiles)
-      const domain = inferDomainKnowledge(repoName, changedFiles, readmeText)
-      const content = formatLecture(repoName, i + 1, batch, changedFiles, coding, domain)
+
+      // Read the actual patches. The previous version derived "domain
+      // knowledge" from filenames and the README via a keyword lookup table,
+      // so it never saw a line of code.
+      const patches: Array<{ shortHash: string; subject: string; patch: string }> = []
+      for (const commit of batch) {
+        const shown = await runCommand(
+          ['git', 'show', '--patch', '--no-color', '--pretty=format:', commit.hash],
+          repoPath,
+          signal,
+        )
+        patches.push({ shortHash: commit.shortHash, subject: commit.subject, patch: shown.stdout })
+      }
+
+      const knowledge = await extractKnowledge({ repoName, patches, signal })
+      const codingSection = knowledge.ok
+        ? renderKnowledgeSection(knowledge.coding, '本批提交未提炼出可迁移的工程要点。')
+        : `_未能提取：${knowledge.error}_`
+      const domainSection = knowledge.ok
+        ? renderKnowledgeSection(knowledge.domain, '本批提交的 diff 未体现领域语义（可能是重命名、格式化或版本号变更）。')
+        : `_未能提取：${knowledge.error}_`
+
+      const content = formatLecture(repoName, i + 1, batch, changedFiles, codingSection, domainSection)
 
       const fileName = `${repoName}-lecture-${String(i + 1).padStart(3, '0')}.md`
       const abs = join(lecturePath, fileName)

@@ -52,6 +52,14 @@ export type DistillInput = {
   /** Source documents: the index title plus an excerpt of the body. */
   documents: Array<{ title: string; file: string; excerpt: string }>
   signal: AbortSignal
+  /**
+   * `documents` distills prose sources; `code` distills a source tree. The
+   * difference is not cosmetic — in prose an entity is a person or product,
+   * whereas in code it is a module or a table, and a concept is an invariant
+   * rather than a theory. One prompt covering both produces vague output for
+   * each.
+   */
+  mode?: 'documents' | 'code'
 }
 
 export type DistillResult = {
@@ -82,6 +90,29 @@ Hard rules:
 - Definitions are one or two sentences, concrete and specific.
 - If the excerpts genuinely contain no extractable entities or concepts, return empty
   arrays. Do not invent filler.`
+
+const CODE_DISTILL_SYSTEM = `You are distilling the domain model of a software project from its source code.
+
+You receive excerpts from source files — leading doc comments and declarations, with
+import blocks and function bodies stripped out.
+
+An ENTITY is a thing the system models or operates on: a module with a clear
+responsibility, a data structure, a table, a service, an external system it talks to.
+A CONCEPT is a rule the code enforces: an invariant, a protocol, a lifecycle, a
+policy, a unit or encoding convention.
+
+Hard rules:
+- Every entity and concept MUST cite the file paths it came from, in "sources", using
+  the exact paths given to you. An item you cannot source is an item you must not emit.
+- Extract the PROBLEM domain, not the language. "Uses TypeScript interfaces" and
+  "follows a modular structure" are facts about any codebase and carry no information.
+  "A run is keep-able only when its metric was parsed from benchmark output" does.
+- Prefer the vocabulary the code itself uses. If it says "segment" rather than "phase",
+  say segment — a reader has to be able to grep for these names.
+- The excerpts are a SAMPLE of the tree, not all of it. Do not claim completeness, and
+  do not infer the absence of something from its absence here.
+- Few and grounded beats many and thin. If the sample shows only scaffolding, say so
+  with one concept and stop.`
 
 const DISTILL_OUTPUT_SCHEMA = {
   type: 'object',
@@ -130,18 +161,34 @@ export async function distillDocuments(input: DistillInput): Promise<DistillResu
     return { ok: false, entities: [], concepts: [], dropped: [], error: 'no source documents to distill' }
   }
 
-  const known = new Set(input.documents.map(d => d.title))
+  // In code mode the citable identity is the path, since that is what the
+  // model was shown and what a reader can open.
+  const known = new Set(
+    input.documents.map(d => (input.mode === 'code' ? d.file : d.title)),
+  )
   const corpus = input.documents
-    .map(d => `### SOURCE: ${d.title}\n(file: ${d.file})\n\n${d.excerpt.slice(0, EXCERPT_CHARS)}`)
+    .map(d =>
+      input.mode === 'code'
+        ? `### FILE: ${d.file}\n\n\`\`\`\n${d.excerpt.slice(0, EXCERPT_CHARS)}\n\`\`\``
+        : `### SOURCE: ${d.title}\n(file: ${d.file})\n\n${d.excerpt.slice(0, EXCERPT_CHARS)}`,
+    )
     .join('\n\n---\n\n')
 
+  const isCode = input.mode === 'code'
   let raw: unknown
   try {
     const result = await sideQuery({
       model: getDefaultSonnetModel(),
-      system: DISTILL_SYSTEM,
+      system: isCode ? CODE_DISTILL_SYSTEM : DISTILL_SYSTEM,
       skipSystemPromptPrefix: true,
-      messages: [{ role: 'user', content: `Distill these ${input.documents.length} wiki sources.\n\n${corpus}` }],
+      messages: [
+        {
+          role: 'user',
+          content: isCode
+            ? `Distill the domain model from these ${input.documents.length} source files.\n\n${corpus}`
+            : `Distill these ${input.documents.length} wiki sources.\n\n${corpus}`,
+        },
+      ],
       max_tokens: 4096,
       output_format: { type: 'json_schema', schema: DISTILL_OUTPUT_SCHEMA },
       signal: input.signal,

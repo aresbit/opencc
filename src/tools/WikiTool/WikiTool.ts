@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
-import { join, relative } from 'path'
+import { isAbsolute, join, relative } from 'path'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { MEMORY_TYPES, type MemoryType } from '../../memdir/memoryTypes.js'
@@ -15,6 +15,11 @@ import {
   renderToolUseProgressMessage,
 } from './UI.js'
 import { DESCRIPTION, getWikiPrompt, WIKI_TOOL_NAME } from './prompt.js'
+import {
+  excerptCode,
+  selectSourceFiles,
+  SKIP_DIRS,
+} from './codeSource.js'
 import {
   compareDocuments,
   distillDocuments,
@@ -65,6 +70,14 @@ const inputSchema = lazySchema(() =>
       .union([z.array(z.string()), z.string()])
       .optional()
       .describe('Tags for categorization. Array or comma-separated string.'),
+    sourceDir: z
+      .string()
+      .optional()
+      .describe('For distill: a local code directory to distill instead of stored wiki sources. Absolute, or relative to the wiki base. Writes the same entity/concept pages.'),
+    maxFiles: z
+      .number()
+      .optional()
+      .describe('For distill with sourceDir: how many source files to sample. Default 40.'),
     subjects: z
       .array(z.string())
       .optional()
@@ -290,7 +303,174 @@ async function loadSubjects(
 /** Default corpus size for an unscoped distill run. */
 const DISTILL_BATCH = 6
 
+/**
+ * Walk a code tree and build the distillation corpus from it.
+ *
+ * Pruning happens during the walk, not after: descending into node_modules to
+ * then discard it is how a "quick scan" turns into minutes of I/O.
+ */
+async function loadCodeTree(
+  root: string,
+  maxFiles: number,
+): Promise<{ docs: Array<{ title: string; file: string; excerpt: string }>; skipped: number; scanned: number }> {
+  const { readdir } = await import('fs/promises')
+  const rel: string[] = []
+
+  async function walk(dir: string, prefix: string): Promise<void> {
+    let entries: import('fs').Dirent[]
+    try {
+      entries = (await readdir(dir, { withFileTypes: true })) as unknown as import('fs').Dirent[]
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      const childRel = prefix ? `${prefix}/${e.name}` : e.name
+      if (e.isDirectory()) {
+        if (SKIP_DIRS.has(e.name) || e.name.startsWith('.')) continue
+        await walk(join(dir, e.name), childRel)
+      } else if (e.isFile()) {
+        rel.push(childRel)
+      }
+    }
+  }
+  await walk(root, '')
+
+  const selection = selectSourceFiles(rel, maxFiles)
+  const docs: Array<{ title: string; file: string; excerpt: string }> = []
+  for (const file of selection.files) {
+    try {
+      const content = await readFile(join(root, file), 'utf-8')
+      const excerpt = excerptCode(content)
+      if (excerpt.trim()) docs.push({ title: file, file, excerpt })
+    } catch {
+      // Unreadable or binary — skip rather than feed the model garbage.
+    }
+  }
+  return { docs, skipped: selection.skippedForCap, scanned: rel.length }
+}
+
+/**
+ * Write entity and concept pages, merging with anything a previous run learned.
+ * Shared by the document- and code-sourced distillers so the merge semantics
+ * cannot drift between them.
+ */
+async function writeDistilledPages(
+  entities: readonly DistilledEntity[],
+  concepts: readonly DistilledConcept[],
+): Promise<string[]> {
+  const base = wikiBasePath()
+  const date = new Date().toISOString().split('T')[0]!
+  const written: string[] = []
+
+  const entityDir = join(base, 'wiki', 'entities')
+  const conceptDir = join(base, 'wiki', 'concepts')
+  await mkdir(entityDir, { recursive: true })
+  await mkdir(conceptDir, { recursive: true })
+
+  for (const e of entities) {
+    const file = join(entityDir, `${pageSlug(e.name)}.md`)
+    // A later batch sees different sources, so overwriting would discard the
+    // earlier ones' contribution.
+    let merged: DistilledEntity = e
+    if (existsSync(file)) {
+      const prev = await readFile(file, 'utf-8')
+      merged = mergeSourced<DistilledEntity>(
+        {
+          name: e.name,
+          kind: e.kind,
+          definition: (/^## 定义\n\n([\s\S]*?)\n\n##/m.exec(prev)?.[1] ?? '').trim(),
+          facts: parsePageSection(prev, '事实'),
+          relations: parsePageSection(prev, '关系'),
+          sources: parsePageSection(prev, '来源'),
+        },
+        e,
+      )
+    }
+    await writeFile(file, renderEntityPage(merged, date), 'utf-8')
+    written.push(relative(base, file))
+  }
+
+  for (const c of concepts) {
+    const file = join(conceptDir, `${pageSlug(c.name)}.md`)
+    let merged: DistilledConcept = c
+    if (existsSync(file)) {
+      const prev = await readFile(file, 'utf-8')
+      merged = mergeSourced<DistilledConcept>(
+        {
+          name: c.name,
+          definition: (/^## 定义\n\n([\s\S]*?)\n\n##/m.exec(prev)?.[1] ?? '').trim(),
+          keyPoints: parsePageSection(prev, '要点'),
+          relatedTo: parsePageSection(prev, '相关'),
+          sources: parsePageSection(prev, '来源'),
+        },
+        c,
+      )
+    }
+    await writeFile(file, renderConceptPage(merged, date), 'utf-8')
+    written.push(relative(base, file))
+  }
+
+  return written
+}
+
+/**
+ * Distill a local code tree. Shares the page-writing path with the
+ * document-sourced variant; only the corpus and the prompt differ.
+ */
+async function runDistillCode(input: Input, signal: AbortSignal): Promise<Output> {
+  const raw = input.sourceDir!.trim()
+  const root = isAbsolute(raw) ? raw : join(wikiBasePath(), raw)
+  if (!existsSync(root)) {
+    return { success: false, action: 'distill', message: `sourceDir does not exist: ${root}` }
+  }
+
+  const maxFiles = input.maxFiles && input.maxFiles > 0 ? input.maxFiles : 40
+  const { docs, skipped, scanned } = await loadCodeTree(root, maxFiles)
+  if (docs.length === 0) {
+    return {
+      success: false,
+      action: 'distill',
+      message: `No distillable source files under ${root} (scanned ${scanned} file(s); none matched the source-code filters).`,
+    }
+  }
+
+  const result = await distillDocuments({ documents: docs, signal, mode: 'code' })
+  if (!result.ok) {
+    return {
+      success: false,
+      action: 'distill',
+      message: `Distillation produced nothing usable: ${result.error}${result.dropped.length > 0 ? `\nDropped: ${result.dropped.join('; ')}` : ''}`,
+    }
+  }
+
+  const written = await writeDistilledPages(result.entities, result.concepts)
+  const sampleNote =
+    skipped > 0
+      ? `\nSampled ${docs.length} of ${docs.length + skipped} eligible files — this is a sample of the tree, not a complete model. Narrow sourceDir or raise maxFiles for more.`
+      : ''
+
+  await appendFile(
+    join(wikiBasePath(), 'wiki', 'log.md'),
+    `\n## [${new Date().toISOString().split('T')[0]}] distill-code | ${result.entities.length} 实体 / ${result.concepts.length} 概念\n\n- 源码目录: \`${root}\`\n- 采样: ${docs.length}/${docs.length + skipped} 个文件\n- 页面: ${written.join('、')}\n`,
+    'utf-8',
+  )
+
+  return {
+    success: true,
+    action: 'distill',
+    pagesWritten: written,
+    message:
+      `Distilled ${docs.length} source file(s) from ${root} into ${result.entities.length} entit${result.entities.length === 1 ? 'y' : 'ies'} and ${result.concepts.length} concept(s).\n` +
+      `${written.map(w => `  ${w}`).join('\n')}` +
+      (result.dropped.length > 0 ? `\nDropped for citing no resolvable file: ${result.dropped.join('; ')}` : '') +
+      sampleNote,
+  }
+}
+
 async function runDistill(input: Input, signal: AbortSignal): Promise<Output> {
+  if (input.sourceDir?.trim()) {
+    return runDistillCode(input, signal)
+  }
   const entries = await loadEntries()
   if (entries.length === 0) {
     return {
@@ -320,55 +500,7 @@ async function runDistill(input: Input, signal: AbortSignal): Promise<Output> {
 
   const base = wikiBasePath()
   const date = new Date().toISOString().split('T')[0]!
-  const written: string[] = []
-
-  const entityDir = join(base, 'wiki', 'entities')
-  const conceptDir = join(base, 'wiki', 'concepts')
-  await mkdir(entityDir, { recursive: true })
-  await mkdir(conceptDir, { recursive: true })
-
-  for (const e of result.entities) {
-    const file = join(entityDir, `${pageSlug(e.name)}.md`)
-    // Merge with whatever a previous run learned; a later batch sees different
-    // documents, so overwriting would discard the earlier ones' contribution.
-    let merged: DistilledEntity = e
-    if (existsSync(file)) {
-      const prev = await readFile(file, 'utf-8')
-      merged = mergeSourced<DistilledEntity>(
-        {
-          name: e.name,
-          kind: e.kind,
-          definition: (/^## 定义\n\n([\s\S]*?)\n\n##/m.exec(prev)?.[1] ?? '').trim(),
-          facts: parsePageSection(prev, '事实'),
-          relations: parsePageSection(prev, '关系'),
-          sources: parsePageSection(prev, '来源'),
-        },
-        e,
-      )
-    }
-    await writeFile(file, renderEntityPage(merged, date), 'utf-8')
-    written.push(relative(base, file))
-  }
-
-  for (const c of result.concepts) {
-    const file = join(conceptDir, `${pageSlug(c.name)}.md`)
-    let merged: DistilledConcept = c
-    if (existsSync(file)) {
-      const prev = await readFile(file, 'utf-8')
-      merged = mergeSourced<DistilledConcept>(
-        {
-          name: c.name,
-          definition: (/^## 定义\n\n([\s\S]*?)\n\n##/m.exec(prev)?.[1] ?? '').trim(),
-          keyPoints: parsePageSection(prev, '要点'),
-          relatedTo: parsePageSection(prev, '相关'),
-          sources: parsePageSection(prev, '来源'),
-        },
-        c,
-      )
-    }
-    await writeFile(file, renderConceptPage(merged, date), 'utf-8')
-    written.push(relative(base, file))
-  }
+  const written = await writeDistilledPages(result.entities, result.concepts)
 
   await appendFile(
     join(base, 'wiki', 'log.md'),
@@ -439,9 +571,9 @@ async function runSave(input: Input, signal: AbortSignal): Promise<Output> {
   const now = new Date()
   const isoDate = now.toISOString().split('T')[0]!
   const base = wikiBasePath()
-  const sourceDir = join(base, 'raw_sources', categoryDirectory(category))
+  const rawDir = join(base, 'raw_sources', categoryDirectory(category))
   const filename = `${sanitizeFilename(title)}.md`
-  const sourceFile = join(sourceDir, filename)
+  const sourceFile = join(rawDir, filename)
 
   try {
     const fetched = await fetchContent(url, signal, { mode: 'auto', format: 'markdown' })
@@ -454,7 +586,7 @@ async function runSave(input: Input, signal: AbortSignal): Promise<Output> {
       throw new Error(check.reason ?? 'fetched content failed the sanity check')
     }
 
-    await mkdir(sourceDir, { recursive: true })
+    await mkdir(rawDir, { recursive: true })
     const header = [
       `# ${title}`,
       '',
