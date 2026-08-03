@@ -18,12 +18,34 @@ const inputSchema = lazySchema(() =>
     objective: z.string().describe(
       'Required. The concrete objective to start pursuing. This starts a new active goal only when no goal is currently defined; if a goal already exists, this tool fails.',
     ),
+    success_criteria: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'The concrete, checkable deliverables that define "done" for this objective — one per explicit requirement, named file, command, test, or gate. Completion is refused until every criterion carries evidence, so declare them up front; you can add more later with update_goal({criteria_add}).',
+      ),
     token_budget: z
       .number()
       .int()
       .positive()
       .optional()
       .describe('Optional positive token budget for the new active goal.'),
+    max_turns: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Optional cap on autonomous continuation turns. The goal becomes budget_limited once reached.',
+      ),
+    deadline_seconds: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Optional wall-clock deadline in seconds from now. The goal becomes budget_limited once passed.',
+      ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -77,7 +99,10 @@ export const GoalCreateTool = buildTool({
   renderToolUseMessage() {
     return null
   },
-  async call({ objective, token_budget }, _context) {
+  async call(
+    { objective, token_budget, success_criteria, max_turns, deadline_seconds },
+    _context,
+  ) {
     const validationError = validateGoalObjective(objective)
     if (validationError) {
       return {
@@ -113,7 +138,12 @@ export const GoalCreateTool = buildTool({
       }
     }
 
-    const goal = createGoal(objective.trim(), token_budget ?? null)
+    const goal = createGoal(objective.trim(), {
+      tokenBudget: token_budget ?? null,
+      successCriteria: success_criteria ?? [],
+      maxTurns: max_turns ?? null,
+      deadlineAt: deadline_seconds ? Date.now() + deadline_seconds * 1000 : null,
+    })
     await saveGoal(goal)
 
     return {

@@ -1,31 +1,24 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import {
-  getGoal,
-  renderGoalContinuationPrompt,
-  shouldIgnoreGoalForMode,
+  formatCriteriaForPrompt,
   formatTransitionLine,
+  pendingGates,
+  renderGoalContinuationPrompt,
+  STALL_REPLAN_PROMPT,
   type Goal,
   type GoalTransition,
   type Subgoal,
 } from '../tools/GoalTool/utils.js'
+import { goalBudgetWarning } from './goalBudget.js'
 import { getCwd } from './cwd.js'
 
 /**
- * Check if auto-continuation should happen.
- * Returns the continuation prompt content blocks if:
- * - A goal exists and is 'active'
- * - No user input is pending (caller must check this)
- * - The goal hasn't already been continued this cycle (unless a transition
- *   has occurred since the last continuation — e.g. paused → active)
- * - Not in plan mode
+ * Continuation guard state + prompt construction.
+ *
+ * The *decision* of whether to continue lives in `goalDecision.ts`; this
+ * module owns the two things that decision needs — the repeat-suppression
+ * guard, and the prompt the agent sees when the answer is "run".
  */
-export interface ContinuationCandidate {
-  goalId: string
-  objective: string
-  promptBlocks: ContentBlockParam[]
-  /** Reason this continuation fired (transition reason, or 'auto') */
-  reason: string
-}
 
 let lastContinuationGoalId: string | null = null
 let lastContinuationTransitionAt: number = 0
@@ -45,42 +38,60 @@ export function blockContinuation(durationMs: number = 5000): void {
   continuationBlockedUntil = Date.now() + durationMs
 }
 
+export function isContinuationBlocked(): boolean {
+  return Date.now() < continuationBlockedUntil
+}
+
 /**
- * Returns a continuation candidate if the agent should auto-continue
- * pursuing the active goal. Returns null otherwise.
- *
- * Call this after a turn completes and before the next user input.
+ * True when this exact goal state was already continued and nothing has
+ * transitioned since. A new transition (e.g. paused → active via /goal resume)
+ * makes a fresh continuation valid even on the same goalId.
  */
-export async function getContinuationCandidate(
-  collaborationMode?: string,
-): Promise<ContinuationCandidate | null> {
-  // Don't continue if recently blocked
-  if (Date.now() < continuationBlockedUntil) {
-    return null
-  }
-
-  // Don't continue in plan mode
-  if (shouldIgnoreGoalForMode(collaborationMode)) {
-    return null
-  }
-
-  const goal = await getGoal()
-  if (!goal) return null
-  if (goal.status !== 'active') {
-    lastContinuationGoalId = null
-    return null
-  }
-
-  // A new transition (e.g. paused → active via /goal resume) makes a fresh
-  // continuation valid even on the same goalId. Without this, /goal resume
-  // would not auto-fire continuation because the guard below blocks repeats.
+export function alreadyContinued(goal: Goal): boolean {
   const transitionAt = goal.lastTransition?.at ?? 0
-  const sameGoalAsLast = goal.goalId === lastContinuationGoalId
-  const noFreshTransition = transitionAt <= lastContinuationTransitionAt
-  if (sameGoalAsLast && noFreshTransition) {
-    return null
-  }
+  return (
+    goal.goalId === lastContinuationGoalId &&
+    transitionAt <= lastContinuationTransitionAt
+  )
+}
 
+export function markContinued(goal: Goal): void {
+  lastContinuationGoalId = goal.goalId
+  lastContinuationTransitionAt = goal.lastTransition?.at ?? 0
+}
+
+/**
+ * Call when user sends input or a non-goal tool modifies state.
+ * Resets the "same goal" guard so continuation can fire again.
+ */
+export function onUserOrToolActivity(): void {
+  lastContinuationGoalId = null
+  lastContinuationTransitionAt = 0
+}
+
+export interface ContinuationCandidate {
+  goalId: string
+  objective: string
+  promptBlocks: ContentBlockParam[]
+  /** Reason this continuation fired (transition reason, or 'auto') */
+  reason: string
+}
+
+export interface BuildContinuationOptions {
+  /** Inject the anti-repetition directive when the goal is spinning. */
+  stalled?: boolean
+}
+
+/**
+ * Build the continuation prompt for an active goal: the base objective +
+ * budget frame, the success-criteria checklist (the completion gate), live
+ * coordination state, and the capability snapshots the agent would otherwise
+ * have to rediscover each turn.
+ */
+export async function buildContinuationCandidate(
+  goal: Goal,
+  options: BuildContinuationOptions = {},
+): Promise<ContinuationCandidate> {
   const [mcpFsSnapshot, skillsSnapshot, agentsSnapshot] = await Promise.all([
     buildMcpFsSnapshot(),
     buildSkillsSnapshot(),
@@ -92,40 +103,26 @@ export async function getContinuationCandidate(
   const phaseLine = goal.phase
     ? `current phase: ${goal.phase} — advance via update_goal({phase: ...}) when you move between planning, executing, and verifying.`
     : null
-  const subgoalsBlock = formatSubgoalsForPrompt(goal.subgoals)
 
   const prompt = augmentContinuationPrompt(renderGoalContinuationPrompt(goal), {
+    stallBlock: options.stalled ? STALL_REPLAN_PROMPT : null,
+    budgetBlock: goalBudgetWarning(goal),
+    criteriaBlock: formatCriteriaForPrompt(goal),
+    gatesBlock: formatOpenGatesForPrompt(goal),
     transitionLine,
     phaseLine,
-    subgoalsBlock,
+    subgoalsBlock: formatSubgoalsForPrompt(goal.subgoals),
     mcpFsSnapshot,
     skillsSnapshot,
     agentsSnapshot,
   })
 
-  lastContinuationGoalId = goal.goalId
-  lastContinuationTransitionAt = transitionAt
-
   return {
     goalId: goal.goalId,
     objective: goal.objective,
     reason: goal.lastTransition?.reason ?? 'auto',
-    promptBlocks: [
-      {
-        type: 'text' as const,
-        text: prompt,
-      },
-    ],
+    promptBlocks: [{ type: 'text' as const, text: prompt }],
   }
-}
-
-/**
- * Call when user sends input or a non-goal tool modifies state.
- * Resets the "same goal" guard so continuation can fire again.
- */
-export function onUserOrToolActivity(): void {
-  lastContinuationGoalId = null
-  lastContinuationTransitionAt = 0
 }
 
 // ── mcp-fs awareness ──────────────────────────────────────────────
@@ -165,6 +162,10 @@ async function buildMcpFsSnapshot(): Promise<string | null> {
 }
 
 interface PromptAugments {
+  stallBlock: string | null
+  budgetBlock: string | null
+  criteriaBlock: string | null
+  gatesBlock: string | null
   transitionLine: string | null
   phaseLine: string | null
   subgoalsBlock: string | null
@@ -178,6 +179,19 @@ function augmentContinuationPrompt(
   augs: PromptAugments,
 ): string {
   const blocks: string[] = []
+  // The stall directive goes first — it overrides "carry on as before".
+  if (augs.stallBlock) {
+    blocks.push(augs.stallBlock)
+  }
+  if (augs.criteriaBlock) {
+    blocks.push(augs.criteriaBlock)
+  }
+  if (augs.budgetBlock) {
+    blocks.push(augs.budgetBlock)
+  }
+  if (augs.gatesBlock) {
+    blocks.push(augs.gatesBlock)
+  }
   if (augs.transitionLine) {
     blocks.push(
       `Recent ${augs.transitionLine}. Acknowledge the new state and adjust your next action accordingly.`,
@@ -216,6 +230,19 @@ function augmentContinuationPrompt(
   }
   if (blocks.length === 0) return basePrompt
   return `${basePrompt}\n\n${blocks.join('\n\n')}`
+}
+
+function formatOpenGatesForPrompt(goal: Goal): string | null {
+  const pending = pendingGates(goal).filter(g => !g.blocking)
+  if (pending.length === 0) return null
+  const lines = ['Non-blocking gates awaiting a user decision:']
+  for (const g of pending) {
+    lines.push(`  ? ${g.id}: ${g.question}`)
+  }
+  lines.push(
+    '  Do not re-ask these and do not assume an answer. Work on what does not depend on them.',
+  )
+  return lines.join('\n')
 }
 
 function formatSubgoalsForPrompt(subgoals: Subgoal[] | undefined): string | null {

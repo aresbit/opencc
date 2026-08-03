@@ -108,32 +108,40 @@ export async function markTurnEnd(
  *   await markTurnEnd(tracker.getTotalTokens()).catch(() => {})
  */
 export function createGoalQueryTracker() {
-  let inputTokens = 0
-  let outputTokens = 0
+  // Accumulated across every API request in the turn. A tool-use loop emits
+  // one message_start/message_delta pair per request, so keeping only the
+  // latest values (as this once did) charged the goal for the final request
+  // and silently discarded the rest — budgets never bit on long turns.
+  let totalTokens = 0
 
   return {
     processStreamEvent(event: unknown): void {
       if (
-        event &&
-        typeof event === 'object' &&
-        'type' in event &&
-        (event as any).type === 'stream_event'
+        !event ||
+        typeof event !== 'object' ||
+        !('type' in event) ||
+        (event as any).type !== 'stream_event'
       ) {
-        const ev = (event as any).event
-        if (ev?.type === 'message_start' && ev.message?.usage) {
-          inputTokens = ev.message.usage.input_tokens || 0
-        }
-        if (ev?.type === 'message_delta' && ev.usage) {
-          outputTokens = ev.usage.output_tokens || 0
-        }
+        return
+      }
+      const ev = (event as any).event
+      if (ev?.type === 'message_start' && ev.message?.usage) {
+        const usage = ev.message.usage
+        // Cache reads/writes are billed and count against the budget.
+        totalTokens +=
+          (usage.input_tokens || 0) +
+          (usage.cache_read_input_tokens || 0) +
+          (usage.cache_creation_input_tokens || 0)
+      }
+      if (ev?.type === 'message_delta' && ev.usage) {
+        totalTokens += ev.usage.output_tokens || 0
       }
     },
     getTotalTokens(): number {
-      return inputTokens + outputTokens
+      return totalTokens
     },
     reset(): void {
-      inputTokens = 0
-      outputTokens = 0
+      totalTokens = 0
     },
   }
 }

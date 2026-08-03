@@ -1,6 +1,14 @@
 import React, { useEffect, useState } from 'react'
 import { Box, Text } from '../ink.js'
-import { getGoal, formatGoalStatus, formatTime, formatTokens, type Goal } from '../tools/GoalTool/utils.js'
+import {
+  getGoal,
+  formatGoalStatus,
+  formatCriteriaProgress,
+  formatTime,
+  formatTokens,
+  pendingGates,
+  type Goal,
+} from '../tools/GoalTool/utils.js'
 
 interface Props {
   refreshIntervalMs?: number
@@ -39,6 +47,8 @@ export function GoalStatusIndicator({ refreshIntervalMs = 5000 }: Props) {
       : formatGoalStatus(goal.status)
   const statusColor = statusColors[goal.status] ?? 'white'
   const inFlightSubgoals = goal.subgoals?.filter(s => s.status === 'in_flight').length ?? 0
+  const criteriaProgress = formatCriteriaProgress(goal)
+  const gatesForUser = pendingGates(goal).length
 
   let usageStr: string
   if (goal.tokenBudget !== null) {
@@ -54,6 +64,20 @@ export function GoalStatusIndicator({ refreshIntervalMs = 5000 }: Props) {
       <Text>{truncate(goal.objective, 60)}</Text>
       <Text dimColor> · </Text>
       <Text color={statusColor}>{statusLabel}</Text>
+      {criteriaProgress ? (
+        <>
+          <Text dimColor> · </Text>
+          <Text>{criteriaProgress}</Text>
+        </>
+      ) : null}
+      {gatesForUser > 0 ? (
+        <>
+          <Text dimColor> · </Text>
+          <Text color="magenta">
+            {gatesForUser} gate{gatesForUser > 1 ? 's' : ''} for you
+          </Text>
+        </>
+      ) : null}
       {inFlightSubgoals > 0 ? (
         <>
           <Text dimColor> · </Text>
@@ -69,6 +93,7 @@ export function GoalStatusIndicator({ refreshIntervalMs = 5000 }: Props) {
 const statusColors: Record<string, string> = {
   active: 'green',
   paused: 'yellow',
+  blocked: 'magenta',
   budget_limited: 'red',
   complete: 'blue',
 }
