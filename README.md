@@ -195,6 +195,7 @@ learn-tool action=demote_memory entryId=LRN-20260606-001
 | SETool | `se-tool` | 系统工程规划：与 PMTool 共享同一套任务依赖图引擎 |
 | LearnTool | `learn-tool` | 受控自我改进闭环，见上文专章 |
 | Paper2CodeTool | `paper2code` | `extract` 把 arXiv 论文切成可引用产物并裁定提取质量；`verify` 对写出的实现跑确定性检查（结构 / 语法 / 引用锚定 / UNSPECIFIED 审计 / import / 冒烟） |
+| QuantVerifyTool | `quant_verify` | 量化结果硬门禁：从收益序列重算 Sharpe/MaxDD/Calmar 并核对报告数字，检查成本是否真扣、留出集是否被反复评分、样本是否撑得起结论；定价侧核对 NPV/Greeks 与基准偏差 |
 | RedoTool | `redotool` | 重放仓库早期提交历史，生成可发布的教学讲解 |
 | GoalTool | `create_goal` 等 | 长期目标追踪：成功标准 + 证据门禁的完成裁定、人类闸门、停滞检测、token / 轮次 / 时限预算 |
 | McpFsTool | `mcpfs` 等 | MCP 工具桥接：本地注册表按需 bridge 执行，见上文 MCP-FS 节 |
