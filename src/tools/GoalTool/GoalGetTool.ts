@@ -3,7 +3,7 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { GOAL_GET_TOOL_NAME } from './constants.js'
 import { GET_GOAL_DESCRIPTION, GET_GOAL_PROMPT } from './prompt.js'
-import { getGoal, goalResponseText } from './utils.js'
+import { auditCompletion, getGoal, goalResponseText, pendingGates } from './utils.js'
 
 const inputSchema = lazySchema(() => z.strictObject({}))
 type InputSchema = ReturnType<typeof inputSchema>
@@ -18,6 +18,11 @@ const outputSchema = lazySchema(() =>
         tokenBudget: z.number().nullable(),
         tokensUsed: z.number(),
         timeUsedSeconds: z.number(),
+        criteriaTotal: z.number(),
+        criteriaOpen: z.number(),
+        openGateIds: z.array(z.string()),
+        /** True when update_goal({status:"complete"}) would be admitted now. */
+        completionAdmitted: z.boolean(),
       })
       .nullable(),
     summary: z.string(),
@@ -57,6 +62,7 @@ export const GoalGetTool = buildTool({
   },
   async call(_input, _context) {
     const goal = await getGoal()
+    const audit = goal ? auditCompletion(goal) : null
 
     return {
       data: {
@@ -68,6 +74,10 @@ export const GoalGetTool = buildTool({
               tokenBudget: goal.tokenBudget,
               tokensUsed: goal.tokensUsed,
               timeUsedSeconds: goal.timeUsedSeconds,
+              criteriaTotal: audit!.total,
+              criteriaOpen: audit!.open.length,
+              openGateIds: pendingGates(goal).map(g => g.id),
+              completionAdmitted: audit!.admitted,
             }
           : null,
         summary: goalResponseText(goal),

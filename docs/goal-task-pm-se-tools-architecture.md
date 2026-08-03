@@ -31,31 +31,99 @@
 
 ## 二、GoalTool — 自主目标追踪
 
+核心立场：**完成与否由证据裁决，而不是由模型的叙述裁决**。目标不是"模型说做完了就做完了"，
+而是"每一条声明的成功标准都挂上了可检验的证据"。
+
 ### 2.1 工具组成
 
 | 工具 | 调用名 | 职责 |
 |------|--------|------|
-| GoalCreateTool | `create_goal` | 创建目标 + 可选 token 预算 |
-| GoalGetTool | `get_goal` | 查询状态/预算/耗时/消耗 |
-| GoalUpdateTool | `update_goal` | 标记完成、推进阶段、子目标管理 |
+| GoalCreateTool | `create_goal` | 创建目标 + 成功标准 + token/轮次/时限预算 |
+| GoalGetTool | `get_goal` | 查询状态/标准/闸门/预算，并回报"此刻能否完成" |
+| GoalUpdateTool | `update_goal` | 声明标准、以证据满足标准、开闸门、推进阶段、子目标管理、请求完成 |
 | GoalClearTool | `clear_goal` | 删除目标 (需确认) |
 
 ### 2.2 状态机
 
 ```
-active ──► paused (user/system pause)
-active ──► budget_limited (tokensUsed ≥ tokenBudget)
-active ──► complete (需经过 verifying 阶段审计)
+active ──► paused         (用户/系统暂停)
+active ──► blocked        (模型开出 blocking gate，交还人类判断)
+active ──► budget_limited (token 耗尽 / 轮次上限 / 墙钟时限)
+active ──► complete       (仅当 auditCompletion 放行)
+blocked ──► active        (最后一个 blocking gate 被裁决)
 ```
 
 阶段子状态 (仅 active 时有效): `planning → executing → verifying`
 
-### 2.3 子目标调度
+### 2.3 成功标准与证据准入
+
+```
+criteria_add([...])                       声明"何谓做完"的可检验交付物
+criterion_meet({id, evidence})            用具体证据关闭一条标准
+criterion_waive({id, reason, gate_id})    仅在用户已批准的 gate 下豁免
+```
+
+证据准入是确定性的，不是修辞性的 (`admitEvidence`)：
+
+| kind | 准入规则 |
+|------|----------|
+| `file` | 对文件系统实际 stat，路径不存在直接拒绝，通过则标记 `machineChecked` |
+| `url` | 必须是 http(s) URL |
+| `command` / `test` | 必须附带说明"输出到底显示了什么"的 note |
+| `observation` | 纯自述，最弱证据；要求 20+ 字符的实质 note，并单独计数 |
+
+`update_goal({status: "complete"})` 会重新跑 `auditCompletion`，在以下任一情况下**拒绝**完成：
+未声明任何标准、存在未关闭的标准、存在在途子目标、存在未裁决的闸门。拒绝时返回的是剩余工作清单，
+而不是一个可以绕开的错误。
+
+### 2.4 人类闸门 (gates)
+
+模型唯一被支持的"这需要你来定"的表达方式。遇到需求歧义、危险或不可逆操作、范围变更、
+自己解不开的阻塞时开闸门，而不是猜或空转。
+
+```
+gate_open({question, blocking, context, recommended_action})
+/goal gate <id> approve|reject|defer [note]
+```
+
+blocking 闸门会使目标进入 `blocked` 并中止续跑循环；**静默等待不是合法结局**——问题会被推到用户面前。
+
+### 2.5 单一回合决策 (`decideGoalTurn`)
+
+续跑与否由一个带类型的决策点统一回答，取代过去散落在 REPL / QueryEngine 里的布尔判断组合：
+
+| decision | 含义 |
+|----------|------|
+| `run` | 自主续跑，携带续跑提示词 |
+| `ask` | 需要人类回答 (blocking gate / 停滞升级) |
+| `wait` | 外部受限 (预算、时限、轮次、单条消息续跑上限) |
+| `stop` | 无事可做 (无目标、plan 模式、已续跑过、刚有用户输入) |
+
+每种非续跑结局都带 `reason` + `detail`，`ask`/`wait` 还必须携带 `userMessage` 交给界面显示。
+
+### 2.6 停滞检测
+
+`progressFingerprint` 汇总标准满足数、子目标解决数、闸门数与阶段。一整轮续跑后指纹不变即记为空转：
+
+```
+连续 2 轮无进展 → 续跑提示词注入 replan 指令，禁止再复述已做的工作
+连续 4 轮无进展 → decision = ask，停下来交还用户，避免烧完预算
+```
+
+### 2.7 子目标调度
 
 ```
 subgoal_add(description, dispatched_to) → 派发前记录 (崩溃存活)
 subgoal_resolve(id, completed/failed, result) → 子代理回报后调用
 ```
+
+在途子目标会阻止完成，避免"派出去还没回来就宣布完工"。
+
+### 2.8 存储正确性
+
+目标文件的写入是 tmp + rename 的原子写，并且所有 read-modify-write 都经过按 thread 串行的
+`mutateGoal`。在此之前，并发的记账、`update_goal` 与中断暂停会互相覆盖——回归测试
+`concurrent mutations` 在去掉锁后会立刻失败。
 
 ---
 
@@ -181,10 +249,16 @@ Phase 5: Delivery                 → 审查输出 + 交付
 
 | 文件 | 说明 |
 |------|------|
-| `src/tools/GoalTool/GoalCreateTool.ts` | 目标创建 |
-| `src/tools/GoalTool/GoalGetTool.ts` | 状态查询 |
-| `src/tools/GoalTool/GoalUpdateTool.ts` | 状态机跃迁 + 子目标 |
+| `src/tools/GoalTool/utils.ts` | 目标状态机、证据准入、完成审计、闸门、停滞检测、原子存储 |
+| `src/tools/GoalTool/GoalCreateTool.ts` | 目标创建 + 成功标准 + 预算 |
+| `src/tools/GoalTool/GoalGetTool.ts` | 状态查询 + 完成可否 |
+| `src/tools/GoalTool/GoalUpdateTool.ts` | 标准/证据/闸门/子目标/受审的完成请求 |
 | `src/tools/GoalTool/GoalClearTool.ts` | 目标清除 |
+| `src/utils/goalDecision.ts` | 单一回合决策 (run/ask/wait/stop) |
+| `src/utils/goalContinuation.ts` | 续跑提示词构造 + 重复抑制护栏 |
+| `src/utils/goalBudget.ts` | 预算压力信号与状态行格式化 |
+| `src/utils/goalAccounting.ts` | 跨回合 token/时间记账 |
+| `src/commands/goal/goal.ts` | `/goal` 命令面 (criteria / gate / phase / subgoals / pause / resume / clear) |
 | `src/tools/TaskCreateTool/TaskCreateTool.ts` | 任务创建 + 钩子 |
 | `src/tools/TaskListTool/TaskListTool.ts` | 任务列表 + 依赖过滤 |
 | `src/tools/TaskUpdateTool/TaskUpdateTool.ts` | 状态流转 + 依赖 + 通知 |

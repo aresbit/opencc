@@ -1,19 +1,36 @@
 import type { LocalCommandCall } from '../../types/command.js'
 import {
+  advanceGoalPhase,
+  auditCompletion,
+  clearGoal,
   createGoal,
   getGoal,
-  saveGoal,
-  pauseGoal,
-  resumeGoal,
-  clearGoal,
   goalResponseText,
+  pendingGates,
+  pauseGoal,
+  resolveGate,
+  resumeGoal,
+  saveGoal,
   validateGoalObjective,
-  advanceGoalPhase,
+  type GateDecision,
   type GoalPhase,
 } from '../../tools/GoalTool/utils.js'
 import { onUserOrToolActivity } from '../../utils/goalContinuation.js'
 
 const VALID_PHASES: readonly GoalPhase[] = ['planning', 'executing', 'verifying']
+const GATE_DECISIONS: Record<string, GateDecision> = {
+  approve: 'approved',
+  approved: 'approved',
+  yes: 'approved',
+  reject: 'rejected',
+  rejected: 'rejected',
+  no: 'rejected',
+  defer: 'deferred',
+  deferred: 'deferred',
+  later: 'deferred',
+}
+
+const USAGE = `Commands: /goal | /goal criteria | /goal gate [<id> approve|reject|defer [note]] | /goal phase ${VALID_PHASES.join('|')} | /goal subgoals | /goal pause | /goal resume | /goal clear`
 
 export const call: LocalCommandCall = async (args, _context) => {
   const trimmedArgs = args.trim()
@@ -55,6 +72,14 @@ export const call: LocalCommandCall = async (args, _context) => {
     if (goal.status === 'complete') {
       return { type: 'text', value: `Goal is already complete: "${goal.objective}". Use /goal clear to remove it.\n` }
     }
+    if (goal.status === 'blocked') {
+      const pending = pendingGates(goal).filter(g => g.blocking)
+      const list = pending.map(g => `  ? ${g.id}: ${g.question}`).join('\n')
+      return {
+        type: 'text',
+        value: `Goal is blocked on your decision, not paused:\n${list}\nAnswer with /goal gate <id> approve|reject|defer [note]\n`,
+      }
+    }
     const updated = await resumeGoal()
     if (updated) {
       // Reset the per-goal continuation guard so the auto-continuation loop
@@ -67,6 +92,111 @@ export const call: LocalCommandCall = async (args, _context) => {
       }
     }
     return { type: 'text', value: 'Failed to resume goal.\n' }
+  }
+
+  // /goal criteria — the completion gate, in full
+  if (trimmedArgs === 'criteria' || trimmedArgs === 'crit') {
+    const goal = await getGoal()
+    if (!goal) {
+      return { type: 'text', value: 'No goal is currently set.\n' }
+    }
+    const criteria = goal.successCriteria ?? []
+    if (criteria.length === 0) {
+      return {
+        type: 'text',
+        value: `No success criteria declared for "${goal.objective}".\nCompletion is blocked until the agent registers checkable deliverables via update_goal({criteria_add}).\n`,
+      }
+    }
+    const audit = auditCompletion(goal)
+    const lines = [`Success criteria for "${goal.objective}":`]
+    for (const c of criteria) {
+      const marker = c.status === 'met' ? '✓' : c.status === 'waived' ? '~' : '☐'
+      lines.push(`  ${marker} ${c.id}: ${c.text}`)
+      if (c.evidence) {
+        const checked = c.evidence.machineChecked ? ' [verified]' : ''
+        lines.push(`      ${c.evidence.kind}${checked}: ${c.evidence.ref}`)
+        if (c.evidence.note) lines.push(`      → ${c.evidence.note}`)
+      }
+      if (c.waivedReason) lines.push(`      waived: ${c.waivedReason}`)
+    }
+    lines.push('')
+    lines.push(
+      audit.admitted
+        ? 'Completion would be admitted.'
+        : `Completion blocked: ${audit.reason.split('\n')[0]}`,
+    )
+    if (audit.observationOnly.length > 0) {
+      lines.push(
+        `Note: ${audit.observationOnly.length} criterion(a) rest on unverified self-report only.`,
+      )
+    }
+    return { type: 'text', value: lines.join('\n') + '\n' }
+  }
+
+  // /goal gate [<id> <decision> [note]]
+  if (trimmedArgs === 'gate' || trimmedArgs.startsWith('gate ')) {
+    const goal = await getGoal()
+    if (!goal) {
+      return { type: 'text', value: 'No goal is currently set.\n' }
+    }
+    const rest = trimmedArgs.slice('gate'.length).trim()
+    const pending = pendingGates(goal)
+
+    if (!rest) {
+      if (pending.length === 0) {
+        return { type: 'text', value: 'No gates are awaiting your decision.\n' }
+      }
+      const lines = ['Gates awaiting your decision:']
+      for (const g of pending) {
+        lines.push(`  ${g.id}${g.blocking ? ' (blocking)' : ''}: ${g.question}`)
+        if (g.context) lines.push(`      context: ${g.context}`)
+        if (g.recommendedAction) lines.push(`      suggested: ${g.recommendedAction}`)
+      }
+      lines.push('', 'Answer with: /goal gate <id> approve|reject|defer [note]')
+      return { type: 'text', value: lines.join('\n') + '\n' }
+    }
+
+    const [gateId, decisionWord, ...noteParts] = rest.split(/\s+/)
+    if (!gateId || !decisionWord) {
+      return {
+        type: 'text',
+        value: 'Usage: /goal gate <id> approve|reject|defer [note]\n',
+      }
+    }
+    const decision = GATE_DECISIONS[decisionWord.toLowerCase()]
+    if (!decision) {
+      return {
+        type: 'text',
+        value: `Unknown decision "${decisionWord}". Use approve, reject, or defer.\n`,
+      }
+    }
+    const target = (goal.gates ?? []).find(g => g.id === gateId)
+    if (!target) {
+      return { type: 'text', value: `No gate with id "${gateId}".\n` }
+    }
+    if (target.decision) {
+      return {
+        type: 'text',
+        value: `Gate ${gateId} was already ${target.decision}.\n`,
+      }
+    }
+
+    const resolved = await resolveGate(gateId, decision, noteParts.join(' '))
+    if (!resolved) {
+      return { type: 'text', value: `Failed to resolve gate ${gateId}.\n` }
+    }
+
+    const unblocked = resolved.goal.status === 'active'
+    if (unblocked) onUserOrToolActivity()
+    return {
+      type: 'text',
+      value: `Gate ${gateId} ${decision}: "${target.question}"\n${
+        unblocked
+          ? 'Goal unblocked — picking it up now.\n'
+          : `Goal remains ${resolved.goal.status}.\n`
+      }`,
+      shouldQuery: unblocked,
+    }
   }
 
   // /goal phase <planning|executing|verifying>
@@ -164,7 +294,7 @@ export const call: LocalCommandCall = async (args, _context) => {
 
   return {
     type: 'text',
-    value: `Goal created and active: "${goal.objective}" (phase: ${goal.phase ?? 'planning'})\nToken budget: ${goal.tokenBudget !== null ? goal.tokenBudget.toLocaleString() : 'none'}\n\nCommands: /goal | /goal phase ${VALID_PHASES.join('|')} | /goal subgoals | /goal pause | /goal resume | /goal clear\n`,
+    value: `Goal created and active: "${goal.objective}" (phase: ${goal.phase ?? 'planning'})\nToken budget: ${goal.tokenBudget !== null ? goal.tokenBudget.toLocaleString() : 'none'}\nThe agent will declare success criteria before it can complete this goal.\n\n${USAGE}\n`,
     shouldQuery: true,
   }
 }

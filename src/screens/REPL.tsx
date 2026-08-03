@@ -144,8 +144,8 @@ import { useQueueProcessor } from '../hooks/useQueueProcessor.js';
 import { useMailboxBridge } from '../hooks/useMailboxBridge.js';
 import { queryCheckpoint, logQueryProfileReport } from '../utils/queryProfiler.js';
 import { markTurnStart, markTurnEnd, createGoalQueryTracker } from '../utils/goalAccounting.js';
-import { checkGoalBudget } from '../utils/goalBudget.js';
-import { getContinuationCandidate, onUserOrToolActivity } from '../utils/goalContinuation.js';
+import { decideGoalTurn } from '../utils/goalDecision.js';
+import { onUserOrToolActivity } from '../utils/goalContinuation.js';
 import { consumeGoalTransition, formatTransitionLine } from '../tools/GoalTool/utils.js';
 import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query } from '../query.js';
@@ -2807,7 +2807,6 @@ export function REPL({
     const MAX_GOAL_AUTO_CONT = 10;
     let goalAutoContCount = 0;
     await markTurnStart(0).catch(() => {});
-    let goalBudgetResult;
     do {
       for await (const event of query({
         messages: messagesIncludingNewMessages,
@@ -2823,7 +2822,6 @@ export function REPL({
       }
 
       await markTurnEnd(goalTracker.getTotalTokens()).catch(() => {});
-      goalBudgetResult = await checkGoalBudget().catch(() => null);
 
       // Surface state-machine transition (e.g. active → budget_limited or
       // → complete) as a visible system info message so the user sees the
@@ -2844,21 +2842,32 @@ export function REPL({
         // best-effort
       }
 
-      // Active Memory: auto-continue if goal is still active
-      if (!goalBudgetResult?.blockContinuation && goalAutoContCount < MAX_GOAL_AUTO_CONT) {
-        const continuation = await getContinuationCandidate().catch(() => null);
-        if (continuation) {
-          onUserOrToolActivity();
-          goalAutoContCount++;
-          const contMsg = createUserMessage({
-            content: continuation.promptBlocks,
-            isMeta: true,
-          });
-          messagesIncludingNewMessages.push(contMsg);
-          goalTracker.reset();
-          await markTurnStart(0).catch(() => {});
-          continue;
-        }
+      // Active Memory: one typed decision governs the loop. `run` continues;
+      // `ask`/`wait` end it with a visible explanation rather than silently.
+      const goalDecision = await decideGoalTurn({
+        iteration: goalAutoContCount,
+        maxIterations: MAX_GOAL_AUTO_CONT,
+        afterContinuationTurn: goalAutoContCount > 0,
+      }).catch(() => null);
+
+      if (goalDecision?.decision === 'run' && goalDecision.promptBlocks) {
+        onUserOrToolActivity();
+        goalAutoContCount++;
+        const contMsg = createUserMessage({
+          content: goalDecision.promptBlocks,
+          isMeta: true,
+        });
+        messagesIncludingNewMessages.push(contMsg);
+        goalTracker.reset();
+        await markTurnStart(0).catch(() => {});
+        continue;
+      }
+
+      if (goalDecision?.userMessage) {
+        setMessages(prev => [
+          ...prev,
+          createSystemMessage(goalDecision.userMessage!, 'info'),
+        ]);
       }
       break;
     } while (true);

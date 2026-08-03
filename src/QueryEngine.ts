@@ -38,9 +38,9 @@ import {
   markTurnStart,
   markTurnEnd,
 } from './utils/goalAccounting.js'
-import { checkGoalBudget } from './utils/goalBudget.js'
-import { getContinuationCandidate, onUserOrToolActivity, blockContinuation } from './utils/goalContinuation.js'
-import { pauseGoal, resumeGoal, getGoal, consumeGoalTransition, formatTransitionLine } from './tools/GoalTool/utils.js'
+import { decideGoalTurn } from './utils/goalDecision.js'
+import { onUserOrToolActivity, blockContinuation } from './utils/goalContinuation.js'
+import { pauseGoal, resumeGoal, getGoal, consumeGoalTransition, formatTransitionLine, pendingGates } from './tools/GoalTool/utils.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
@@ -1112,7 +1112,6 @@ export class QueryEngine {
 
     // Goal accounting: finalize turn and check for auto-continuation
     await markTurnEnd(this.totalUsage.input_tokens + this.totalUsage.output_tokens).catch(() => {})
-    const budgetResult = await checkGoalBudget().catch(() => null)
 
     // Surface any state-machine transition that fired this turn so the user
     // (and the SDK consumer) sees the edge event rather than only the polled
@@ -1132,15 +1131,29 @@ export class QueryEngine {
       // best-effort
     }
 
-    const continuation = budgetResult?.blockContinuation
-      ? null
-      : await getContinuationCandidate().catch(() => null)
+    // Active Memory: one typed decision governs the loop. `run` continues;
+    // `ask`/`wait` end the loop but must never end it silently — the user
+    // gets told what the goal is waiting on.
+    const goalDecision = await decideGoalTurn({
+      iteration: autoContinuationCount,
+      maxIterations: MAX_AUTO_CONTINUATIONS,
+      afterContinuationTurn: autoContinuationCount > 0,
+    }).catch(() => null)
 
-    // Active Memory: auto-continue if goal is still active
-    if (continuation && autoContinuationCount < MAX_AUTO_CONTINUATIONS) {
-      autoContinuationPrompt = continuation.promptBlocks
+    if (goalDecision?.decision === 'run' && goalDecision.promptBlocks) {
+      autoContinuationPrompt = goalDecision.promptBlocks
       autoContinuationCount++
       continue
+    }
+
+    if (goalDecision?.userMessage) {
+      yield {
+        type: 'system',
+        subtype: 'info',
+        message: goalDecision.userMessage,
+        session_id: getSessionId(),
+        uuid: randomUUID(),
+      }
     }
 
     // Stop hooks yield progress/attachment messages AFTER the assistant
@@ -1406,6 +1419,17 @@ export async function* ask({
             type: 'system',
             subtype: 'info',
             message: `Paused goal found: "${goal.objective}" (${goal.tokensUsed.toLocaleString()} tokens used, ${goal.timeUsedSeconds}s elapsed). Use /goal resume to continue.`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        } else if (goal.status === 'blocked') {
+          const gates = pendingGates(goal)
+            .map(g => `  ? ${g.id}: ${g.question}`)
+            .join('\n')
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `Goal is blocked on your decision: "${goal.objective}"\n${gates}\nAnswer with /goal gate <id> approve|reject|defer [note].`,
             session_id: getSessionId(),
             uuid: randomUUID(),
           }

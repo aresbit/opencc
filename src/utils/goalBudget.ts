@@ -1,87 +1,83 @@
-import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
-import {
-  getGoal,
-  setGoalBudgetLimited,
-  renderGoalBudgetLimitPrompt,
-  type Goal,
-} from '../tools/GoalTool/utils.js'
+import { getGoal, formatTime, type Goal } from '../tools/GoalTool/utils.js'
 
-export interface BudgetCheckResult {
-  goal: Goal | null
-  /** Warning prompt when budget nearly exhausted (>= warnAtPct) */
-  warningPrompt: string | null
-  /** Steering blocks to inject when budget is fully exhausted */
-  steeringBlocks: ContentBlockParam[] | null
-  /** Whether auto-continuation should be blocked */
-  blockContinuation: boolean
+/**
+ * Budget reporting.
+ *
+ * Enforcement lives elsewhere: `accountGoalUsage` performs the
+ * active → budget_limited transition the moment the token budget is spent,
+ * and `decideGoalTurn` turns that state into the wrap-up turn and the
+ * user-facing report. What remains here is the soft signal — the warning the
+ * agent sees while it still has room to prioritize — plus status formatting.
+ */
+
+/** Fraction of the token budget after which the agent is warned. */
+export const BUDGET_WARN_AT_PCT = 0.85
+
+export interface BudgetPressure {
+  /** Fraction of the token budget consumed, or null when unbudgeted. */
+  pctUsed: number | null
+  /** Tokens left, or null when unbudgeted. */
+  remaining: number | null
+  /** Seconds until the wall-clock deadline, or null when there is none. */
+  secondsToDeadline: number | null
+  /** Continuation turns left before the cap, or null when uncapped. */
+  turnsRemaining: number | null
 }
 
-let budgetLimitReportedGoalId: string | null = null
-
-export function resetBudgetState(): void {
-  budgetLimitReportedGoalId = null
+export function goalBudgetPressure(goal: Goal): BudgetPressure {
+  const pctUsed =
+    goal.tokenBudget !== null && goal.tokenBudget > 0
+      ? goal.tokensUsed / goal.tokenBudget
+      : null
+  return {
+    pctUsed,
+    remaining:
+      goal.tokenBudget !== null
+        ? Math.max(0, goal.tokenBudget - goal.tokensUsed)
+        : null,
+    secondsToDeadline: goal.deadlineAt
+      ? Math.max(0, Math.round((goal.deadlineAt - Date.now()) / 1000))
+      : null,
+    turnsRemaining: goal.maxTurns
+      ? Math.max(0, goal.maxTurns - (goal.progress?.turnsUsed ?? 0))
+      : null,
+  }
 }
 
 /**
- * Check the goal's token budget and return steering actions.
- * Call after accounting goal usage. The accounting functions already
- * transition the goal to budget_limited when budget is exceeded;
- * this produces the model-visible steering prompts.
+ * A short warning to fold into the continuation prompt when the goal is
+ * running out of room. Returns null while there is plenty left.
  */
-export async function checkGoalBudget(
-  warnAtPct: number = 0.85,
-): Promise<BudgetCheckResult> {
+export function goalBudgetWarning(
+  goal: Goal,
+  warnAtPct: number = BUDGET_WARN_AT_PCT,
+): string | null {
+  const p = goalBudgetPressure(goal)
+  const parts: string[] = []
+
+  if (p.pctUsed !== null && p.pctUsed >= warnAtPct && p.remaining !== null) {
+    parts.push(
+      `token budget is ${Math.round(p.pctUsed * 100)}% consumed (${p.remaining.toLocaleString()} left)`,
+    )
+  }
+  if (p.turnsRemaining !== null && p.turnsRemaining <= 2) {
+    parts.push(`${p.turnsRemaining} continuation turn(s) left`)
+  }
+  if (p.secondsToDeadline !== null && p.secondsToDeadline <= 300) {
+    parts.push(`${formatTime(p.secondsToDeadline)} until the deadline`)
+  }
+
+  if (parts.length === 0) return null
+  return `Budget pressure: ${parts.join('; ')}. Prioritize the open success criteria most likely to be satisfiable with evidence in the remaining room, and stop starting work you cannot finish.`
+}
+
+/** Convenience wrapper for callers that only hold a thread id. */
+export async function getGoalBudgetWarning(
+  warnAtPct: number = BUDGET_WARN_AT_PCT,
+): Promise<string | null> {
   const goal = await getGoal()
-
-  if (!goal) {
-    return { goal: null, warningPrompt: null, steeringBlocks: null, blockContinuation: false }
-  }
-
-  // Already budget_limited — inject steering prompt once
-  if (goal.status === 'budget_limited') {
-    if (goal.goalId === budgetLimitReportedGoalId) {
-      return { goal, warningPrompt: null, steeringBlocks: null, blockContinuation: true }
-    }
-    budgetLimitReportedGoalId = goal.goalId
-    const prompt = renderGoalBudgetLimitPrompt(goal)
-    return {
-      goal,
-      warningPrompt: null,
-      steeringBlocks: [{ type: 'text' as const, text: prompt }],
-      blockContinuation: true,
-    }
-  }
-
-  budgetLimitReportedGoalId = null
-
-  // Active goal with token budget: check thresholds
-  if (goal.status === 'active' && goal.tokenBudget !== null && goal.tokenBudget > 0) {
-    const pctUsed = goal.tokensUsed / goal.tokenBudget
-
-    if (pctUsed >= 1.0) {
-      await setGoalBudgetLimited()
-      const updated = await getGoal()
-      if (updated) {
-        budgetLimitReportedGoalId = updated.goalId
-      }
-      return {
-        goal: updated,
-        warningPrompt: null,
-        steeringBlocks: updated
-          ? [{ type: 'text' as const, text: renderGoalBudgetLimitPrompt(updated) }]
-          : null,
-        blockContinuation: true,
-      }
-    }
-
-    if (pctUsed >= warnAtPct) {
-      const remaining = goal.tokenBudget - goal.tokensUsed
-      const warning = `Note: Goal token budget is ${Math.round(pctUsed * 100)}% consumed (${remaining.toLocaleString()} tokens remaining). Consider prioritizing remaining work.`
-      return { goal, warningPrompt: warning, steeringBlocks: null, blockContinuation: false }
-    }
-  }
-
-  return { goal, warningPrompt: null, steeringBlocks: null, blockContinuation: false }
+  if (!goal || goal.status !== 'active') return null
+  return goalBudgetWarning(goal, warnAtPct)
 }
 
 /**
@@ -90,19 +86,9 @@ export async function checkGoalBudget(
 export function formatBudgetStatus(goal: Goal | null): string {
   if (!goal) return 'No goal set'
   if (goal.tokenBudget === null) {
-    return `Goal: ${goal.objective.substring(0, 50)} | Tokens: ${goal.tokensUsed.toLocaleString()} | Time: ${formatShortTime(goal.timeUsedSeconds)}`
+    return `Goal: ${goal.objective.substring(0, 50)} | Tokens: ${goal.tokensUsed.toLocaleString()} | Time: ${formatTime(goal.timeUsedSeconds)}`
   }
   const pct = Math.round((goal.tokensUsed / goal.tokenBudget) * 100)
   const remaining = Math.max(0, goal.tokenBudget - goal.tokensUsed)
   return `Goal: ${goal.objective.substring(0, 50)} | ${goal.tokensUsed.toLocaleString()} / ${goal.tokenBudget.toLocaleString()} (${pct}%) | ${remaining.toLocaleString()} remaining`
-}
-
-function formatShortTime(totalSeconds: number): string {
-  if (totalSeconds < 60) return `${totalSeconds}s`
-  const minutes = Math.floor(totalSeconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  const rm = minutes % 60
-  if (rm === 0) return `${hours}h`
-  return `${hours}h ${rm}m`
 }
