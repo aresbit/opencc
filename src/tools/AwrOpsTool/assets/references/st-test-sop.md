@@ -37,7 +37,7 @@
 
 ## 0. 访问 & 前置
 
-### 0.1 SSH 隧道(每次会话先做;ControlPersist 会过期,断了重建)
+### 0.1 SSH 隧道与端侧 eHMI(每次会话先做;ControlPersist 会过期,断了重建)
 
 所有连接参数通过环境变量注入，**无硬编码**：
 
@@ -46,7 +46,7 @@
 export AWR_JUMP_USER=<跳板用户名> AWR_JUMP_IP=<跳板IP> AWR_JUMP_PASS=111111
 export AWR_ROBOT_USER=nvidia AWR_ROBOT_IP=192.168.10.15 AWR_ROBOT_PASS=nvidia
 
-# 一键建立隧道 (9094→eHMI, 1995→HMI, 2222→SSH)
+# 一键建立隧道 (1995→HMI, 2222→SSH; 9094 可转发但 ST eHMI 优先板上本地跑)
 bash scripts/ssh/ssh-tunnel.sh
 
 # 通过跳板在机器人上执行命令
@@ -60,14 +60,23 @@ setsid ssh -f -N -M -S ~/.ssh/awr-tunnel.ctl -o StrictHostKeyChecking=no \
   -L 127.0.0.1:1995:${AWR_ROBOT_IP}:1995 \
   ${AWR_JUMP_USER}@${AWR_JUMP_IP}
 ```
-所有 eHMI 命令都对 `127.0.0.1` 跑(经隧道)。
+
+**当前 ST 执行规则**: 所有 eHMI 命令优先通过 SSH 到板上本地执行同一份 `ehmi_client.py`，目标地址用板内 `127.0.0.1:9094`。PC 侧直连 `192.168.10.x:9094` 可能 TCP 可达但 WebSocket opening handshake 超时，不作为默认路径。
+
+```bash
+# 在板上本地执行，或由 tibai-edge 自动 materialize 内嵌 ehmi_client.py 后执行
+python3 /tmp/tibai-ehmi_client.py 127.0.0.1 agents
+python3 /tmp/tibai-ehmi_client.py 127.0.0.1 recipe-list <device_id>
+python3 /tmp/tibai-ehmi_client.py 127.0.0.1 recipe-create auto <device_id>
+```
 
 ### 0.2 硬件健康前置(不过则 job 必失败,先修)
 ```bash
 # 力传感器可达(插接必需)
 ssh -p 2222 nvidia@127.0.0.1 'ping -c1 -W1 192.168.10.20 && ping -c1 -W1 192.168.10.21'   # 左/右, 都要通
-# 无故障态(20002=LOAD_ERROR)
-ssh -p 2222 nvidia@127.0.0.1 'grep -rhE "error code: 200" /apollo/data/log/ | tail -3'
+# 无故障态(20002=LOAD_ERROR): 只看近 60 分钟 double_orin 的真实 ERROR 行，避免历史脏日志/命令回显误报
+ssh -p 2222 nvidia@127.0.0.1 'find /apollo/data/log/double_orin -type f -mmin -60 -name "*.log*" -print0 2>/dev/null | xargs -0 grep -haE "(^|\x1b\[[0-9;]*m)E[0-9]{8} .*error code: 20002" 2>/dev/null | tail -3 || true'
+ssh -p 2222 nvidia@127.0.0.1 'find /apollo/data/log/double_orin -type f -mmin -60 -name "*.log*" -print0 2>/dev/null | xargs -0 grep -haE "(^|\x1b\[[0-9;]*m)E[0-9]{8} .*error code: 20002" 2>/dev/null | wc -l'  # 期望 0
 ```
 力传感器断连 / 20002 → 通常挪动机器人导致,需**重启相关服务**恢复;脚本层面 `clear-alarm` 只能清软告警,传感器网络不可达要物理处理。
 
@@ -87,15 +96,15 @@ ssh -p 2222 nvidia@127.0.0.1 'ps aux|grep -c "[m]ainboard"; curl -s -o /dev/null
 |---|------|:---:|------|------|
 | 0 | 大包部署 + start_awr.sh | 脚本/SSH | SSH 跑 `start_awr.sh`(y/y);或 `launcher` START_PIPELINE | — |
 | 1 | 绑定机器人 | 脚本 | `rebind agent72` | `ADD TO WORKSPACE` |
-| 2 | 保存/绑定地图 | 脚本 | `bindmap board188 THHB agent72` | `OnBindRequest`+`operation_map published`+`ReloadMap` |
-| 3 | 锁精定位 | 脚本 | `AWR_DEVICE_ID=188 ... lock <recipe_id> <wire_id>` | `mode = 15 ... execute_task` |
-| 4 | 新建 recipe | 脚本 | `recipe-create <name> 188`(op_map 自动解析) | — |
+| 2 | 保存/绑定地图 | 脚本 | `bindmap board<device_id> THHB <agent>`；缺地图素材才补 `pattern=AIO\|LZY_TH\|OP` | `OnBindRequest`+`operation_map published`+`ReloadMap` |
+| 3 | 锁精定位 | 脚本 | `AWR_DEVICE_ID=<device_id> ... lock <recipe_id> <wire_id>` | `mode = 15 ... execute_task` 且无 `execute false`/`error code: 5009` |
+| 4 | 新建 recipe | 脚本 | `recipe-create auto <device_id>`(op_map 自动解析；端侧执行) | — |
 | 5 | 去人工打点(拖手臂扫描) | **人工** | 生成 wiring 数据 | — |
 | 6 | 黄金模板配置(app 扫码绑 kit) | **人工** | — | — |
 | 7 | 点位验证 / 精修 | **人工** | — | — |
 | 8 | 标定质检 | 半自动 | 人工摆位 → `calibrate <4\|7\|10\|13> [arm]` / `quality-check <154..157> [arm]` | `handeye_validate success` |
-| 9 | 轨迹生成 | 脚本 | **先查线束列表**: `curl -s 'https://awr-backend-test.tars-ai.com/api/wireInfo/getList?recipe_id=<id>&page_size=0'` 确认 wire_id 后 `single-traj <实际wire_id> <recipe_id>` | `TrajMgmtService action=1x` |
-| 10 | 执行 job | 脚本 | `AWR_DEVICE_ID=188 ... start-job <recipe_id> <起始wire_id> 0` | `load verify`+`is_cruise_load_over SUCCESS`+`Trajectory replay submitted` |
+| 9 | 轨迹生成 | 脚本 | 默认线束3起；可选 `4` 或 `4 6 7`，但必须逐条串行生成并验证完成后再发下一条 | `TrajMgmtService action=1x` |
+| 10 | 执行 job | 脚本 | `AWR_DEVICE_ID=<device_id> ... start-job <recipe_id> <起始wire_id> 0`；只从选择的起始线束下发一次 | `load verify`+`is_cruise_load_over SUCCESS`+`Trajectory replay submitted` |
 
 ---
 
@@ -133,6 +142,9 @@ $CLI single-traj 30104 1841
 # 6. 执行 job — ⚠️ 只需触发一次！
 #    start-job 从起始线束触发后，机器人会自动执行后续所有线束的插接。
 #    不要每条线束都发一次 start-job！如果从线束4开始但没有线束4的轨迹会报错。
+#    ⚠️ 安全前置: 起 job 前机械臂必须先回到初始准备姿态 (safe-pose index=0)，
+#       否则从残留位姿直接执行可能撞板/轨迹起点不匹配。
+$CLI safe-pose 1841 0        # 先回初始准备姿态
 #    确保起始线束的轨迹已存在，然后只发一次：
 $CLI start-job 1841 30103 0
 #    如果中途某条线束失败，从该线束重新触发即可:
@@ -150,7 +162,7 @@ $CLI start-job 1841 30103 0
 |------|-----|------|
 | agent 序列号 | 72 | `agents` / `/aw_robot_status` field3 |
 | 操作地图 | board188(或 board142) | 设置页 / `opmap-list` |
-| **DEVICE_ID / workspace_id** | **188**(=board名去 board 前缀) | ≠ agent serial! `AWR_DEVICE_ID=188` |
+| **DEVICE_ID / workspace_id** | **188**(=board名去 board 前缀) | ≠ agent serial! `AWR_DEVICE_ID=188`；recipe 列表/创建按此 board_id 走 |
 | op_map_id | board188→132 / board142→86 | `recipe_create` 自动解析 |
 | nav_map_id | 6 | — |
 | recipe(完成态) | 1841 refined_thhb_imported status=11 | `recipe-list 188` |
@@ -176,6 +188,7 @@ $CLI start-job 1841 30103 0
 | 症状 | 根因 | 处理 |
 |------|------|------|
 | job `is_accepted=1` 但机械臂不动、树只建不 tick | 缺 `LOAD_VERIFY`(上料确认) | 用 `start-job`(已含三步)或补发 `action LOAD_VERIFY` |
+| lock `is_accepted=1` 但机器人没动 | HMI service 只受理;板端后续执行失败,常见 `error code: 5009` / `SLAM结果异常` / `aruco_pose_error: null` | 查 `/apollo/data/log/double_orin/robot.log*`;先修 reloc/SLAM/地图绑定/aruco_pose,ST 必须判 FAIL |
 | `load` 节点 FAILURE,停在初始姿态 | `cruise robot is in error state 20002`(LOAD_ERROR)+ 力传感器 .20/.21 断连(errno113) | 挪机器人致断连;**重启服务**恢复,`clear-alarm` 清软告警 |
 | `affordance_info ... has not received`(每10s) | 空闲噪声(该 topic 插接时才有生产方) | **不是** job 不动的原因,忽略 |
 | 轨迹生成 `is_accepted=1` 但没文件 | 后台运动规划耗时;看 `/arm_planner/generate_joint_trajectory/goal_feedback` 索引在涨=在跑 | 等到 `线束14_*_joint.npz` 出现 |
@@ -186,6 +199,11 @@ $CLI start-job 1841 30103 0
 | 手眼质检 50s 超时但其实通过 | 手眼两阶段 ~55s | `quality_check` 已按 mode 放宽到 120s |
 | start-job 报错/机械臂不动 | 起始 wire_id 的轨迹不存在 | 先确认 `ls /apollo/data/trajectories/*_joint.npz \| grep 线束N` 有 3 个文件 |
 | 逐条 start-job 导致重复执行 | 只需触发一次，机器人自动执行后续线束 | 从起始线束发一次 start-job 即可，中途失败才从该线束重新触发 |
+| eHMI `opening handshake` 超时 | PC 侧直连 9094 不稳定 | 端侧执行同一份 `ehmi_client.py`，连接板内 `127.0.0.1:9094` |
+| `recipe-create st_$(date ...)` 报错或名字异常 | ST runner 不按 shell 展开 eHMI 参数 | 用 `recipe-create auto <device_id>`，由客户端生成 `st_YYYYMMDD_HHMMSS` |
+| `bindmap` 提示 `provision_required 147` | 把 agent serial 当成 map_name | `map_name` 用 `board<device_id>`；只有 `board142` 这类名字仍缺素材时才选 pattern |
+| TC00 `error_code` 抓到历史错误 | 宽泛扫描 `/apollo/data/log`，命中过期日志或命令回显 | 只扫近 60 分钟 `/apollo/data/log/double_orin` 的真实 `Eyyyymmdd ... error code: 20002` 行 |
+| safe-pose 后验证找不到 `mode = 110` | 上一条 grep 输出 tail 到了 `joint_values`，verify 没真正扫日志 | verify 直接跑 `find ... grep 'mode = 110' \| wc -l`，期望 ≥1 |
 
 **板载确认通用**:进板子 `grep -rhE "<关键字>" /apollo/data/log/`(glog `W20260714...` 级,`-rhE` 别用 `-o`),关键字见 §1 表 + ehmi-protocol.md「板载验证」。
 

@@ -32,18 +32,21 @@ suite: awr-st
 description: "AWR 机器人 ST SOP 正交测试用例集 — 每用例一个 DAG,人工步骤 human gate"
 
 # -----------------------------------------------------------------------------
-# 变量: CI 用环境变量覆盖;本地默认值仅作占位 (board188 / agent72 / recipe1841)
+# 变量: CI 用环境变量覆盖;本地默认值仅作占位
+# ⚠ "auto" = 开跑时从机器人/云端现查,不要写死站点常量。
+#   写死会绑死到某一台机器(如 agent72/board188/recipe1841 在 serial=117 的机器上全错)。
+#   要覆盖时填具体值即可,显式值永远优先于 auto。
 # -----------------------------------------------------------------------------
 variables:
-  robot_ip: &robot_ip "127.0.0.1"          # 隧道后本地;直连则改 192.168.10.x
-  device_id: &device_id "188"              # AWR_DEVICE_ID (板号 board188→188) ≠ serial
-  agent: &agent "auto"                      # rebind/bindmap 用 auto=resolve_serial
-  map_name: &map_name "board188"
-  wire_type: &wire_type "THHB"
+  robot_ip: &robot_ip "auto"               # auto=用 config 里该机器人的实际地址
+  device_id: &device_id "auto"             # auto=取活跃 workspace_id(≠ agent serial)
+  agent: &agent "auto"                      # auto=从 /aw_robot_status 采集窗口解析
+  map_name: &map_name "auto"               # auto=board<device_id>
+  wire_type: &wire_type "THHB"               # start_awr --recipe-type 必须为 THD30|THHB|C134|WAIC|AIO
   pattern: &pattern null                   # 缺地图素材时 AIO|LZY_TH|OP
-  recipe_id: &recipe_id "1841"             # 完成态示例;新 recipe 由 TC-05 产出后覆盖
-  start_wire_id: &start_wire_id "30103"    # 起始线束 DB id (非序号!);线束3=30103
-  wire_id_list: &wire_id_list ["30103","30104","30105","30106","30107","30108","30109","30110","30111","30112","30113","30114"]  # 线束3..14
+  recipe_id: &recipe_id "auto"             # auto=该板最新完成态(status=11)recipe
+  start_wire_id: &start_wire_id "auto"     # auto=该 recipe 线束3起的首条 DB id; UI 可选择 job 起始线束
+  wire_id_list: &wire_id_list "auto"       # auto=wireInfo/getList 查该 recipe 线束3..末尾; UI 可填 4、4 6 7、4-10 或 4 到 10
   check_type_calib: &check_type "7"        # 鱼眼手眼标定;4双目/7手眼/10内窥镜双目/13鱼眼左到内窥镜左
   qc_modes: &qc_modes [154,155,156,157]     # 质检四项,必须串行(规则1)
   calib_arm: &calib_arm "0"                # 0左 1右 2双
@@ -52,7 +55,7 @@ variables:
   jump_ip: &jump_ip null
   jump_pass: &jump_pass null
   robot_user: &robot_user "nvidia"
-  robot_ip_direct: &robot_ip_direct "192.168.10.15"
+  robot_ip_direct: &robot_ip_direct "auto"    # auto=用 config 里该机器人的实际地址
   robot_pass: &robot_pass "nvidia"
 
 defaults:
@@ -141,10 +144,10 @@ test_cases:
           report: "| 0.3 | 力传感器 .20/.21 可达 | {status} | {result} | {time} |"
         - id: error_code
           type: ssh
-          command: "grep -rhE 'error code: 200' {board_log}/ | tail -3"
+          command: "find {board_log}/double_orin -type f -mmin -60 -name '*.log*' -print0 2>/dev/null | xargs -0 grep -haE '(^|\\x1b\\[[0-9;]*m)E[0-9]{8} .*error code: 20002' 2>/dev/null | tail -3 || true"
           depends_on: [tunnel]
           verify:
-            - cmd: "ssh -p 2222 nvidia@127.0.0.1 'grep -rhE \"error code: 200\" {board_log}/ | tail -3 | wc -l'"
+            - cmd: "find {board_log}/double_orin -type f -mmin -60 -name '*.log*' -print0 2>/dev/null | xargs -0 grep -haE '(^|\\x1b\\[[0-9;]*m)E[0-9]{8} .*error code: 20002' 2>/dev/null | wc -l"
               expect: "0"            # 无 20002 LOAD_ERROR
           on_failure: manual
           report: "| 0.4 | 无 20002 故障态 | {status} | {result} | {time} |"
@@ -159,8 +162,11 @@ test_cases:
       nodes:
         - id: start_awr
           type: ssh
-          command: "cd /apollo && source gaea.bashrc 2>/dev/null && bash /apollo/scripts/humanoid/start_awr.sh 2>&1"
+          # 必须非交互: start_awr.sh 默认 AUTO_MODE=0，会停在 y/n 提示上。
+          # 人需在启动前确认线束类型（Parameters 面板选 wire_type）：1=THD30 2=THHB 3=C134 4=WAIC 5=AIO
+          command: "cd /apollo && source gaea.bashrc 2>/dev/null && bash /apollo/scripts/humanoid/start_awr.sh -f --skip-coredump --region shanghai -y --auto --recipe-type {wire_type} 2>&1"
           depends_on: []
+          timeout_s: 600
           on_failure: abort
           report: "| 1.1 | start_awr.sh | {status} | {result} | {time} |"
         - id: verify_mainboard
@@ -190,6 +196,8 @@ test_cases:
     preconditions: [TC-01]
     dag:
       nodes:
+        # NOTE: agent/device_id 等参数发现由前端 Parameters 面板完成;agent 自动从
+        # /aw_robot_status 采集窗口解析;若 Parameters 面板显式填了值则优先使用。
         - id: resolve_agent
           type: script
           command: "{ehmi} agents"
@@ -200,9 +208,6 @@ test_cases:
           env: "{env}"
           command: "{ehmi} rebind {agent}"
           depends_on: [resolve_agent]
-          verify:
-            - cmd: "{ehmi} status"
-              grep: "is_bound: True"
           on_failure: retry(2)
           report: "| 2.2 | rebind {agent} | {status} | {result} | {time} |"
         - id: verify_bound_board
@@ -223,13 +228,15 @@ test_cases:
     preconditions: [TC-02]
     dag:
       nodes:
+        # NOTE: map_name/wire_type 由前端 Parameters 面板选择;agent 根据面板填入的
+        # 值执行 bindmap,若面板未填则自动推断 (map_name=board<device_id>, wire_type=从配置)。
         - id: check_bound_pre
           type: script
           command: "{ehmi} status"
           depends_on: []
           verify:
             - cmd: "{ehmi} status"
-              grep: "is_bound: True"
+              grep: "in_workspace: True"
           on_failure: abort
           report: "| 3.1 | 绑地图前机器人已绑定 | {status} | {result} | {time} |"
         - id: bindmap
@@ -243,13 +250,13 @@ test_cases:
           report: "| 3.2 | bindmap {map_name} {wire_type} | {status} | {result} | {time} |"
         - id: verify_map_board
           type: ssh
-          command: "grep -rhE 'OnBindRequest|operation_map published|ReloadMap' {board_log}/ | tail -3"
+          command: "out=$(find {board_log}/double_orin -type f -mmin -10 -name '*.log*' -print0 2>/dev/null | xargs -0 grep -haE 'OnBindRequest|operation_map published|ReloadMap' 2>/dev/null | tail -12); echo \"$out\"; (echo \"$out\" | grep -F '{map_name}' | grep -q 'ReloadMap' || echo \"$out\" | grep -q 'operation_map published') && echo map_bind_verified"
           depends_on: [bindmap]
           verify:
-            - grep: "operation_map published"
+            - grep: "map_bind_verified"
               path: "{board_log}"
           on_failure: abort
-          report: "| 3.3 | 板载确认 operation_map published | {status} | {result} | {time} |"
+          report: "| 3.3 | 板载确认地图生效 (operation_map published 或 ReloadMap) | {status} | {result} | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-04
@@ -293,7 +300,7 @@ test_cases:
       nodes:
         - id: recipe_create
           type: script
-          command: "{ehmi} recipe-create st_$(date +%Y%m%d_%H%M%S) {device_id}"
+          command: "{ehmi} recipe-create auto {device_id}"
           depends_on: []
           on_failure: retry(2)
           report: "| 5.1 | recipe-create (device={device_id}) | {status} | new_id={result} | {time} |"
@@ -310,29 +317,17 @@ test_cases:
   - id: TC-06
     name: 人工打点 (拖手臂)
     type: manual
-    description: "人工拖动机械臂扫描生成 wiring 数据,脚本无法替代"
+    description: "按 HMI 去人工打点流程: 订阅 progress/result/response,现场拖动机械臂,终态 ok 后自动 UPDATE 导入数据库"
     preconditions: [TC-05]
     dag:
       nodes:
-        - id: human_mark_points
-          type: human
-          prompt: |
-            【人工操作】去现场拖动机械臂扫描线束,生成 wiring 数据。
-            完成后在测试目录执行: touch .resume-TC-06
-          resume: ".resume-TC-06"
+        - id: kit_refine_run
+          type: script
+          command: "{ehmi} kit-refine-run {recipe_id} {device_id} 3600"
           depends_on: []
           on_failure: manual
           timeout_s: 3600
-          report: "| 6.1 | 人工打点(拖手臂) | ⏸️→{status} | 等待人工 resume | {time} |"
-        - id: verify_wiring
-          type: ssh
-          command: "grep -rhE 'wiring|wire_info' {board_log}/ | tail -3"
-          depends_on: [human_mark_points]
-          verify:
-            - grep: "wire"
-              path: "{board_log}"
-          on_failure: manual
-          report: "| 6.2 | 板载确认 wiring 数据生成 | {status} | {result} | {time} |"
+          report: "| 6.1 | HMI人工打点闭环 | {status} | {result} | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-07
@@ -353,14 +348,11 @@ test_cases:
           timeout_s: 3600
           report: "| 7.1 | 黄金模板扫码 | ⏸️→{status} | 等待人工 resume | {time} |"
         - id: verify_golden
-          type: ssh
-          command: "grep -rhE 'golden|kit' {board_log}/ | tail -3"
+          type: script
+          command: "{ehmi} golden-check {recipe_id}"
           depends_on: [human_scan_golden]
-          verify:
-            - grep: "kit"
-              path: "{board_log}"
           on_failure: manual
-          report: "| 7.2 | 板载确认 kit 绑定 | {status} | {result} | {time} |"
+          report: "| 7.2 | 黄金模板结构校验 (逐连接器) | {status} | {result} | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-08
@@ -381,14 +373,11 @@ test_cases:
           timeout_s: 3600
           report: "| 8.1 | 点位验证/精修 | ⏸️→{status} | 等待人工 resume | {time} |"
         - id: verify_refine
-          type: ssh
-          command: "grep -rhE 'refine|template' {board_log}/ | tail -3"
+          type: script
+          command: "{ehmi} golden-check {recipe_id} --require-refine"
           depends_on: [human_point_refine]
-          verify:
-            - grep: "refine"
-              path: "{board_log}"
           on_failure: manual
-          report: "| 8.2 | 板载确认点位精修完成 | {status} | {result} | {time} |"
+          report: "| 8.2 | 点位精修校验 (hpoints 落全) | {status} | {result} | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-09
@@ -636,11 +625,12 @@ test_cases:
 
   # ---------------------------------------------------------------------------
   - id: TC-11
-    name: 单条轨迹生成 (逐线束串行)
+    name: 轨迹生成 (逐线束串行)
     type: auto
     description: |
       ⚠️ 必须先查询 recipe 实际线束列表,wire_id 不是固定值(每个 recipe 不同)!
       查询: curl -s 'https://awr-backend-test.tars-ai.com/api/wireInfo/getList?recipe_id=<id>&page_size=0'
+      支持单条/列表/区间选择(如 4、4 6 7、4-10、4 到 10)。
       逐线束 single-traj,每条必须等 3 个 _joint.npz(init_to_load/organize_and_connection/exit_poses)
       全部出现后才能继续下一条(常见陷阱: gen-traj 一次全下是异步的,会漏文件)。
     preconditions: [TC-04]
@@ -655,22 +645,30 @@ test_cases:
         - id: traj_loop
           type: script
           env: "{env}"
+          timeout_s: 240
           iterate:
             over: wire_id_list        # 逐个 wire_id 执行 (需根据 query_wire_list 结果更新)
             as: wire_id
           command: "{ehmi} single-traj {wire_id} {recipe_id}"
           depends_on: [query_wire_list]
+          verify:
+            - min_count: 3
+              cmd: "c=0; end=$((SECONDS+240)); while [ $SECONDS -lt $end ]; do c=$(ls /apollo/data/trajectories/*_joint.npz 2>/dev/null | grep -E '{wire_name}|{wire_id}' | wc -l); [ \"$c\" -ge 3 ] && echo \"$c\" && exit 0; sleep 5; done; echo \"$c\"; exit 1"
           on_failure: abort
-          report: "| 11.2 | single-traj wire={wire_id} recipe={recipe_id} | {status} | is_accepted={result} | {time} |"
+          report: "| 11.2 | single-traj wire={wire_id} ({wire_name}) recipe={recipe_id} | {status} | is_accepted/npz={result} | {time} |"
         - id: verify_traj_files
           type: ssh
-          command: "ls -la /apollo/data/trajectories/*_joint.npz | grep '{wire_id}' | wc -l"
+          timeout_s: 60
+          iterate:
+            over: wire_id_list
+            as: wire_id
+          command: "ls /apollo/data/trajectories/*_joint.npz 2>/dev/null | grep -E '{wire_name}|{wire_id}' | wc -l"
           depends_on: [traj_loop]
           verify:
             - min_count: 3
-              cmd: "ssh {robot_user}@{robot_ip_direct} 'ls /apollo/data/trajectories/*_joint.npz 2>/dev/null | wc -l'"
+              cmd: "ls /apollo/data/trajectories/*_joint.npz 2>/dev/null | grep -E '{wire_name}|{wire_id}' | wc -l"
           on_failure: abort
-          report: "| 11.3 | 轨迹文件 3/3 线束 wire={wire_id} | {status} | count={result} (≥3) | {time} |"
+          report: "| 11.3 | 轨迹文件 3/3 wire={wire_id} ({wire_name}) | {status} | count={result} (≥3) | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-12
@@ -679,6 +677,7 @@ test_cases:
     description: |
       start-job = REQUEST_DATABASE(154) → START_JOB(22) → LOAD_VERIFY(26) 三步。
       只需从起始线束触发一次,机器人自动执行后续线束(常见陷阱: 逐条 start-job 会重复执行)。
+      页面提供 stop-job 停止按钮,用于人工中止当前 job;不需要 recipe_id/wire_id。
       ⚠️ start_wire_id 必须使用 query_wire_list 查到的实际 wire_id,不是序号!
     preconditions: [TC-11]
     dag:
@@ -701,6 +700,15 @@ test_cases:
             - cmd: "{ehmi} status"
           on_failure: retry(1)
           report: "| 12.2 | start-job recipe={recipe_id} wire={start_wire_id} (三步) | {status} | is_accepted={result} | {time} |"
+        - id: stop_job
+          type: script
+          env: "{env}"
+          command: "{ehmi} stop-job"
+          depends_on: [start_job]
+          verify:
+            - cmd: "{ehmi} status"
+          on_failure: manual
+          report: "| 12.3 | stop-job 停止当前作业 | {status} | {result} | {time} |"
         - id: verify_job_board
           type: ssh
           command: "grep -rhE 'load verify|is_cruise_load_over|Trajectory replay' {board_log}/ | tail -5"
@@ -709,7 +717,7 @@ test_cases:
             - grep: "is_cruise_load_over SUCCESS"
               path: "{board_log}"
           on_failure: manual
-          report: "| 12.3 | 板载确认 job 执行 (load verify/SUCCESS/replay) | {status} | {result} | {time} |"
+          report: "| 12.4 | 板载确认 job 执行 (load verify/SUCCESS/replay) | {status} | {result} | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-13
@@ -724,19 +732,19 @@ test_cases:
           env: "{env}"
           command: "{ehmi} safe-pose {recipe_id} 0"
           depends_on: []
-          verify:
-            - cmd: "{ehmi} status"
           on_failure: retry(2)
-          report: "| 13.1 | safe-pose index=0 初始准备姿态 | {status} | is_accepted={result} | {time} |"
+          report: "| 13.1 | safe-pose index=0 初始准备姿态 | {status} | 受理并检查 aw_info 规划错误: {result} | {time} |"
         - id: verify_pose_board
           type: ssh
-          command: "grep -rhE 'JOINT_MOVE|joint_values' {board_log}/ | tail -1"
+          command: "find {board_log}/double_orin -type f -mmin -2 -name '*.log*' -print0 2>/dev/null | xargs -0 grep -haE 'mode = 110|joint_values|Trajectory planning goal was aborted|INVALID_START_STATE|WORLD_COLLISION|Failed to send robot arm trajectory plan goal' 2>/dev/null | tail -20"
           depends_on: [safe_pose_init]
           verify:
-            - grep: "mode = 110"
-              path: "{board_log}"
+            - cmd: "find {board_log}/double_orin -type f -mmin -2 -name '*.log*' -print0 2>/dev/null | xargs -0 grep -haE 'mode = 110' 2>/dev/null | wc -l"
+              min_count: 1
+            - cmd: "find {board_log}/double_orin -type f -mmin -2 -name '*.log*' -print0 2>/dev/null | xargs -0 grep -haE 'Trajectory planning goal was aborted|INVALID_START_STATE|WORLD_COLLISION|Failed to send robot arm trajectory plan goal' 2>/dev/null | wc -l"
+              expect: "0"
           on_failure: manual
-          report: "| 13.2 | 板载确认移动到初始准备姿态 | {status} | {result} | {time} |"
+          report: "| 13.2 | 板载确认准备姿态无规划失败 | {status} | {result} | {time} |"
 
   # ---------------------------------------------------------------------------
   - id: TC-14

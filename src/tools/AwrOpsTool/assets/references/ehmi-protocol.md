@@ -279,7 +279,7 @@ SSH_ASKPASS=<返回nvidia的脚本> SSH_ASKPASS_REQUIRE=force DISPLAY=dummy:0 \
 |------|-----------|---------|
 | 绑定机器人 | `grep -rhE "ADD TO WORKSPACE\|robot_bind_service_callback" /apollo/data/log/` | `mode=1→ADD TO WORKSPACE, workspace_id:N` = 真绑定;`mode=2→EXIT` = 解绑 |
 | 绑定地图 | `grep -rhE "OnBindRequest\|operation_map published\|ReloadMap" /apollo/data/log/ \| grep board188` | `OnBindRequest request_id=<客户端返回的同一个>` = 收到;`/operation_map published` = 生效;`ReloadMap` = 下游定位模块已重载 |
-| 锁精定位 | `grep -rhE "mode = 15\|execute_task mode = 15" /apollo/data/log/` | `scenario=2, mode=15, recipe_id, wire_id` + `execute_task` = 真执行(对应"坐标固定不跳") |
+| 锁精定位 | `grep -rhE "mode = 15\|execute_task mode = 15\|Executing command: 15\|execute false\|error code: 5009\|SLAM结果异常" /apollo/data/log/` | `is_accepted=1` 只是受理; 必须看到 `mode=15` 进入执行,且后续无 `execute false`/`5009`/SLAM/reloc 错误 |
 把客户端返回的 `request_id` / `recipe_id` / `wire_id` 和板子日志里的值 + 时间戳对上,就是铁证。
 
 ### 地图绑定 provision 判定(为什么 board188 秒成、board142 要选板型)
@@ -302,7 +302,17 @@ ls /mnt/gaea/map/     # 有 board188/ → 秒成; 没 board142/ → 要 provisio
 
 ### 锁精定位前置(实测通过)
 需机器人已绑定(workspace=DEVICE_ID)+ 维护页选好 recipe(**已完成态**)+ wire。
-`lock <recipe_id> <wire_id>` → 服务端 `scenario=2 mode=15` execute_task,is_accepted=1。空白新 recipe(status=0)不能直接锁,要先人工打点。
+`lock <recipe_id> <wire_id>` → 服务端 `scenario=2 mode=15`。空白新 recipe(status=0)不能直接锁,要先人工打点。
+
+**注意**: `is_accepted=1` 不等于锁精定位成功。实测场景里 service 受理后板端仍可能立刻报:
+
+```text
+SLAM结果异常，检查SLAM系统。T_world_base z:0, y:0, x:0
+report error code: 5009 ... 检查topic中reloc相关，检查是否绑定地图。aruco_pose_error: null
+execute false
+```
+
+遇到这种情况要判 FAIL,先修 reloc/SLAM/地图绑定/aruco_pose,不能把 HMI ack 当成功。
 
 ## 姿态 / 安全恢复(撞机后回安全位)
 

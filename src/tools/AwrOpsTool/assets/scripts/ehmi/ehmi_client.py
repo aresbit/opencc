@@ -32,9 +32,12 @@ ehmi_hmi_client.py — AWR HMI 远程控制客户端
 """
 
 import asyncio
+import ast
+import re
 import websockets
 import sys
 import json
+import os
 import time
 import struct
 import uuid
@@ -349,6 +352,267 @@ def parse_response(data):
             break
         result[fn] = v
     return result
+
+
+def parse_response_multi(data):
+    """Parse protobuf into {field_num: value|[values]}, preserving repeats."""
+    result = {}
+    p = 0
+    while p < len(data):
+        tag, p = read_varint(data, p)
+        fn, wt = tag >> 3, tag & 7
+        if wt == 0:
+            v, p = read_varint(data, p)
+        elif wt == 2:
+            length, p = read_varint(data, p)
+            v = data[p:p + length]
+            p += length
+            try:
+                v = v.decode("utf-8")
+            except Exception:
+                pass
+        elif wt == 1:
+            v = data[p:p + 8]
+            p += 8
+        elif wt == 5:
+            v = data[p:p + 4]
+            p += 4
+        else:
+            break
+        if fn in result:
+            if not isinstance(result[fn], list):
+                result[fn] = [result[fn]]
+            result[fn].append(v)
+        else:
+            result[fn] = v
+    return result
+
+
+def _list_field(value):
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def encode_kit_refine_request(action, recipe_id=None, device_id=None):
+    """Encode KitRefineRequest. action: 1 START, 2 UPDATE, 3 CANCEL."""
+    r = bytearray()
+    r.extend(varint((1 << 3) | 0)); r.extend(varint(int(action)))
+    if recipe_id is not None:
+        r.extend(varint((2 << 3) | 0)); r.extend(varint(int(recipe_id)))
+    if device_id is not None:
+        r.extend(varint((3 << 3) | 0)); r.extend(varint(int(device_id)))
+    return bytes(r)
+
+
+def decode_kit_refine_progress(payload):
+    f = parse_response_multi(payload)
+    finished = [str(x) for x in _list_field(f.get(5)) if str(x)]
+    total = [str(x) for x in _list_field(f.get(6)) if str(x)]
+    return {
+        "task_id": f.get(1),
+        "stage": f.get(2),
+        "current": f.get(3),
+        "total": f.get(4),
+        "finished_kits": finished,
+        "total_kits": total,
+        "recipe_file_path": f.get(7),
+        "error_msg": f.get(8),
+    }
+
+
+def decode_kit_refine_result(payload):
+    f = parse_response_multi(payload)
+    return {
+        "task_id": f.get(1),
+        "ok": bool(f.get(2)),
+        "recipe_file_path": f.get(3),
+        "error_msg": f.get(4),
+    }
+
+
+def decode_kit_refine_response(payload):
+    f = parse_response_multi(payload)
+    return {"result": bool(f.get(1)), "msg": f.get(2)}
+
+
+def parse_unfinished_kits(text):
+    """Extract unfinished kit ids from HMI-style error text."""
+    if not text:
+        return None
+    m = re.search(r"unfinished kits:\s*(\[[^\]]*\])", str(text))
+    if not m:
+        return None
+    try:
+        values = ast.literal_eval(m.group(1))
+    except Exception:
+        return None
+    return [str(v) for v in values if str(v)]
+
+
+MOTION_ERROR_MARKERS = (
+    "Trajectory planning goal was aborted",
+    "INVALID_START_STATE",
+    "WORLD_COLLISION",
+    "Start state in collision",
+    "Failed to send robot arm trajectory plan goal",
+)
+
+ACTION_ERROR_MARKERS = (
+    "execute false",
+    "report error code:",
+    "SLAM结果异常",
+    "Received ArUco reloc status is not successful",
+)
+
+
+def snapshot_board_logs(log_root="/apollo/data/log"):
+    """Capture log file sizes before a command so later checks read only new lines."""
+    if not os.path.isdir(log_root):
+        return {}
+    checkpoint = {}
+    for root, _dirs, files in os.walk(log_root):
+        for name in files:
+            if ".log" not in name:
+                continue
+            path = os.path.join(root, name)
+            try:
+                checkpoint[path] = os.path.getsize(path)
+            except OSError:
+                continue
+    return checkpoint
+
+
+def scan_board_motion_error(checkpoint, log_root="/apollo/data/log", max_bytes=524288):
+    """Find a motion-planning failure appended after checkpoint."""
+    if not os.path.isdir(log_root):
+        return None
+    paths = []
+    for root, _dirs, files in os.walk(log_root):
+        for name in files:
+            if ".log" in name:
+                paths.append(os.path.join(root, name))
+    for path in sorted(paths, key=lambda p: os.path.getmtime(p), reverse=True)[:80]:
+        try:
+            size = os.path.getsize(path)
+            start = int(checkpoint.get(path, 0))
+            if size <= start:
+                continue
+            if size - start > max_bytes:
+                start = size - max_bytes
+            with open(path, "rb") as f:
+                f.seek(max(0, start), os.SEEK_SET)
+                text = f.read().decode("utf-8", "ignore")
+        except OSError:
+            continue
+        for line in reversed(text.splitlines()):
+            if not is_motion_error_line(line):
+                continue
+            return line.strip()
+    return None
+
+
+def is_motion_error_line(line):
+    """True only for motion planning failures, not successful PrePlanCheck INFO."""
+    if not line:
+        return False
+    if "PrePlanCheck" in line and " OK " in f" {line} ":
+        return False
+    return any(marker in line for marker in MOTION_ERROR_MARKERS)
+
+
+def trajectory_joint_files(wire_id=None, wire_name=None, traj_root="/apollo/data/trajectories"):
+    """Return trajectory *_joint.npz files for this wire.
+
+    AWR names trajectory files with the connector/wire display name (for example
+    线束12), while the control command uses the database wire_id. Match both so
+    the CLI can give the operator a deterministic success/failure signal.
+    """
+    if not os.path.isdir(traj_root):
+        return []
+    needles = []
+    if wire_name:
+        needles.append(str(wire_name))
+    if wire_id is not None:
+        needles.append(str(wire_id))
+    matches = []
+    try:
+        names = os.listdir(traj_root)
+    except OSError:
+        return []
+    for name in names:
+        if not name.endswith("_joint.npz"):
+            continue
+        if needles and not any(n and n in name for n in needles):
+            continue
+        matches.append(os.path.join(traj_root, name))
+    return sorted(matches)
+
+
+def _board_log_entries_since(checkpoint, log_root="/apollo/data/log", max_bytes=1048576):
+    """Read new board log lines after checkpoint, ordered by their log timestamp."""
+    if not os.path.isdir(log_root):
+        return []
+    paths = []
+    for root, _dirs, files in os.walk(log_root):
+        for name in files:
+            if ".log" in name:
+                paths.append(os.path.join(root, name))
+    entries = []
+    ts_re = re.compile(r"^[IWEF](\d{8}\s+\d{2}:\d{2}:\d{2}\.\d+)")
+    for path in sorted(paths, key=lambda p: os.path.getmtime(p), reverse=True)[:80]:
+        try:
+            size = os.path.getsize(path)
+            start = int(checkpoint.get(path, 0))
+            if size <= start:
+                continue
+            if size - start > max_bytes:
+                start = size - max_bytes
+            with open(path, "rb") as f:
+                f.seek(max(0, start), os.SEEK_SET)
+                text = f.read().decode("utf-8", "ignore")
+        except OSError:
+            continue
+        for idx, line in enumerate(text.splitlines()):
+            m = ts_re.match(line)
+            key = m.group(1) if m else f"{os.path.getmtime(path):.6f}:{idx:06d}"
+            entries.append((key, path, line.strip()))
+    entries.sort(key=lambda item: item[0])
+    return entries
+
+
+def scan_board_action_result(checkpoint, mode, recipe_id=None, wire_id=None,
+                             log_root="/apollo/data/log"):
+    """Return board action result for a just-dispatched robot action.
+
+    is_accepted only means aw_task_manager_service accepted the request. The
+    real robot can still reject the action later (for example lock mode=15 can
+    fail on SLAM/reloc before the arm moves), so ST must watch the board logs.
+    """
+    active = False
+    saw_execute = None
+    completed = None
+    mode_s = str(mode)
+    recipe_s = str(recipe_id) if recipe_id is not None else ""
+    wire_s = str(wire_id) if wire_id is not None else ""
+    for _key, _path, line in _board_log_entries_since(checkpoint, log_root=log_root):
+        if f"mode = {mode_s}" in line or f"Command mode:{mode_s}" in line or f"mode: {mode_s}" in line:
+            if recipe_s and f"recipe_id = {recipe_s}" not in line and f"recipe_id={recipe_s}" not in line:
+                if "recipe_id" in line:
+                    continue
+            if wire_s and f"wire_id = {wire_s}" not in line and f"wire_id={wire_s}" not in line and f"wire_id: {wire_s}" not in line:
+                if "wire_id" in line:
+                    continue
+            active = True
+        if active and "execute_task" in line and f"mode = {mode_s}" in line:
+            saw_execute = line
+        if active and any(marker in line for marker in ACTION_ERROR_MARKERS):
+            return {"success": False, "error": line, "execute": saw_execute}
+        if active and f"Request execution completed" in line and f"mode: {mode_s}" in line:
+            completed = line
+    if saw_execute and completed:
+        return {"success": True, "execute": saw_execute, "completed": completed}
+    return None
 
 
 # ============================================================
@@ -732,10 +996,11 @@ class HmiController:
             serial = self._s(r.get(3))
             if serial is None:
                 continue
+            agent_status = r.get(11)
             seen[serial] = {
-                "agent_status": r.get(11),   # 1=online-idle, 2=online-in-workspace
+                "agent_status": agent_status,   # 1=online-idle, 2=online-in-workspace
                 "agent_type": r.get(12),     # 0=plugging/理线, 1=cruising
-                "is_bound": r.get(7, 0) == 1,
+                "is_bound": r.get(7, 0) == 1 or agent_status == 2,
             }
         return seen
 
@@ -956,12 +1221,18 @@ class HmiController:
         if not data:
             return {"error": "no data"}
         resp = parse_response(data)
+        agent_status = resp.get(11)
         return {
             "serial": self._s(resp.get(3, "?")),
             "state": resp.get(2, "?"),
-            "agent_status": resp.get(11),
-            "in_workspace": resp.get(11) == 2,
-            "is_bound": resp.get(7, 0) == 1,
+            "agent_status": agent_status,
+            "in_workspace": agent_status == 2,
+            "is_bound": resp.get(7, 0) == 1 or agent_status == 2,
+            # board_id (field 13) = the board/workspace the robot is bound to,
+            # i.e. the device_id for backend API calls. recipe_id (field 5) =
+            # the robot's active recipe.
+            "board_id": resp.get(13, 0),
+            "recipe_id": resp.get(5, 0),
         }
 
     async def rebind_robot(self, serial="72", workspace_id=72,
@@ -1111,6 +1382,69 @@ class HmiController:
         return await self.robot_action(mode, scenario=SCENARIO["MAINTAIN"], serial=serial,
                                        workspace_id=workspace_id, wire_id=wire_id,
                                        **_nz(recipe_id=recipe_id))
+
+    def wire_list(self, recipe_id):
+        if not recipe_id:
+            return []
+        data = self._rest("GET", "/wireInfo/getList", params={"recipe_id": recipe_id, "page_size": 0}, timeout=10)
+        if isinstance(data, dict):
+            for key in ("items", "data", "list", "records"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return value
+            nested = data.get("data")
+            if isinstance(nested, dict):
+                for key in ("items", "list", "records"):
+                    value = nested.get(key)
+                    if isinstance(value, list):
+                        return value
+        return data if isinstance(data, list) else []
+
+    def wire_name_for_id(self, recipe_id, wire_id):
+        for item in self.wire_list(recipe_id):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("id")) != str(wire_id):
+                continue
+            return item.get("wire_name") or item.get("name") or item.get("connector_name") or str(wire_id)
+        return str(wire_id)
+
+    async def wait_single_trajectory_result(self, checkpoint, wire_id, recipe_id=None, timeout=240.0):
+        """Wait for one wire's trajectory files or a fresh board planning error."""
+        wire_name = self.wire_name_for_id(recipe_id, wire_id) if recipe_id else str(wire_id)
+        deadline = time.time() + max(1.0, float(timeout))
+        last_count = -1
+        last_paths = []
+        while time.time() < deadline:
+            err = scan_board_motion_error(checkpoint)
+            if err:
+                return {
+                    "success": False,
+                    "wire_name": wire_name,
+                    "count": len(last_paths),
+                    "error": err,
+                }
+            paths = trajectory_joint_files(wire_id=wire_id, wire_name=wire_name)
+            if len(paths) != last_count:
+                print(f"  traj_files={len(paths)}/3 wire_name={wire_name}", flush=True)
+                for p in paths[:3]:
+                    print(f"    {os.path.basename(p)}", flush=True)
+                last_count = len(paths)
+                last_paths = paths
+            if len(paths) >= 3:
+                return {
+                    "success": True,
+                    "wire_name": wire_name,
+                    "count": len(paths),
+                    "paths": paths,
+                }
+            await asyncio.sleep(2.0)
+        return {
+            "success": False,
+            "wire_name": wire_name,
+            "count": last_count,
+            "error": f"timeout waiting trajectory files for wire_id={wire_id} wire_name={wire_name}",
+        }
 
     # ---- 姿态 / 安全恢复 (撞机后回安全位) ----
     # 源: maintainPage.vue(移动到操作位) / RobotControlPanel.vue(一键垂直) /
@@ -1468,6 +1802,24 @@ class HmiController:
             return None
         return {"raw": r, "error_msg": self._s(r.get(3)) or self._s(r.get(2))}
 
+    async def get_recent_motion_error(self, timeout=2.0):
+        """/aw_info post-action check for planning failures hidden behind is_accepted=1."""
+        info = await self.get_info(timeout=timeout)
+        msg = (info or {}).get("error_msg") or ""
+        if is_motion_error_line(msg):
+            return msg
+        return None
+
+    async def wait_board_motion_error(self, checkpoint, timeout=4.0):
+        """Poll local board logs for post-accept planning failures."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            line = scan_board_motion_error(checkpoint)
+            if line:
+                return line
+            await asyncio.sleep(0.4)
+        return None
+
     async def get_kit_refine_result(self, timeout=20.0):
         """/kit_refine_result — 精定位结果。"""
         return await self.sub_raw("/kit_refine_result", timeout=timeout)
@@ -1475,6 +1827,172 @@ class HmiController:
     async def get_kit_refine_progress(self, timeout=20.0):
         """/kit_refine_progress — 精定位进度。"""
         return await self.sub_raw("/kit_refine_progress", timeout=timeout)
+
+    async def run_kit_refine(self, recipe_id=None, device_id=None, timeout=3600.0):
+        """Run manual dot/kit refine like HMI.
+
+        HMI flow (unmanualDotDialog.vue):
+          subscribe progress/result, publish START; when result.ok=true,
+          publish UPDATE(recipe_id, device_id); wait /kit_refine_response.msg.
+        The operator still performs the physical arm dragging while this command
+        stays subscribed, so we do not miss the terminal topic frames.
+        """
+        topics = ("/kit_refine_progress", "/kit_refine_result", "/kit_refine_response")
+        for t in topics:
+            await self.ws.send(encode_json_wrapper(type_="subscribe", topic=t))
+        await asyncio.sleep(0.2)
+
+        await self.ws.send(encode_json_wrapper(
+            type_="publish",
+            topic="/kit_refine_request",
+            msg=encode_kit_refine_request(1),
+        ))
+
+        last_progress = None
+        final_result = None
+        update_response = None
+        update_sent = False
+        finished_seen = set()
+        total_seen = []
+        total_known_for_update = False
+        events = []
+        deadline = time.time() + timeout
+
+        async def send_update(reason):
+            nonlocal update_sent
+            if update_sent:
+                return
+            rid = recipe_id
+            did = device_id if device_id is not None else self.device_id
+            await self.ws.send(encode_json_wrapper(
+                type_="publish",
+                topic="/kit_refine_request",
+                msg=encode_kit_refine_request(2, recipe_id=rid, device_id=did),
+            ))
+            update_sent = True
+            print(f"  update reason={reason} recipe_id={rid} device_id={did}", flush=True)
+
+        async def maybe_update_from_progress(reason):
+            if update_sent or not total_seen:
+                return
+            if not total_known_for_update:
+                return
+            if len(finished_seen) < len(total_seen):
+                return
+            await send_update(reason)
+
+        while time.time() < deadline:
+            try:
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=2.0)
+            except asyncio.TimeoutError:
+                continue
+            msg = decode_json_wrapper(raw)
+            topic = self._s(msg.get("topic"))
+            payload = _as_bytes(msg.get("msg"))
+            if not payload or topic not in topics:
+                continue
+
+            if topic == "/kit_refine_progress":
+                last_progress = decode_kit_refine_progress(payload)
+                reported_total_kits = last_progress.get("total_kits") or []
+                reported_total_count = int(last_progress.get("total") or 0)
+                if reported_total_kits:
+                    total_known_for_update = True
+                for kit in reported_total_kits:
+                    if kit not in total_seen:
+                        total_seen.append(kit)
+                for kit in last_progress.get("finished_kits") or []:
+                    finished_seen.add(kit)
+                    if kit not in total_seen:
+                        total_seen.append(kit)
+                finished_kits = [kit for kit in total_seen if kit in finished_seen]
+                if reported_total_count and len(finished_seen) >= reported_total_count:
+                    total_known_for_update = True
+                total_count = len(total_seen) or reported_total_count
+                last_progress["finished_kits"] = finished_kits
+                last_progress["total_kits"] = list(total_seen)
+                line = (f"KIT_PROGRESS current={last_progress.get('current')} count={len(finished_kits)}/{total_count} "
+                        f"total={','.join(total_seen)} finished={','.join(finished_kits)}")
+                if last_progress.get("error_msg"):
+                    line += f" error={last_progress.get('error_msg')}"
+                if not events or events[-1] != line:
+                    events.append(line)
+                    print("  " + line, flush=True)
+                await maybe_update_from_progress("progress_complete")
+
+            elif topic == "/kit_refine_result":
+                final_result = decode_kit_refine_result(payload)
+                print(f"  result ok={final_result.get('ok')} "
+                      f"recipe_file={final_result.get('recipe_file_path')} "
+                      f"error={final_result.get('error_msg')}", flush=True)
+                if not final_result.get("ok"):
+                    # HMI ignores non-terminal failed result frames and keeps
+                    # the dialog open so more kits can be scanned. Do the same:
+                    # surface the unfinished list but do not end the command.
+                    unfinished_list = parse_unfinished_kits(final_result.get("error_msg"))
+                    if unfinished_list is not None:
+                        # The frame the robot sends right after START carries the
+                        # FULL kit list (as "unfinished"), and it arrives before
+                        # any progress frame — so seed the checklist from it.
+                        # Requiring total_seen here meant the operator saw an
+                        # empty list until the first kit was already scanned.
+                        for kit in unfinished_list:
+                            if kit not in total_seen:
+                                total_seen.append(kit)
+                        total_known_for_update = True
+                        # Green status comes ONLY from /kit_refine_progress's
+                        # finished_kits, exactly as the HMI does. Deriving it
+                        # from "everything not in the unfinished list" marked a
+                        # kit done as soon as a frame stopped mentioning it —
+                        # 106 turned green before the operator ever moved to it.
+                        # An EMPTY unfinished list is the one safe signal: it
+                        # means nothing is left, so the scan really is complete.
+                        if not unfinished_list:
+                            finished_seen.update(total_seen)
+                        finished_kits = [kit for kit in total_seen if kit in finished_seen]
+                        if last_progress is None:
+                            last_progress = {}
+                        last_progress["finished_kits"] = finished_kits
+                        last_progress["total_kits"] = list(total_seen)
+                        line = (f"KIT_PROGRESS current=None count={len(finished_kits)}/{len(total_seen)} "
+                                f"total={','.join(total_seen)} finished={','.join(finished_kits)}")
+                        if not events or events[-1] != line:
+                            events.append(line)
+                            print("  " + line, flush=True)
+                        await maybe_update_from_progress("result_unfinished_empty")
+                    continue
+                await send_update("result_ok")
+
+            elif topic == "/kit_refine_response":
+                # Only the reply to OUR update counts. The robot also answers the
+                # START request on this topic, and taking that as the update
+                # confirmation ended the command about a second after it began —
+                # reporting success before the operator had scanned anything. The
+                # HMI dodges this by subscribing to /kit_refine_response only
+                # after it publishes UPDATE (unmanualDotDialog.vue); we are
+                # subscribed from the start, so gate on update_sent instead.
+                if not update_sent:
+                    continue
+                update_response = decode_kit_refine_response(payload)
+                print(f"  response result={update_response.get('result')} "
+                      f"msg={update_response.get('msg')}", flush=True)
+                if update_response.get("msg") or update_response.get("result"):
+                    return {
+                        "success": True,
+                        "progress": last_progress,
+                        "result": final_result,
+                        "response": update_response,
+                        "events": events,
+                    }
+
+        return {
+            "success": False,
+            "progress": last_progress,
+            "result": final_result,
+            "response": update_response,
+            "events": events,
+            "error": "timeout waiting kit refine result/response",
+        }
 
     async def get_issue_report(self, timeout=8.0):
         """/issue_report — 问题上报。"""
@@ -1508,6 +2026,19 @@ class HmiController:
     # Recipe
     def recipe_get(self, recipe_id):
         return self._rest("GET", "/recipe/getOneById", params={"id": recipe_id})
+
+    def golden_model_list(self, recipe_id):
+        """Connector golden models of a recipe (HMI GoldenModel.vue data source).
+
+        Same endpoint the HMI step view loads, so this reflects exactly what an
+        operator sees after 黄金模板扫码 / 点位精修 — unlike grepping the robot
+        log for the word "kit", which matches unrelated lines.
+        """
+        return self._rest(
+            "GET",
+            "/recipeConnectorGoldenModel/getConnectorGoldenModelByRecipeId",
+            params={"recipe_id": recipe_id},
+        )
 
     def recipe_update(self, recipe_body):
         return self._rest("PUT", "/recipe/updateById", body=recipe_body)
@@ -1686,7 +2217,7 @@ async def main():
     NO_WS = {
         "recipe-list", "recipe-create", "recipe-get", "recipe-status",
         "recipe-copy", "recipe-delete", "opmap-list", "navmap-list",
-        "deviceconf", "safepos-list",
+        "deviceconf", "safepos-list", "golden-check",
         "clear-fault", "read-fault-log", "clear-fault-log",
     }
     ctrl = HmiController(robot_ip)
@@ -1714,9 +2245,32 @@ async def main():
                   "manual-refine": ctrl.manual_refinement}[cmd]
             if recipe_id is None and cmd == "lock":
                 print("  ⚠ 锁精定位需先选 recipe+wire: lock <recipe_id> <wire_id> [serial]")
+            log_checkpoint = snapshot_board_logs()
             result = await fn(serial=serial, recipe_id=recipe_id, wire_id=wire_id)
             print(f"  recipe_id={recipe_id} wire_id={wire_id} workspace={ctrl.device_id}")
             print(f"  is_accepted={result.get('is_accepted')}  success={result.get('success')}")
+            if result.get("is_accepted") != 1:
+                sys.exit(2)
+            if cmd == "lock":
+                deadline = time.time() + float(os.environ.get("AWR_LOCK_WAIT_SEC", "30"))
+                action_result = None
+                while time.time() < deadline:
+                    action_result = scan_board_action_result(
+                        log_checkpoint, ACTION["LOCK_PRECISION_POSITIONING"],
+                        recipe_id=recipe_id, wire_id=wire_id)
+                    if action_result:
+                        break
+                    await asyncio.sleep(1.0)
+                if not action_result:
+                    print("  lock_error=no board execute_task/result log for mode=15 after accepted")
+                    sys.exit(2)
+                if action_result.get("success"):
+                    print(f"  lock_board_ok={action_result.get('execute')}")
+                else:
+                    print(f"  lock_board_error={action_result.get('error')}")
+                    if action_result.get("execute"):
+                        print(f"  lock_board_execute={action_result.get('execute')}")
+                    sys.exit(2)
 
         elif cmd == "agents":
             print("=== Bindable Agents (HMI 绑定下拉框) ===")
@@ -1781,6 +2335,8 @@ async def main():
                     print(f"  {name}: is_accepted={acc}")
                 print(f"  Final status: {result['final_status']}")
                 print(f"  Result: {'REBIND SUCCESS' if result['success'] else 'REBIND FAILED'}")
+                if not result["success"]:
+                    sys.exit(2)
 
         elif cmd == "bindmap":
             # bindmap <map_name> [wire=THHB] [agent=auto] [pattern]
@@ -1896,9 +2452,21 @@ async def main():
             wire_id = int(sys.argv[3])
             recipe_id = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4].isdigit() else None
             delete = "--delete" in sys.argv[3:]
+            wait_sec = float(os.environ.get("AWR_TRAJ_WAIT_SEC", "240"))
             print(f"=== single-traj wire_id={wire_id} recipe_id={recipe_id} delete={delete} ===")
+            checkpoint = snapshot_board_logs()
             res = await ctrl.single_trajectory(wire_id, recipe_id=recipe_id, delete=delete)
             print(f"  is_accepted={res['is_accepted']}")
+            if res.get("is_accepted") != 1:
+                sys.exit(2)
+            if not delete:
+                result = await ctrl.wait_single_trajectory_result(
+                    checkpoint, wire_id, recipe_id=recipe_id, timeout=wait_sec)
+                if result.get("success"):
+                    print(f"  trajectory_ok wire_name={result.get('wire_name')} traj_files={result.get('count')}/3")
+                else:
+                    print(f"  trajectory_error wire_name={result.get('wire_name')} traj_files={result.get('count')}/3 error={result.get('error')}")
+                    sys.exit(2)
 
         elif cmd == "launcher-abort":
             print("=== launcher ABORT_PIPELINE ===")
@@ -1916,12 +2484,20 @@ async def main():
             idx = int(sel) if sel.isdigit() else 0
             name = None if sel.isdigit() else sel
             print(f"=== 移动到准备姿态 recipe={recipe_id} target={name or SAFE_POSE_LABELS[idx] if idx < len(SAFE_POSE_LABELS) else idx} arm={arm} (JOINT_MOVE/RECIPE) ===")
+            log_checkpoint = snapshot_board_logs()
             res = await ctrl.move_safe_pose(recipe_id, index=idx, name=name, arm_id=arm)
             if res.get("error"):
                 print(f"  ERROR: {res['error']}")
+                sys.exit(2)
             else:
                 print(f"  pose_name={res.get('pose_name')} joints={res.get('joints')} "
                       f"is_accepted={res.get('is_accepted')}")
+                if res.get("is_accepted") != 1:
+                    sys.exit(2)
+                board_motion_error = await ctrl.wait_board_motion_error(log_checkpoint, timeout=4.0)
+                if board_motion_error:
+                    print(f"  board_motion_error(new_log)={board_motion_error}")
+                    sys.exit(2)
 
         elif cmd == "move-op":
             print("=== 移动到操作位 (MOVE_ALL_FAR/MAINTAIN) ===")
@@ -2002,6 +2578,24 @@ async def main():
             print(f"=== {cmd} ===")
             print("  ", await fn())
 
+        elif cmd == "kit-refine-run":
+            # kit-refine-run [recipe_id] [device_id] [timeout_s]
+            recipe_id = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else None
+            device_id = int(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4].isdigit() else None
+            timeout = float(sys.argv[5]) if len(sys.argv) > 5 else 3600.0
+            print("=== kit-refine-run (HMI manual dot flow) ===")
+            print("  请现场拖动机械臂完成扫描；脚本持续监听 /kit_refine_progress, /kit_refine_result, /kit_refine_response")
+            res = await ctrl.run_kit_refine(recipe_id=recipe_id, device_id=device_id, timeout=timeout)
+            p = res.get("progress") or {}
+            r = res.get("result") or {}
+            q = res.get("response") or {}
+            print(f"  summary success={res.get('success')} "
+                  f"finished={len(p.get('finished_kits') or [])}/{len(p.get('total_kits') or []) or p.get('total') or 0} "
+                  f"ok={r.get('ok')} recipe_file={r.get('recipe_file_path')} "
+                  f"response={q.get('msg') or q.get('result')} error={res.get('error') or r.get('error_msg') or p.get('error_msg')}")
+            if not res.get("success"):
+                sys.exit(2)
+
         # ---- Channel C: power/fault (8766) ----
         elif cmd in ("clear-fault", "read-fault-log", "clear-fault-log"):
             action = cmd.replace("-", "_")
@@ -2013,6 +2607,63 @@ async def main():
                 print(f"  {f.get('type','?')}: {f}")
 
         # ---- Cloud REST ----
+        elif cmd == "golden-check":
+            # golden-check <recipe_id> [--require-refine]
+            # 校验黄金模板 / 点位精修,数据源与 HMI GoldenModel.vue 同一个接口。
+            # 判据(结构化,不是日志字样):
+            #   黄金模板: 每个连接器有 golden_model.id + aruco_id + virticies_locals
+            #   点位精修: hpoints_data 数量 == 连接器 slot_num(孔位全部落点)
+            rid = sys.argv[3] if len(sys.argv) > 3 else None
+            require_refine = "--require-refine" in sys.argv[3:]
+            if not rid or not str(rid).isdigit():
+                print("  用法: golden-check <recipe_id> [--require-refine]")
+                print("  Result: GOLDEN CHECK FAILED — recipe_id 未解析,请先选 recipe")
+                return
+            models = ctrl.golden_model_list(rid) or []
+            if not isinstance(models, list):
+                models = models.get("data", models.get("items", [])) or []
+            print(f"=== golden-check recipe_id={rid} require_refine={require_refine} ===")
+            if not models:
+                print(f"  Result: GOLDEN CHECK FAILED — recipe {rid} 无黄金模板,请先完成扫码绑 kit")
+                return
+            bad = []
+            for m in models:
+                ci = m.get("connector_info") or {}
+                gm = m.get("golden_model") or {}
+                ctype = m.get("connector_type") or {}
+                name = ci.get("name") or gm.get("name") or "?"
+                slot = ctype.get("slot_num")
+                verts = gm.get("virticies_locals") or []
+                hpts = gm.get("hpoints_data") or []
+                kpts = gm.get("kpoints_data") or []
+                ok = bool(gm.get("id")) and bool(gm.get("aruco_id")) and len(verts) > 0
+                why = []
+                if not gm.get("id"):
+                    why.append("无 golden_model")
+                if not gm.get("aruco_id"):
+                    why.append("无 aruco_id")
+                if not verts:
+                    why.append("无 virticies_locals")
+                if require_refine:
+                    # 孔位点必须全部落点,才算精修完成
+                    if slot and len(hpts) != slot:
+                        ok = False
+                        why.append(f"hpoints {len(hpts)}/{slot} 未落全")
+                    elif not hpts:
+                        ok = False
+                        why.append("hpoints 为空")
+                print(f"  GOLDEN connector={name} gm_id={gm.get('id')} aruco={gm.get('aruco_id')} "
+                      f"verts={len(verts)} hpoints={len(hpts)}/{slot} kpoints={len(kpts)} "
+                      f"{'OK' if ok else 'BAD(' + ','.join(why) + ')'}")
+                if not ok:
+                    bad.append(f"{name}:{'/'.join(why)}")
+            print(f"  连接器 {len(models) - len(bad)}/{len(models)} 通过")
+            if bad:
+                print(f"  Result: GOLDEN CHECK FAILED — {'; '.join(bad)}")
+            else:
+                label = "黄金模板+点位精修" if require_refine else "黄金模板"
+                print(f"  Result: GOLDEN CHECK SUCCESS — {label} 全部就绪")
+
         elif cmd == "recipe-get":
             print(ctrl.recipe_get(sys.argv[3]))
         elif cmd == "recipe-status":
