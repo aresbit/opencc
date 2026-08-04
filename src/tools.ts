@@ -15,6 +15,8 @@ import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { AutoresearchTool } from './tools/AutoresearchTool/AutoresearchTool.js'
 import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
+import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
+import { ManuscriptCheckTool } from './tools/ManuscriptCheckTool/ManuscriptCheckTool.js'
 import { WikiTool } from './tools/WikiTool/WikiTool.js'
 import { KimiTool } from './tools/KimiTool/KimiTool.js'
 import { GeminiSubtitleTool } from './tools/GeminiSubtitleTool/GeminiSubtitleTool.js'
@@ -241,6 +243,8 @@ export function getAllBaseTools(): Tools {
     AutoresearchTool,
     MemoryTool,
     Paper2CodeTool,
+    QuantVerifyTool,
+    ManuscriptCheckTool,
     WikiTool,
     KimiTool,
     GeminiSubtitleTool,
