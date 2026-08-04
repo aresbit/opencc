@@ -58,6 +58,7 @@ import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
+import { getAutoTriggerContent } from '../utils/memoryTrigger.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 
@@ -576,6 +577,13 @@ ${CYBER_RISK_INSTRUCTION}`,
     ...(feature('KAIROS') || feature('KAIROS_BRIEF')
       ? [systemPromptSection('brief', () => getBriefSection())]
       : []),
+    // Auto-triggered memory context (REHEARSAL.md / SCRATCHPAD.md / MEMORY.md)
+    // Must be uncached — content changes when the model calls rehearse/auto_rehearse.
+    DANGEROUS_uncachedSystemPromptSection(
+      'auto_memory_trigger',
+      () => getAutoTriggerContent().then(r => r.content || null),
+      'REHEARSAL.md can be updated between turns',
+    ),
   ]
 
   const resolvedDynamicSections =
