@@ -35,7 +35,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build src/entrypoints/cli.tsx --outdir dist --target bun",
+    "build": "bun build src/entrypoints/cli.tsx --outdir dist --target bun --external @firecrawl/anydoc",
     "build:ant": "bun run scripts/build-ant.ts",
     "dev": "bun run src/entrypoints/cli.tsx",
     "prepublishOnly": "bun run build",
@@ -49,6 +49,7 @@
     "docs:dev": "npx mintlify dev"
   },
   "dependencies": {
+    "@firecrawl/anydoc": "^0.1.3",
     "@llamaindex/liteparse": "^2.0.3"
   },
   "devDependencies": {

@@ -27,6 +27,7 @@ import {
 } from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import { isOfficeExtension, readOfficeDocument } from '../../utils/anydoc.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
 import { getErrnoCode, isENOENT } from '../../utils/errors.js'
@@ -74,6 +75,7 @@ import { readFileInRange } from '../../utils/readFileInRange.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
+import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
 import { getDefaultFileReadingLimits } from './limits.js'
 import {
   DESCRIPTION,
@@ -469,11 +471,15 @@ export const FileReadTool = buildTool({
 
     // Binary extension check (string check on extension only, no I/O).
     // PDF, images, and SVG are excluded - this tool renders them natively.
+    // Office documents are excluded too - anydoc converts them to Markdown.
+    // Whether anydoc actually has a binary on this platform is resolved at
+    // call time, so the failure carries a useful message instead of this one.
     const ext = path.extname(fullFilePath).toLowerCase()
     if (
       hasBinaryExtension(fullFilePath) &&
       !isPDFExtension(ext) &&
-      !IMAGE_EXTENSIONS.has(ext.slice(1))
+      !IMAGE_EXTENSIONS.has(ext.slice(1)) &&
+      !isOfficeExtension(ext)
     ) {
       return {
         result: false,
@@ -1073,6 +1079,60 @@ async function callInner(
     }
 
     return { data: pdfData }
+  }
+
+  // --- Office document (Word / PowerPoint / Excel / ODF / RTF / EPUB) ---
+  // anydoc converts the container to Markdown. Unlike a text read this does
+  // NOT populate readFileState: the model must not be able to follow the read
+  // with an Edit, which would replace the binary container with Markdown.
+  if (isOfficeExtension(ext)) {
+    const officeResult = await readOfficeDocument(resolvedFilePath, maxSizeBytes)
+    if (!officeResult.success) {
+      throw new Error(officeResult.error.message)
+    }
+    const { markdown, originalSize } = officeResult.data
+
+    await validateContentTokens(markdown, ext, maxTokens)
+
+    // Apply offset/limit over the converted Markdown so large documents stay
+    // paginatable the same way text files are.
+    const allLines = markdown.split('\n')
+    const totalLines = allLines.length
+    const startIndex = offset === 0 ? 0 : offset - 1
+    const selected = allLines.slice(
+      startIndex,
+      limit === undefined ? undefined : startIndex + limit,
+    )
+    const content = selected.join('\n')
+
+    logFileOperation({
+      operation: 'read',
+      tool: 'FileReadTool',
+      filePath: fullFilePath,
+      content,
+    })
+
+    return {
+      data: {
+        type: 'text' as const,
+        file: {
+          filePath: file_path,
+          content,
+          numLines: selected.length,
+          startLine: offset === 0 ? 1 : offset,
+          totalLines,
+        },
+      },
+      newMessages: [
+        createUserMessage({
+          content:
+            `Note: ${file_path} (${formatFileSize(originalSize)}) is a binary ${ext} document ` +
+            'converted to Markdown for reading. The line numbers belong to the conversion, not the ' +
+            `file itself, and ${FILE_EDIT_TOOL_NAME} cannot modify it.`,
+          isMeta: true,
+        }),
+      ],
+    }
   }
 
   // --- Text file (single async read via readFileInRange) ---
