@@ -36,6 +36,7 @@ import { QueryGuard } from '../utils/QueryGuard.js';
 import { isEnvTruthy } from '../utils/envUtils.js';
 import { formatTokens, truncateToWidth } from '../utils/format.js';
 import { consumeEarlyInput } from '../utils/earlyInput.js';
+import { relieveMemoryPressure } from '../utils/memoryPressure.js';
 import { setMemberActive } from '../utils/swarm/teamHelpers.js';
 import { isSwarmWorker, generateSandboxRequestId, sendSandboxPermissionRequestViaMailbox, sendSandboxPermissionResponseViaMailbox } from '../utils/swarm/permissionSync.js';
 import { registerSandboxPermissionCallback } from '../hooks/useSwarmPermissionPoller.js';
@@ -2808,7 +2809,18 @@ export function REPL({
     let goalAutoContCount = 0;
     await markTurnStart(0).catch(() => {});
     do {
-      for await (const event of query({
+      // Relieve memory pressure before starting the query to prevent the
+      // 2GB+ RSS peaks that cause aggressive GC and generator use-after-free
+      // segfaults. Forces GC and clears transient state when RSS is high.
+      await relieveMemoryPressure();
+      // Hold the generator reference in a variable that outlives the for-await
+      // loop. Bun/JavaScriptCore can GC the generator object while its cleanup
+      // microtasks (finally blocks, async resource disposal) are still pending
+      // in the microtask queue. This causes a use-after-free segfault at
+      // address 0x00000000 in llint_call_javascript when the microtask tries
+      // to resume the freed JSGenerator. Keeping a strong reference until after
+      // a microtask drain prevents the premature GC.
+      const queryGen = query({
         messages: messagesIncludingNewMessages,
         systemPrompt,
         userContext,
@@ -2816,9 +2828,21 @@ export function REPL({
         canUseTool,
         toolUseContext,
         querySource: getQuerySourceForREPL()
-      })) {
-        goalTracker.processStreamEvent(event);
-        onQueryEvent(event);
+      });
+      try {
+        for await (const event of queryGen) {
+          goalTracker.processStreamEvent(event);
+          onQueryEvent(event);
+        }
+      } finally {
+        // Ensure the generator is closed (not just abandoned). If the loop
+        // exited via exception or abort, .return() runs the generator's
+        // finally blocks which may schedule cleanup microtasks.
+        try { await queryGen.return(undefined as never); } catch { /* already closed */ }
+        // Drain pending microtasks so generator cleanup completes before the
+        // reference is released. Without this, JSC can GC the generator while
+        // its finally-block microtasks are still queued → segfault.
+        await new Promise<void>(r => queueMicrotask(r));
       }
 
       await markTurnEnd(goalTracker.getTotalTokens()).catch(() => {});

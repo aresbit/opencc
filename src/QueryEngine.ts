@@ -713,7 +713,17 @@ export class QueryEngine {
     // Goal accounting: mark turn start with current token baseline
     await markTurnStart(this.totalUsage.input_tokens + this.totalUsage.output_tokens).catch(() => {})
 
-    for await (const message of query({
+    // Relieve memory pressure before starting the query loop to prevent
+    // the 2GB+ RSS peaks that cause aggressive GC and generator
+    // use-after-free segfaults.
+    try {
+      const { relieveMemoryPressure } = await import('./utils/memoryPressure.js')
+      await relieveMemoryPressure()
+    } catch { /* non-fatal */ }
+
+    // Hold the generator reference to prevent GC while cleanup microtasks
+    // are pending. Same fix as REPL.tsx — see comment there for details.
+    const queryGen = query({
       messages,
       systemPrompt,
       userContext,
@@ -724,7 +734,9 @@ export class QueryEngine {
       querySource: 'sdk',
       maxTurns,
       taskBudget,
-    })) {
+    })
+    try {
+    for await (const message of queryGen) {
       // Record assistant, user, and compact boundary messages
       if (
         message.type === 'assistant' ||
@@ -1108,6 +1120,13 @@ export class QueryEngine {
           return
         }
       }
+    }
+    } finally {
+      // Ensure the generator is closed and its cleanup microtasks drain
+      // before the reference is released. Prevents JSC use-after-free
+      // segfault when the generator is GC'd with pending microtasks.
+      try { await queryGen.return(undefined as never); } catch { /* already closed */ }
+      await new Promise<void>(r => queueMicrotask(r));
     }
 
     // Goal accounting: finalize turn and check for auto-continuation

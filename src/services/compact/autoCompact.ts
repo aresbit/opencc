@@ -227,8 +227,18 @@ export async function shouldAutoCompact(
   const threshold = getAutoCompactThreshold(model)
   const effectiveWindow = getEffectiveContextWindowSize(model)
 
+  // Byte-size guard: token estimation can severely underestimate memory usage
+  // for tool results containing large JSON, base64-encoded data, or images
+  // (images are counted as 2000 tokens regardless of actual byte size).
+  // In long sessions with large tool results, the messages array can grow to
+  // hundreds of MB before token-based compaction triggers. This guard
+  // triggers compaction when the estimated byte size exceeds a memory budget,
+  // preventing the 2GB+ RSS peaks that cause aggressive GC and segfaults.
+  const byteSizeEstimate = estimateMessagesByteSize(messages)
+  const MAX_MESSAGES_BYTES = 200 * 1024 * 1024 // 200MB — prevents RSS spikes
+
   logForDebugging(
-    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
+    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''} bytes=${byteSizeEstimate}`,
   )
 
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
@@ -236,7 +246,75 @@ export async function shouldAutoCompact(
     model,
   )
 
-  return isAboveAutoCompactThreshold
+  return isAboveAutoCompactThreshold || byteSizeEstimate >= MAX_MESSAGES_BYTES
+}
+
+/**
+ * Rough byte-size estimate for the messages array in memory.
+ * Used as a safety net alongside token-based compaction to prevent
+ * memory exhaustion when token estimation underestimates actual size.
+ */
+function estimateMessagesByteSize(messages: readonly Message[]): number {
+  let total = 0
+  for (const msg of messages) {
+    if (!msg) continue
+    // Each message object has structural overhead
+    total += 200
+    if (msg.type === 'assistant' || msg.type === 'user') {
+      const content = (msg as { message?: { content?: unknown } }).message?.content
+      if (typeof content === 'string') {
+        total += content.length * 2 // UTF-16 chars are 2 bytes
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (typeof block === 'string') {
+            total += block.length * 2
+          } else if (block && typeof block === 'object') {
+            const b = block as Record<string, unknown>
+            // text blocks: content is the main consumer
+            if (b.type === 'text' && typeof b.text === 'string') {
+              total += b.text.length * 2
+            }
+            // tool_result: content can be large (file reads, command output)
+            if (b.type === 'tool_result') {
+              const tc = b.content
+              if (typeof tc === 'string') {
+                total += tc.length * 2
+              } else if (Array.isArray(tc)) {
+                for (const part of tc) {
+                  if (typeof part === 'string') {
+                    total += part.length * 2
+                  } else if (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') {
+                    total += ((part as { text: string }).text).length * 2
+                  }
+                }
+              }
+            }
+            // tool_use: input JSON can be large (file edits, bash commands)
+            if (b.type === 'tool_use' && b.input != null) {
+              try {
+                total += JSON.stringify(b.input).length * 2
+              } catch {
+                total += 1000 // fallback if circular
+              }
+            }
+            // image/document: base64 data can be MBs
+            if ((b.type === 'image' || b.type === 'document') && typeof b.data === 'string') {
+              total += b.data.length * 2
+            }
+          }
+        }
+      }
+    }
+    // Attachment messages can also carry large payloads
+    if (msg.type === 'attachment' && msg.attachment) {
+      try {
+        total += JSON.stringify(msg.attachment).length * 2
+      } catch {
+        total += 2000
+      }
+    }
+  }
+  return total
 }
 
 export async function autoCompactIfNeeded(

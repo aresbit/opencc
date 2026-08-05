@@ -1423,13 +1423,24 @@ export function registerHookCallbacks(
     STATE.registeredHooks = {}
   }
 
-  // `registerHookCallbacks` may be called multiple times, so we need to merge (not overwrite)
+  // `registerHookCallbacks` may be called multiple times, so we need to merge
+  // (not overwrite). Deduplicate by reference identity to prevent unbounded
+  // growth when plugins are reloaded (loadPluginHooks runs on every
+  // /reload-plugins and previously appended the same matchers each time).
   for (const [event, matchers] of Object.entries(hooks)) {
     const eventKey = event as HookEvent
-    if (!STATE.registeredHooks[eventKey]) {
-      STATE.registeredHooks[eventKey] = []
+    const existing = STATE.registeredHooks[eventKey]
+    if (!existing || existing.length === 0) {
+      STATE.registeredHooks[eventKey] = [...matchers]
+      continue
     }
-    STATE.registeredHooks[eventKey]!.push(...matchers)
+    const existingSet = new Set<RegisteredHookMatcher>(existing)
+    for (const m of matchers) {
+      if (!existingSet.has(m)) {
+        existing.push(m)
+        existingSet.add(m)
+      }
+    }
   }
 }
 
@@ -1507,6 +1518,11 @@ export type InvokedSkillInfo = {
   agentId: string | null
 }
 
+// Maximum number of invoked skills to retain for compaction preservation.
+// Each entry holds full skill content (can be large); bound to prevent
+// unbounded memory growth in long sessions with many skill invocations.
+const MAX_INVOKED_SKILLS = 50
+
 export function addInvokedSkill(
   skillName: string,
   skillPath: string,
@@ -1514,6 +1530,20 @@ export function addInvokedSkill(
   agentId: string | null = null,
 ): void {
   const key = `${agentId ?? ''}:${skillName}`
+  // Evict oldest entries when at capacity (LRU-style by invokedAt timestamp)
+  if (STATE.invokedSkills.size >= MAX_INVOKED_SKILLS && !STATE.invokedSkills.has(key)) {
+    let oldestKey: string | null = null
+    let oldestTime = Infinity
+    for (const [k, v] of STATE.invokedSkills) {
+      if (v.invokedAt < oldestTime) {
+        oldestTime = v.invokedAt
+        oldestKey = k
+      }
+    }
+    if (oldestKey !== null) {
+      STATE.invokedSkills.delete(oldestKey)
+    }
+  }
   STATE.invokedSkills.set(key, {
     skillName,
     skillPath,
@@ -1638,6 +1668,10 @@ export function setIsRemoteMode(value: boolean): void {
 
 // System prompt section accessors
 
+// Maximum entries in the system prompt section cache. Prevents unbounded
+// memory growth in long sessions with many distinct section names.
+const MAX_SYSTEM_PROMPT_SECTION_CACHE = 30
+
 export function getSystemPromptSectionCache(): Map<string, string | null> {
   return STATE.systemPromptSectionCache
 }
@@ -1646,6 +1680,15 @@ export function setSystemPromptSectionCacheEntry(
   name: string,
   value: string | null,
 ): void {
+  // Evict oldest entry when at capacity (Map preserves insertion order in JS,
+  // so the first entry is the oldest — matches LRU semantics for our use case
+  // where sections are re-set when still relevant, moving them to the end)
+  if (STATE.systemPromptSectionCache.size >= MAX_SYSTEM_PROMPT_SECTION_CACHE && !STATE.systemPromptSectionCache.has(name)) {
+    const firstKey = STATE.systemPromptSectionCache.keys().next().value
+    if (firstKey !== undefined) {
+      STATE.systemPromptSectionCache.delete(firstKey)
+    }
+  }
   STATE.systemPromptSectionCache.set(name, value)
 }
 
