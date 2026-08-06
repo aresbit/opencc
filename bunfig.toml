@@ -1,3 +1,11 @@
+[install]
+# Keep installs consistent with bun.lock, which pins every tarball to
+# registry.npmmirror.com. Packages with an empty resolved URL in the lock
+# (e.g. @firecrawl/anydoc, @llamaindex/liteparse) otherwise fall back to
+# registry.npmjs.org, which is an order of magnitude slower on this network
+# and makes `bun install` look hung at the "Resolving..." step.
+registry = "https://registry.npmmirror.com/"
+
 [test]
 root = "."
 timeout = 10000
