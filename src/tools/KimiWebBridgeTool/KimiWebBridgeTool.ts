@@ -1,4 +1,4 @@
-import { existsSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { spawn } from 'child_process'
@@ -6,11 +6,14 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
+import { flattenUnionSchema } from '../MemoryTool/flattenSchema.js'
+import { isFirstPartyAnthropicBaseUrl } from '../../utils/model/providers.js'
+import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import {
   DAEMON_BIN,
+  DAEMON_PORT,
   DAEMON_URL,
   EXTENSION_STORE_URL,
-  HELP_PAGE_ZH,
   INSTALL_SCRIPT_URL,
   KIMI_WEBBRIDGE_TOOL_NAME,
   MAX_RESULT_CHARS,
@@ -18,6 +21,14 @@ import {
 import { DESCRIPTION, getPrompt } from './prompt.js'
 
 // ── Input schemas ─────────────────────────────────────────────────────
+//
+// Deliberately NOT z.strictObject: `session` is required on every browser
+// command but meaningless on status/start/stop, so the model routinely carries
+// it over onto a lifecycle call. Under strictObject that stray key fails the
+// whole call with "Unrecognized key", and zod's discriminated-union error does
+// not name the valid shape, so the model cannot recover. Plain z.object strips
+// the extra key and runs the call the model meant to make. Same reasoning as
+// MemoryTool's schemas.
 
 const sessionField = z
   .string()
@@ -25,7 +36,7 @@ const sessionField = z
     'Session name — one task = one session = one tab group. Pick once per task and reuse on every command.',
   )
 
-const installInput = z.strictObject({
+const installInput = z.object({
   action: z.literal('install'),
   version: z
     .string()
@@ -33,14 +44,14 @@ const installInput = z.strictObject({
     .describe('Pin a specific version (e.g. v1.11.5); default latest'),
 })
 
-const statusInput = z.strictObject({ action: z.literal('status') })
-const startInput = z.strictObject({ action: z.literal('start') })
-const stopInput = z.strictObject({ action: z.literal('stop') })
-const restartInput = z.strictObject({ action: z.literal('restart') })
-const uninstallInput = z.strictObject({ action: z.literal('uninstall') })
-const upgradeInput = z.strictObject({ action: z.literal('upgrade') })
+const statusInput = z.object({ action: z.literal('status') })
+const startInput = z.object({ action: z.literal('start') })
+const stopInput = z.object({ action: z.literal('stop') })
+const restartInput = z.object({ action: z.literal('restart') })
+const uninstallInput = z.object({ action: z.literal('uninstall') })
+const upgradeInput = z.object({ action: z.literal('upgrade') })
 
-const navigateInput = z.strictObject({
+const navigateInput = z.object({
   action: z.literal('navigate'),
   url: z.string().describe('URL to open'),
   newTab: z
@@ -54,7 +65,7 @@ const navigateInput = z.strictObject({
   session: sessionField,
 })
 
-const findTabInput = z.strictObject({
+const findTabInput = z.object({
   action: z.literal('find_tab'),
   url: z.string().describe('Full URL of the tab to re-select'),
   active: z
@@ -64,38 +75,38 @@ const findTabInput = z.strictObject({
   session: sessionField,
 })
 
-const snapshotInput = z.strictObject({
+const snapshotInput = z.object({
   action: z.literal('snapshot'),
   session: sessionField,
 })
 
-const clickInput = z.strictObject({
+const clickInput = z.object({
   action: z.literal('click'),
   selector: z.string().describe('@e ref or CSS selector'),
   session: sessionField,
 })
 
-const fillInput = z.strictObject({
+const fillInput = z.object({
   action: z.literal('fill'),
   selector: z.string().describe('@e ref or CSS selector'),
   value: z.string().describe('Text to insert (replaces existing content)'),
   session: sessionField,
 })
 
-const evaluateInput = z.strictObject({
+const evaluateInput = z.object({
   action: z.literal('evaluate'),
   code: z.string().describe('JavaScript in the page realm; supports async/await'),
   session: sessionField,
 })
 
-const cdpInput = z.strictObject({
+const cdpInput = z.object({
   action: z.literal('cdp'),
   method: z.string().describe('CDP method name, e.g. Network.enable'),
   params: z.record(z.string(), z.unknown()).optional().describe('CDP params object'),
   session: sessionField,
 })
 
-const screenshotInput = z.strictObject({
+const screenshotInput = z.object({
   action: z.literal('screenshot'),
   format: z.enum(['png', 'jpeg']).optional(),
   quality: z.number().int().min(0).max(100).optional(),
@@ -104,7 +115,7 @@ const screenshotInput = z.strictObject({
   session: sessionField,
 })
 
-const networkInput = z.strictObject({
+const networkInput = z.object({
   action: z.literal('network'),
   cmd: z.enum(['start', 'stop', 'list', 'detail']),
   filter: z.string().optional(),
@@ -112,14 +123,14 @@ const networkInput = z.strictObject({
   session: sessionField,
 })
 
-const uploadInput = z.strictObject({
+const uploadInput = z.object({
   action: z.literal('upload'),
   selector: z.string().describe('@e ref or CSS selector of the file input'),
   files: z.array(z.string()).min(1).describe('Local file paths to upload'),
   session: sessionField,
 })
 
-const saveAsPdfInput = z.strictObject({
+const saveAsPdfInput = z.object({
   action: z.literal('save_as_pdf'),
   paper_format: z.enum(['letter', 'a4', 'legal', 'a3', 'tabloid']).optional(),
   landscape: z.boolean().optional(),
@@ -129,17 +140,17 @@ const saveAsPdfInput = z.strictObject({
   session: sessionField,
 })
 
-const listTabsInput = z.strictObject({
+const listTabsInput = z.object({
   action: z.literal('list_tabs'),
   session: sessionField,
 })
 
-const closeTabInput = z.strictObject({
+const closeTabInput = z.object({
   action: z.literal('close_tab'),
   session: sessionField,
 })
 
-const closeSessionInput = z.strictObject({
+const closeSessionInput = z.object({
   action: z.literal('close_session'),
   session: sessionField,
 })
@@ -196,14 +207,35 @@ type Output =
 
 const READ_ONLY_ACTIONS = new Set<Input['action']>(['status', 'snapshot', 'list_tabs'])
 
+/** Actions that change page, browser, or machine state. */
+const DESTRUCTIVE_ACTIONS = new Set<Input['action']>([
+  'navigate', 'click', 'fill', 'evaluate', 'cdp', 'upload',
+  'close_tab', 'close_session',
+  'install', 'uninstall', 'upgrade', 'stop', 'restart',
+])
+
+/**
+ * Actions that need explicit user approval despite browser interaction being
+ * auto-allowed generally.
+ *
+ * `install`/`upgrade` download a shell script over the network and execute it;
+ * `uninstall` removes software from the machine. Those are software
+ * installation, not browsing, and the "high-frequency interaction" argument for
+ * auto-allow does not extend to them.
+ *
+ * `upload` pushes arbitrary local file paths into a web page's file input on
+ * whatever site is loaded — an unattended `upload` of ~/.ssh/id_rsa to an
+ * attacker-controlled page is a one-call exfiltration, so it is confirmed even
+ * though it is a browser command.
+ */
+const ASK_ACTIONS = new Set<Input['action']>([
+  'install', 'uninstall', 'upgrade', 'upload',
+])
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function unixTimestamp(): number {
-  return Math.floor(Date.now() / 1000)
 }
 
 async function fetchWithTimeout(
@@ -275,12 +307,23 @@ async function isDaemonRunning(): Promise<boolean> {
 /** Start the daemon if it is not reachable. start is idempotent. */
 async function ensureDaemon(): Promise<void> {
   if (await isDaemonRunning()) return
-  await runProcess(DAEMON_BIN, ['start'], 60000)
-  await sleep(1000)
+  // The spawn itself must not propagate: when the binary is absent — the most
+  // common first-run state — spawn emits ENOENT, and letting that reject here
+  // surfaced a raw "spawn /home/.../kimi-webbridge ENOENT" while skipping the
+  // message below that actually tells the caller how to install it.
+  try {
+    await runProcess(DAEMON_BIN, ['start'], 60000)
+    await sleep(1000)
+  } catch {
+    // Fall through to the reachability check and its actionable error.
+  }
   if (!(await isDaemonRunning())) {
+    const hint = existsSync(DAEMON_BIN)
+      ? `Check ${DAEMON_BIN}, or reinstall it: ${INSTALL_SCRIPT_URL}`
+      : `The daemon is not installed (${DAEMON_BIN} does not exist). ` +
+        `Run this tool with action="install" first.`
     throw new Error(
-      `kimi-webbridge daemon is not running and could not be started. ` +
-        `Check ${DAEMON_BIN}, or install it: ${INSTALL_SCRIPT_URL}`,
+      `kimi-webbridge daemon is not running and could not be started. ${hint}`,
     )
   }
 }
@@ -326,6 +369,14 @@ async function sendDaemonCommand(
     const err = (payload.error ?? payload) as { message?: string } & Record<string, unknown>
     throw new Error(decorateError(String(err.message ?? JSON.stringify(err))))
   }
+  // An HTTP error whose body carries neither `ok:false` nor `error` used to
+  // fall through as success and hand the model an empty `{}`, i.e. a failed
+  // command reported as a completed one.
+  if (!res.ok) {
+    throw new Error(
+      decorateError(`daemon returned HTTP ${res.status}: ${truncate(JSON.stringify(payload), 500)}`),
+    )
+  }
   return (payload.data ?? {}) as Record<string, unknown>
 }
 
@@ -349,13 +400,21 @@ async function installDaemon(version?: string): Promise<{ ok: boolean; message: 
       : { ok: false, message: output || `upgrade failed (exit ${res.code})` }
   }
 
-  const tmp = join(tmpdir(), `kimi-webbridge-install-${unixTimestamp()}.sh`)
+  // The installer is downloaded and then executed, so where it lands matters.
+  // A predictable path in the world-writable temp dir
+  // (kimi-webbridge-install-<unix-seconds>.sh) is guessable: another local user
+  // can pre-create it as a symlink — writeFileSync follows symlinks, so the
+  // write lands on the link target — or swap its contents between the write and
+  // the `bash` call and get their code run as this user. mkdtempSync creates a
+  // fresh 0700 directory with a random suffix, which closes both.
+  const dir = mkdtempSync(join(tmpdir(), 'kimi-webbridge-install-'))
+  const tmp = join(dir, 'install.sh')
   try {
     const dl = await fetchWithTimeout(INSTALL_SCRIPT_URL, {}, 30000)
     if (!dl.ok) {
       throw new Error(`failed to download installer: HTTP ${dl.status}`)
     }
-    writeFileSync(tmp, await dl.text(), 'utf-8')
+    writeFileSync(tmp, await dl.text(), { encoding: 'utf-8', mode: 0o600 })
     const env = { ...process.env, ...(version ? { KIMI_WEBBRIDGE_VERSION: version } : {}) }
     const res = await runProcess('bash', [tmp], 300000, env)
     const output = `${res.stdout}${res.stderr}`.trim()
@@ -363,13 +422,16 @@ async function installDaemon(version?: string): Promise<{ ok: boolean; message: 
       ? { ok: true, message: output || 'kimi-webbridge installed' }
       : { ok: false, message: output || `installer failed (exit ${res.code})` }
   } finally {
-    rmSync(tmp, { force: true })
+    rmSync(dir, { force: true, recursive: true })
   }
 }
 
 async function getStatusData(): Promise<Record<string, unknown>> {
   try {
     const res = await fetchWithTimeout(`${DAEMON_URL}/status`, {}, 5000)
+    if (!res.ok) {
+      throw new Error(`daemon returned HTTP ${res.status}`)
+    }
     const data = await parseJsonSafe(res)
     if (data !== null && typeof data === 'object') return data as Record<string, unknown>
     throw new Error(`unexpected response HTTP ${res.status}`)
@@ -385,6 +447,29 @@ async function getStatusData(): Promise<Record<string, unknown>> {
       skills: [],
       error: error instanceof Error ? error.message : String(error),
     }
+  }
+}
+
+/** Spell out the consequence, so the approval prompt is not just an action name. */
+function askMessage(input: Input): string {
+  switch (input.action) {
+    case 'install':
+      return (
+        `Claude wants to install kimi-webbridge by downloading ${INSTALL_SCRIPT_URL} ` +
+        `and running it with bash${input.version ? ` (version ${input.version})` : ''}. ` +
+        `This executes a remote script on your machine.`
+      )
+    case 'upgrade':
+      return `Claude wants to upgrade the kimi-webbridge daemon (${DAEMON_BIN} upgrade).`
+    case 'uninstall':
+      return `Claude wants to uninstall the kimi-webbridge daemon and remove its files.`
+    case 'upload':
+      return (
+        `Claude wants to upload ${input.files.length} local file(s) into the current ` +
+        `web page: ${input.files.join(', ')}`
+      )
+    default:
+      return `Claude wants to run kimi_webbridge action "${input.action}".`
   }
 }
 
@@ -412,7 +497,21 @@ export const KimiWebBridgeTool = buildTool({
     return inputSchema()
   },
   get inputJSONSchema() {
-    const schema = zodToJsonSchema(inputSchema())
+    // io: 'input' so optional fields carrying a default are not advertised as
+    // required.
+    const schema = zodToJsonSchema(inputSchema(), { io: 'input' })
+
+    // A discriminated union serializes to a top-level `oneOf` with no
+    // `properties`. Anthropic renders that verbatim, but third-party endpoints
+    // behind ANTHROPIC_BASE_URL usually route through an OpenAI-shaped
+    // function-call API that reads `parameters.properties`, finds none, and
+    // advertises a zero-argument tool — after which every call the model makes
+    // is malformed. Send those a flattened object instead; runtime validation
+    // is unchanged either way. Same fix as MemoryTool.
+    if (!isFirstPartyAnthropicBaseUrl()) {
+      return flattenUnionSchema(schema, 'action')
+    }
+
     schema.type = 'object'
     return schema
   },
@@ -424,6 +523,18 @@ export const KimiWebBridgeTool = buildTool({
   },
   isConcurrencySafe(input: Input) {
     return READ_ONLY_ACTIONS.has(input.action)
+  },
+  isDestructive(input: Input) {
+    return DESTRUCTIVE_ACTIONS.has(input.action)
+  },
+  async checkPermissions(input: Input): Promise<PermissionDecision> {
+    // Browser interaction is high-frequency, so it is auto-allowed to match
+    // ChromeCDPTool. The exceptions in ASK_ACTIONS are not browsing: they
+    // install/remove software or move local files off the machine.
+    if (ASK_ACTIONS.has(input.action)) {
+      return { behavior: 'ask', message: askMessage(input) }
+    }
+    return { behavior: 'allow' }
   },
   toAutoClassifierInput(input: Input) {
     return `kimi_webbridge:${input.action}`
@@ -444,7 +555,7 @@ export const KimiWebBridgeTool = buildTool({
             extensionConnected: Boolean(s.extension_connected),
             extensionId: String(s.extension_id ?? ''),
             extensionVersion: String(s.extension_version ?? ''),
-            port: Number(s.port ?? 10086),
+            port: Number(s.port ?? DAEMON_PORT),
             uptimeSeconds: Number(s.uptime_seconds ?? 0),
             skills: Array.isArray(s.skills) ? s.skills : [],
             error: typeof s.error === 'string' ? s.error : undefined,
