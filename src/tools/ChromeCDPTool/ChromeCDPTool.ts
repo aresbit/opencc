@@ -141,6 +141,11 @@ export const ChromeCDPTool = buildTool({
   async prompt() {
     return `Interact with local Chrome browser via Chrome DevTools Protocol (CDP).
 
+TOOL SELECTION: Prefer kimi_webbridge (KimiWebBridgeTool) for browser tasks —
+it drives the user's real browser with their login sessions. Use this Chrome
+CDP tool ONLY as a fallback when kimi_webbridge is unavailable (daemon or
+browser extension not installed/connected) or fails.
+
 Use this tool to:
 - List open Chrome pages: command 'list'
 - Navigate to a URL: command 'nav' with args ['https://example.com']

@@ -19,6 +19,7 @@ import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
 import { ManuscriptCheckTool } from './tools/ManuscriptCheckTool/ManuscriptCheckTool.js'
 import { WikiTool } from './tools/WikiTool/WikiTool.js'
 import { KimiTool } from './tools/KimiTool/KimiTool.js'
+import { KimiWebBridgeTool } from './tools/KimiWebBridgeTool/KimiWebBridgeTool.js'
 import { GeminiSubtitleTool } from './tools/GeminiSubtitleTool/GeminiSubtitleTool.js'
 import { MythosTool } from './tools/MythosTool/MythosTool.js'
 import { ContentAnalystTool } from './tools/ContentAnalystTool/ContentAnalystTool.js'
@@ -247,6 +248,7 @@ export function getAllBaseTools(): Tools {
     ManuscriptCheckTool,
     WikiTool,
     KimiTool,
+    KimiWebBridgeTool,
     GeminiSubtitleTool,
     MythosTool,
     ContentAnalystTool,
