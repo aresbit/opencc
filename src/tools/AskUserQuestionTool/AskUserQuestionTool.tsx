@@ -10,6 +10,8 @@ import { Box, Text } from '../../ink.js';
 import type { Tool } from '../../Tool.js';
 import { buildTool, type ToolDef } from '../../Tool.js';
 import { lazySchema } from '../../utils/lazySchema.js';
+import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js';
+import { normalizeAskUserQuestionInput } from './normalizeInput.js';
 import { ASK_USER_QUESTION_TOOL_CHIP_WIDTH, ASK_USER_QUESTION_TOOL_NAME, ASK_USER_QUESTION_TOOL_PROMPT, DESCRIPTION, PREVIEW_FEATURE_PROMPT } from './prompt.js';
 const questionOptionSchema = lazySchema(() => z.object({
   label: z.string().describe('The display text for this option that the user will see and select. Should be concise (1-5 words) and clearly describe the choice.'),
@@ -59,12 +61,19 @@ const commonFields = lazySchema(() => ({
     source: z.string().optional().describe('Optional identifier for the source of this question (e.g., "remember" for /remember command). Used for analytics tracking.')
   }).optional().describe('Optional metadata for tracking and analytics purposes. Not displayed to user.')
 }));
-const inputSchema = lazySchema(() => z.strictObject({
+// Deliberately NOT z.strictObject: an unrecognized key used to fail the whole
+// call, and for this tool a failed parse is not a recoverable error — the
+// permission component parses the same schema to build the dialog, so it left
+// the user with no question UI at all. Plain z.object drops the stray key.
+const rawInputSchema = lazySchema(() => z.object({
   questions: z.array(questionSchema()).min(1).max(4).describe('Questions to ask the user (1-4 questions)'),
   ...commonFields()
 }).refine(UNIQUENESS_REFINE.check, {
   message: UNIQUENESS_REFINE.message
 }));
+
+/** What actually validates a call: wire-format slips repaired first. */
+const inputSchema = lazySchema(() => z.preprocess(normalizeAskUserQuestionInput, rawInputSchema()));
 type InputSchema = ReturnType<typeof inputSchema>;
 const outputSchema = lazySchema(() => z.object({
   questions: z.array(questionSchema()).describe('The questions that were asked'),
@@ -125,6 +134,14 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
   },
   get inputSchema(): InputSchema {
     return inputSchema();
+  },
+  get inputJSONSchema() {
+    // Derived from the raw schema, not the preprocess wrapper: callers
+    // (utils/api.ts) fall back to zodToJsonSchema(inputSchema) when this is
+    // absent, and serializing the wrapper does not produce the object shape
+    // the model needs. io: 'input' keeps `multiSelect` — which carries a
+    // default — from being advertised as required.
+    return zodToJsonSchema(rawInputSchema(), { io: 'input' });
   },
   get outputSchema(): OutputSchema {
     return outputSchema();

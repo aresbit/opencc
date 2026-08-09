@@ -1,6 +1,6 @@
 import { c as _c } from "react/compiler-runtime";
 import type { Base64ImageSource, ImageBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs';
-import React, { Suspense, use, useCallback, useMemo, useRef, useState } from 'react';
+import React, { Suspense, use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSettings } from '../../../hooks/useSettings.js';
 import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import { stringWidth } from '../../../ink/stringWidth.js';
@@ -99,6 +99,15 @@ function AskUserQuestionPermissionRequestBody(t0) {
     t2 = $[4];
   }
   const questions = t2;
+  // An unparseable input used to fall through as `questions = []`, and an
+  // empty list is indistinguishable from "all questions answered": currentQuestion
+  // is null, isInSubmitView is 0 === 0, and allQuestionsAnswered is [].every()
+  // — vacuously true. The dialog therefore rendered a submit screen with no
+  // questions on it, and submitting called onAllow with answers = {}, so the
+  // model was told the user had answered while receiving nothing. Reject
+  // instead, and tell the model what was wrong so it can reissue the call.
+  const invalidReason = result.success ? null : summarizeParseError(result.error);
+  useInvalidInputRejection(invalidReason, onDone, toolUseConfirm);
   const {
     rows: terminalRows
   } = useTerminalSize();
@@ -590,6 +599,12 @@ Questions asked and answers provided:\n${questionsWithAnswers_0}`;
     }
     return t26;
   }
+  // Nothing to render while the rejection above is in flight. Without this the
+  // no-questions case still reaches SubmitQuestionsView, which is the empty
+  // "submit" screen that produced the empty answers.
+  if (invalidReason || questions.length === 0) {
+    return null;
+  }
   if (isInSubmitView) {
     let t23;
     if ($[107] !== allQuestionsAnswered || $[108] !== answers || $[109] !== currentQuestionIndex || $[110] !== globalContentHeight || $[111] !== handleFinalResponse || $[112] !== questions || $[113] !== toolUseConfirm.permissionResult) {
@@ -609,6 +624,46 @@ Questions asked and answers provided:\n${questionsWithAnswers_0}`;
   }
   return null;
 }
+/**
+ * Turn a zod failure into something the model can act on. The raw issue list
+ * is verbose and path-encoded; the first few issues with their paths are
+ * enough to identify the malformed field.
+ */
+function summarizeParseError(error: {
+  issues: { path: (string | number | symbol)[]; message: string }[];
+}): string {
+  const issues = error.issues.slice(0, 4).map(issue => {
+    const path = issue.path.map(String).join('.');
+    return path ? `${path}: ${issue.message}` : issue.message;
+  });
+  const more = error.issues.length > 4 ? ` (+${error.issues.length - 4} more)` : '';
+  return issues.join('; ') + more;
+}
+
+/**
+ * Reject the tool use once, on mount, when the input could not be parsed.
+ * Declared unconditionally so hook order is stable regardless of validity.
+ */
+function useInvalidInputRejection(
+  invalidReason: string | null,
+  onDone: () => void,
+  toolUseConfirm: { onReject(feedback?: string): void },
+): void {
+  const rejectedRef = useRef(false);
+  useEffect(() => {
+    if (!invalidReason || rejectedRef.current) return;
+    rejectedRef.current = true;
+    logError(new Error(`AskUserQuestion input failed validation: ${invalidReason}`));
+    onDone();
+    toolUseConfirm.onReject(
+      `The AskUserQuestion call was not shown to the user because its input did ` +
+        `not validate: ${invalidReason}. Reissue the call with a corrected ` +
+        `\`questions\` array — each question needs \`question\`, \`header\`, and 2-4 ` +
+        `\`options\` with unique \`label\`s — or just ask in plain text instead.`,
+    );
+  }, [invalidReason, onDone, toolUseConfirm]);
+}
+
 function _temp6(c_1) {
   return c_1.type === "image";
 }

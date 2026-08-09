@@ -1223,6 +1223,7 @@ async function hasPermissionsToUseToolInner(
     behavior: 'passthrough',
     message: createPermissionRequestMessage(tool.name),
   }
+  let checkPermissionsFailed = false
   try {
     const parsedInput = tool.inputSchema.parse(input)
     toolPermissionResult = await tool.checkPermissions(parsedInput, context)
@@ -1231,6 +1232,7 @@ async function hasPermissionsToUseToolInner(
     if (e instanceof AbortError || e instanceof APIUserAbortError) {
       throw e
     }
+    checkPermissionsFailed = true
     logError(e)
   }
 
@@ -1245,6 +1247,21 @@ async function hasPermissionsToUseToolInner(
     toolPermissionResult?.behavior === 'ask'
   ) {
     return toolPermissionResult
+  }
+
+  // 1e-bis. Same guard when we never got an answer out of checkPermissions.
+  // A tool that requires user interaction produces its result FROM that
+  // interaction (AskUserQuestion returns the answers the dialog collected), so
+  // letting an unparseable input fall through to the auto-approve paths below
+  // runs the tool with nothing collected — AskUserQuestion then reported that
+  // the user had answered while handing back an empty answer set. `ask` routes
+  // it to the tool's permission component, which surfaces the validation error
+  // instead of silently succeeding.
+  if (checkPermissionsFailed && tool.requiresUserInteraction?.()) {
+    return {
+      behavior: 'ask',
+      message: createPermissionRequestMessage(tool.name),
+    }
   }
 
   // 1f. Content-specific ask rules from tool.checkPermissions take precedence
