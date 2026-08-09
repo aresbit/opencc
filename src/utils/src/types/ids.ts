@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type AgentId = any;
-export type SessionId = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../types/ids.js'

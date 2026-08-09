@@ -1,5 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type ChannelMessageNotificationSchema = any;
-export type gateChannelServer = any;
-export type wrapChannelMessage = any;
-export type findChannelEntry = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../services/mcp/channelNotification.js'

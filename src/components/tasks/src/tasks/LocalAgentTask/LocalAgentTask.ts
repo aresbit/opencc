@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type isPanelAgentTask = any;
-export type LocalAgentTaskState = any;
-export type LocalAgentTask = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../tasks/LocalAgentTask/LocalAgentTask.js'

@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type accumulateUsage = any;
-export type updateUsage = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../services/api/claude.js'

@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type normalizeFileEditInput = any;
-export type stripTrailingWhitespace = any;
-export type getSnippetForTwoFileDiff = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../tools/FileEditTool/utils.js'

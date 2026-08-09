@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type usePluginAutoupdateNotification = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../hooks/notifs/usePluginAutoupdateNotification.js'

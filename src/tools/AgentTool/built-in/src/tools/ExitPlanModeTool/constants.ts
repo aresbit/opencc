@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type EXIT_PLAN_MODE_TOOL_NAME = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../ExitPlanModeTool/constants.js'

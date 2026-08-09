@@ -1,6 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type filterMcpServersByPolicy = any;
-export type getMcpConfigByName = any;
-export type isMcpServerDisabled = any;
-export type setMcpServerEnabled = any;
-export type getAllMcpConfigs = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../services/mcp/config.js'

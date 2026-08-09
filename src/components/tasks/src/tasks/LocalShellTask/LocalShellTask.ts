@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type LocalShellTask = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../tasks/LocalShellTask/LocalShellTask.js'

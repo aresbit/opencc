@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type getAPIProvider = any;
-export type getAPIProviderForStatsig = any;
-export type isFirstPartyAnthropicBaseUrl = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../utils/model/providers.js'

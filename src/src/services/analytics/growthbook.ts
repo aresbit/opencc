@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type getFeatureValue_CACHED_MAY_BE_STALE = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../services/analytics/growthbook.js'

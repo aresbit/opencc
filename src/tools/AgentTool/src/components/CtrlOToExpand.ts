@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type CtrlOToExpand = any;
-export type SubAgentProvider = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../components/CtrlOToExpand.js'

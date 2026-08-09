@@ -1,5 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type fileHistoryRewind = any;
-export type fileHistoryCanRestore = any;
-export type fileHistoryEnabled = any;
-export type fileHistoryGetDiffStats = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../utils/fileHistory.js'
