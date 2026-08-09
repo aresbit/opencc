@@ -295,12 +295,83 @@ function runProcess(
   })
 }
 
-async function isDaemonRunning(): Promise<boolean> {
+export type BridgeStatus = {
+  running: boolean
+  extensionConnected: boolean
+  extensionId: string
+  extensionVersion: string
+}
+
+/**
+ * Read the daemon's status, or null when it is not reachable at all.
+ *
+ * The extension flag matters as much as the daemon flag: the daemon runs as a
+ * background process and answers /status happily while the browser side is
+ * detached, so "the daemon is up" says nothing about whether a command can
+ * actually reach a tab.
+ */
+async function readStatus(): Promise<BridgeStatus | null> {
   try {
     const res = await fetchWithTimeout(`${DAEMON_URL}/status`, {}, 3000)
-    return res.ok
+    if (!res.ok) return null
+    const data = await parseJsonSafe(res)
+    if (data === null || typeof data !== 'object') return null
+    const s = data as Record<string, unknown>
+    return {
+      running: Boolean(s.running),
+      extensionConnected: Boolean(s.extension_connected),
+      extensionId: typeof s.extension_id === 'string' ? s.extension_id : '',
+      extensionVersion: typeof s.extension_version === 'string' ? s.extension_version : '',
+    }
   } catch {
-    return false
+    return null
+  }
+}
+
+async function isDaemonRunning(): Promise<boolean> {
+  return (await readStatus()) !== null
+}
+
+/**
+ * What to tell the user when the browser side is not attached.
+ *
+ * The daemon says only "no extension connected", and the previous wording
+ * turned that into "install the browser extension first" — a dead end for the
+ * common case, which is that the extension is installed and the browser is
+ * simply closed or the extension disabled. When the daemon still remembers an
+ * extension id, we know it has been installed at some point and can say so.
+ */
+export function extensionNotConnectedMessage(status: BridgeStatus | null): string {
+  const seenBefore = Boolean(status?.extensionId || status?.extensionVersion)
+  if (seenBefore) {
+    return (
+      `kimi-webbridge 守护进程在运行，但浏览器扩展当前未连接` +
+      `（守护进程记录的扩展 ${status?.extensionId}${status?.extensionVersion ? ` v${status.extensionVersion}` : ''}）。` +
+      `扩展已安装过，所以通常是浏览器没有打开，或该扩展被停用/未获得当前窗口的权限。` +
+      `请打开浏览器并确认扩展处于启用状态，然后重试；不要重新安装。`
+    )
+  }
+  return (
+    `kimi-webbridge 守护进程在运行，但没有浏览器扩展连接上来。` +
+    `若尚未安装，请安装：${EXTENSION_STORE_URL}；` +
+    `若已安装，请打开浏览器并确认扩展已启用。`
+  )
+}
+
+/**
+ * Ensure the daemon is up AND the browser extension is attached.
+ *
+ * Both halves are required for any browser command, so both are checked here.
+ * Sending a command that cannot possibly reach a tab and then relaying the
+ * daemon's terse refusal is how "no extension connected" ended up being
+ * reported as a missing installation on a machine where the extension was
+ * installed and connected.
+ */
+async function ensureBridgeReady(): Promise<void> {
+  await ensureDaemon()
+  const status = await readStatus()
+  if (status && !status.extensionConnected) {
+    throw new Error(extensionNotConnectedMessage(status))
   }
 }
 
@@ -329,11 +400,11 @@ async function ensureDaemon(): Promise<void> {
 }
 
 function decorateError(message: string): string {
+  // The daemon reports this whenever the browser side is detached, which is
+  // usually a closed browser rather than a missing install — see
+  // extensionNotConnectedMessage.
   if (/no extension connected/i.test(message)) {
-    return (
-      `kimi-webbridge: ${message} — install the browser extension first: ` +
-      `${EXTENSION_STORE_URL}`
-    )
+    return extensionNotConnectedMessage(null)
   }
   if (/update the Kimi WebBridge extension/i.test(message)) {
     return (
@@ -350,7 +421,7 @@ async function sendDaemonCommand(
   args: Record<string, unknown>,
   session: string,
 ): Promise<Record<string, unknown>> {
-  await ensureDaemon()
+  await ensureBridgeReady()
   const res = await fetchWithTimeout(
     `${DAEMON_URL}/command`,
     {
