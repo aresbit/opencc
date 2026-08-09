@@ -1,30 +1,53 @@
 export const REDO_TOOL_NAME = 'redotool'
 
 export const DESCRIPTION = `
-RedoTool replays and teaches a repository's early commit history.
+RedoTool 为一个有多年历史的项目撰写《开发编年史》：把 git 提交记录与 release、
+issue/PR 讨论互相印证，按年分章，写成一部可读、可溯源的项目史。
 
-Workflow:
-1) Resolve repo source (localRepoPath or cloned repo)
-2) Optional safety copy to /tmp workspace (default enabled)
-3) Replay selected first commit (from chosen range/list) into redo-<repoName>/0001-<hash>/
-4) Analyze commit history in adaptive batches
-5) Generate markdown lectures under redo-lec/ for GitHub Pages publishing
-
-Grouping behavior:
-- auto (default): dense commit => one lecture, sparse commits => grouped (up to 5)
-- one_per_commit: strict one hash per lecture
-- fixed: exactly batchSize commits per lecture
-
-Commit selection:
-- targetHashes: explicit hash/prefix list (highest priority)
-- startFromHash/endAtHash: inclusive range selection
-- if none provided: full history
-
-Safety:
-- useTempWorkspace=true (default) prevents polluting current directory
-- cloneIfMissing can be disabled when repo already exists locally
+用于回答"这个项目是怎么从 0 做到 1 的""它为什么长成今天这样"，而不是用于
+读懂某一段代码。
 `
 
 export function getPrompt(): string {
-  return DESCRIPTION
+  return `${DESCRIPTION}
+
+## 产出
+
+一份 Markdown 长文，结构固定：
+
+- 题头：结论先行，写明数据来源与核对口径
+- §0 全景：数字表 + 年度提交量条形图 + 沉寂年份
+- §1 人物图鉴：作者、提交数、活跃期、角色（创始人单独标注）
+- §2 起按年分章：每章一段叙事正文 + 本年互文时刻 + 本年提交清单
+- §10 尾声：三到五条经验总结
+- §11 社区回声：热度对照表 + 「讨论如何变成代码」
+- 附录：PR 时间线、讨论最多的 issue
+- 数据方法论注记：口径、身份归并、抓取覆盖率、推断清单、自动校验结果
+
+## 证据规则
+
+正文里的每个事实性段落都必须引用可解析的证据（提交短哈希、issue 编号、
+release 标签），引用不上的段落会被丢弃而不是保留。关于动机、情绪、因果的
+判断允许写，但会被标为「推断，未证实」单独呈现；推测占比过高的章节会在
+方法论注记里被标注为证据不足。
+
+生成后工具会自行校验：捏造的提交哈希、与提交记录矛盾的数字、有提交却缺失
+的年份都会被报出来，并写进成稿的方法论注记。
+
+## 参数要点
+
+- repoUrl：GitHub 地址时才能取到 issue/release；非 GitHub 地址会退化为仅 git 线，
+  并在文中显式标注缺口。
+- localRepoPath：已有本地克隆时传入，跳过 clone。
+- maxIssues：issue/PR 抓取上限，从最早开始抓（默认 500）。老项目的早期讨论
+  才是"从 0 到 1"的关键，所以不是从最近开始。
+- skipGitHub：只用 git 数据。
+- startYear / endYear：只覆盖部分年份，实际覆盖范围会写进文中。
+- resume：默认开启，重跑时复用检查点里已完成的章节。
+
+## 使用建议
+
+- 老项目提交量大，整轮包含逐年的模型调用，耗时以分钟计。中断后重跑会接着写。
+- 生成结束后先看工具返回的校验结果；有 error 级别的条目说明正文里有站不住
+  的引用或数字，应当在交付前处理。`
 }

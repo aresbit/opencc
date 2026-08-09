@@ -1,57 +1,63 @@
-import { access, cp, mkdir, mkdtemp, readFile, writeFile } from 'fs/promises'
+import { access, mkdir, readFile, writeFile } from 'fs/promises'
 import { constants as fsConstants } from 'fs'
-import path, { join, resolve } from 'path'
-import { tmpdir } from 'os'
+import { dirname, join, resolve } from 'path'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { DESCRIPTION, getPrompt, REDO_TOOL_NAME } from './prompt.js'
-import { extractKnowledge, renderKnowledgeSection } from './knowledge.js'
+import {
+  groupByYear,
+  LOG_FORMAT,
+  panorama,
+  parseCommitLog,
+  perAuthor,
+  perYear,
+  resolveIdentities,
+  type Commit,
+} from './git.js'
+import { segmentEras, type BoundarySignal, type Tag } from './eras.js'
+import {
+  EMPTY_GH_DATA,
+  fetchGitHubData,
+  findIntertextualMoments,
+  type GhData,
+} from './github.js'
+import { buildYearEvidence, citeIndexFor, renderLedger } from './evidence.js'
+import { narrateChapter, narrateEpilogue } from './narrate.js'
+import { renderChronicle, type ChapterOutput } from './render.js'
+import { renderVerification, verifyChronicle, type VerificationFacts } from './verify.js'
 
 const inputSchema = lazySchema(() =>
-  z.strictObject({
-    repoUrl: z.string().url().describe('Git repository URL, e.g. https://github.com/aresbit/QUANTAXIS'),
-    groupingMode: z
-      .enum(['auto', 'one_per_commit', 'fixed'])
-      .default('auto')
-      .describe('auto: dense commit solo, sparse commits grouped; one_per_commit: strict 1:1; fixed: use batchSize'),
-    batchSize: z
-      .number()
-      .int()
-      .min(1)
-      .max(50)
-      .default(5)
-      .describe('Commits per lecture when groupingMode=fixed'),
-    maxLectures: z.number().int().min(1).max(200).default(30).describe('Maximum lectures to generate'),
+  z.object({
+    repoUrl: z
+      .string()
+      .describe('Git repository URL, e.g. https://github.com/tj/n. Used for cloning and for the GitHub API.'),
     localRepoPath: z
       .string()
       .optional()
-      .describe('Optional existing local repository path. If provided, clone step is skipped.'),
-    cloneIfMissing: z
-      .boolean()
-      .default(true)
-      .describe('When no local repo exists, whether to clone from repoUrl.'),
-    useTempWorkspace: z
-      .boolean()
-      .default(true)
-      .describe('When true, operate in /tmp workspace to avoid polluting current directory.'),
-    startFromHash: z
+      .describe('Existing local clone. When given, no clone is performed.'),
+    outputPath: z
       .string()
       .optional()
-      .describe('Optional commit hash/prefix to start from (inclusive).'),
-    endAtHash: z
-      .string()
-      .optional()
-      .describe('Optional commit hash/prefix to end at (inclusive).'),
-    targetHashes: z
-      .array(z.string())
-      .optional()
-      .describe('Optional explicit commit hash/prefix list to process; overrides startFromHash/endAtHash'),
-    cloneDir: z.string().optional().describe('Base directory for clone, default current working directory'),
-    redoDirName: z.string().optional().describe('Redo replay dir name, default redo-<repoName>'),
-    lectureDirName: z.string().default('redo-lec').describe('Lecture output directory name'),
-    forceRefresh: z.boolean().default(false).describe('If true and repo exists, run fetch/pull before analysis'),
+      .describe('Where to write the chronicle. Default: <cwd>/<repo>-编年史.md'),
+    startYear: z.number().int().optional().describe('First year to cover; earlier years are summarised in the panorama only'),
+    endYear: z.number().int().optional().describe('Last year to cover'),
+    maxIssues: z
+      .number()
+      .int()
+      .min(0)
+      .max(5000)
+      .default(500)
+      .describe('Upper bound on issues/PRs fetched, oldest first'),
+    skipGitHub: z
+      .boolean()
+      .default(false)
+      .describe('Skip the GitHub API entirely and write a git-only chronicle'),
+    resume: z
+      .boolean()
+      .default(true)
+      .describe('Reuse chapters already written into the checkpoint file'),
   }),
 )
 
@@ -62,16 +68,14 @@ const outputSchema = lazySchema(() =>
   z.object({
     success: z.boolean(),
     repoName: z.string(),
-    sourceRepoPath: z.string(),
-    repoPath: z.string(),
-    redoPath: z.string(),
-    lecturePath: z.string(),
-    firstCommit: z.string().optional(),
+    outputPath: z.string(),
     totalCommits: z.number().int(),
-    selectedCommits: z.number().int(),
-    selectedStartCommit: z.string().optional(),
-    selectedEndCommit: z.string().optional(),
-    lectureFiles: z.array(z.string()),
+    years: z.number().int(),
+    chaptersWritten: z.number().int(),
+    chaptersFailed: z.number().int(),
+    githubAvailable: z.boolean(),
+    verificationOk: z.boolean(),
+    findings: z.array(z.string()),
     message: z.string(),
   }),
 )
@@ -79,50 +83,20 @@ const outputSchema = lazySchema(() =>
 type OutputSchema = ReturnType<typeof outputSchema>
 export type Output = z.infer<OutputSchema>
 
-type CommitInfo = {
-  hash: string
-  shortHash: string
-  author: string
-  date: string
-  subject: string
-}
-
-type CommitStats = {
-  files: number
-  insertions: number
-  deletions: number
-}
+// ── helpers ───────────────────────────────────────────────────────────
 
 function repoNameFromUrl(repoUrl: string): string {
   const clean = repoUrl.replace(/\.git$/i, '').replace(/\/$/, '')
   const seg = clean.split('/').filter(Boolean).pop()
-  if (!seg) return 'repo'
-  return seg.replace(/[^a-zA-Z0-9._-]/g, '_')
+  return seg ? seg.replace(/[^a-zA-Z0-9._-]/g, '_') : 'repo'
 }
 
-async function runCommand(
-  command: string[],
-  cwd: string,
-  signal?: AbortSignal,
-): Promise<{ stdout: string; stderr: string }> {
-  const proc = Bun.spawn(command, {
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    signal,
-  })
-
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
-
-  if (exitCode !== 0) {
-    throw new Error(stderr.trim() || stdout.trim() || `Command failed: ${command.join(' ')}`)
-  }
-
-  return { stdout: stdout.trim(), stderr: stderr.trim() }
+/** `owner/repo`, or null when the URL is not a GitHub one. */
+export function ownerRepoFromUrl(repoUrl: string): string | null {
+  const m = repoUrl
+    .replace(/\.git$/i, '')
+    .match(/github\.com[:/]([^/]+)\/([^/]+)\/?$/i)
+  return m ? `${m[1]}/${m[2]}` : null
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -134,163 +108,66 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-function splitIntoBatches<T>(items: T[], size: number, maxBatches: number): T[][] {
-  const out: T[][] = []
-  for (let i = 0; i < items.length; i += size) {
-    if (out.length >= maxBatches) break
-    out.push(items.slice(i, i + size))
+async function runCommand(
+  command: string[],
+  cwd: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const proc = Bun.spawn(command, { cwd, stdout: 'pipe', stderr: 'pipe', signal })
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  if (code !== 0) {
+    throw new Error(stderr.trim() || `command failed: ${command.join(' ')}`)
   }
-  return out
+  return stdout
 }
 
-function parseNumStat(stdout: string): CommitStats {
-  let files = 0
-  let insertions = 0
-  let deletions = 0
-
-  for (const line of stdout.split('\n').map(v => v.trim()).filter(Boolean)) {
-    const [addRaw, delRaw] = line.split('\t')
-    const add = Number.parseInt(addRaw || '0', 10)
-    const del = Number.parseInt(delRaw || '0', 10)
-    files += 1
-    if (Number.isFinite(add)) insertions += add
-    if (Number.isFinite(del)) deletions += del
-  }
-
-  return { files, insertions, deletions }
-}
-
-function commitComplexityScore(stats: CommitStats): number {
-  return stats.files * 2 + stats.insertions * 0.08 + stats.deletions * 0.06
-}
-
-function buildAutoBatches(
-  commits: CommitInfo[],
-  statsMap: Map<string, CommitStats>,
-  maxBatches: number,
-): CommitInfo[][] {
-  const out: CommitInfo[][] = []
-  const targetScore = 22
-  const hardMaxPerBatch = 5
-  let i = 0
-
-  while (i < commits.length && out.length < maxBatches) {
-    const batch: CommitInfo[] = []
-    let accScore = 0
-
-    while (i < commits.length && batch.length < hardMaxPerBatch) {
-      const commit = commits[i] as CommitInfo
-      const stats = statsMap.get(commit.hash) || { files: 1, insertions: 0, deletions: 0 }
-      const score = commitComplexityScore(stats)
-
-      if (score >= targetScore) {
-        if (batch.length === 0) {
-          batch.push(commit)
-          i += 1
-        }
-        break
-      }
-
-      batch.push(commit)
-      accScore += score
-      i += 1
-
-      if (accScore >= targetScore) break
-    }
-
-    if (batch.length === 0 && i < commits.length) {
-      batch.push(commits[i] as CommitInfo)
-      i += 1
-    }
-
-    out.push(batch)
-  }
-
-  return out
-}
-
-function findCommitByPrefix(commits: CommitInfo[], prefix: string): CommitInfo | null {
-  const p = prefix.trim()
-  if (!p) return null
-  const matches = commits.filter(
-    c => c.hash.startsWith(p) || c.shortHash.startsWith(p),
-  )
-  if (matches.length !== 1) return null
-  return matches[0] as CommitInfo
-}
-
-function formatLecture(
-  repoName: string,
-  batchIndex: number,
-  batch: CommitInfo[],
-  changedFiles: string[],
-  codingSection: string,
-  domainSection: string,
-): string {
-  const first = batch[0]
-  const last = batch[batch.length - 1]
-
-  const timeline = batch
-    .map(c => `- ${c.shortHash} (${c.date}) ${c.author}: ${c.subject}`)
-    .join('\n')
-
-  const files = changedFiles.length
-    ? changedFiles.slice(0, 120).map(f => `- ${f}`).join('\n')
-    : '- (no changed files parsed)'
-
-
-  return `---
-layout: default
-title: "${repoName} Lecture ${String(batchIndex).padStart(3, '0')}"
----
-
-# ${repoName} Lecture ${String(batchIndex).padStart(3, '0')}
-
-## Commit Scope
-- Start: ${first?.hash || 'N/A'}
-- End: ${last?.hash || 'N/A'}
-- Commit count: ${batch.length}
-
-## Timeline
-${timeline}
-
-## Changed Files (sample)
-${files}
-
-## 编码知识（Coding Knowledge）
-${codingSection}
-
-## 领域知识（Domain Knowledge）
-${domainSection}
-
-## 阅读练习
-1. 按时间顺序阅读本讲提交，标注“新增能力”和“重构行为”。
-2. 为每个提交写一句“为什么现在要改这段代码”。
-3. 将本讲输出总结为一张架构小图，作为下一讲的先验上下文。
-`
-}
-
-async function aggregateChangedFiles(repoPath: string, commits: CommitInfo[], signal: AbortSignal): Promise<string[]> {
-  const files = new Set<string>()
-
-  for (const commit of commits) {
-    const r = await runCommand(
-      ['git', 'show', '--name-only', '--pretty=format:', commit.hash],
+/** Annotated and lightweight tags alike, with the date git records for each. */
+async function readTags(repoPath: string, signal: AbortSignal): Promise<Tag[]> {
+  try {
+    const out = await runCommand(
+      ['git', 'tag', '-l', '--sort=creatordate', '--format=%(refname:short)\t%(creatordate:short)'],
       repoPath,
       signal,
     )
-
-    for (const line of r.stdout.split('\n').map(v => v.trim()).filter(Boolean)) {
-      files.add(line)
-    }
+    return out
+      .split('\n')
+      .map(l => l.trim())
+      .filter(Boolean)
+      .map(l => {
+        const [name, date] = l.split('\t')
+        return { name: name ?? '', date: date ?? '' }
+      })
+      .filter(t => t.name && t.date)
+  } catch {
+    return []
   }
-
-  return [...files]
 }
+
+type Checkpoint = {
+  repoUrl: string
+  chapters: Record<
+    string,
+    { title: string; paragraphs: unknown[]; storyState: string; warnings: string[]; dropped: string[] }
+  >
+}
+
+async function readCheckpoint(path: string): Promise<Checkpoint | null> {
+  try {
+    return JSON.parse(await readFile(path, 'utf-8')) as Checkpoint
+  } catch {
+    return null
+  }
+}
+
+// ── tool ──────────────────────────────────────────────────────────────
 
 export const RedoTool = buildTool({
   name: REDO_TOOL_NAME,
-  searchHint: 'clone repo replay selected commit and generate commit lectures in safe temp workspace',
+  searchHint: 'write a project chronicle from git history, releases and issue discussions',
   maxResultSizeChars: 100_000,
   async description() {
     return DESCRIPTION
@@ -302,7 +179,7 @@ export const RedoTool = buildTool({
     return inputSchema()
   },
   get inputJSONSchema() {
-    const schema = zodToJsonSchema(inputSchema())
+    const schema = zodToJsonSchema(inputSchema(), { io: 'input' })
     schema.type = 'object'
     return schema
   },
@@ -319,345 +196,253 @@ export const RedoTool = buildTool({
     return false
   },
   toAutoClassifierInput(input) {
-    return `${input.repoUrl} mode=${input.groupingMode} batch=${input.batchSize} start=${input.startFromHash || ''} end=${input.endAtHash || ''} tmp=${input.useTempWorkspace}`
+    return `chronicle ${input.repoUrl}`
   },
   async call(input: Input, context) {
     const signal = context.abortController.signal
-    const baseDir = resolve(input.cloneDir || process.cwd())
-    const effectiveCloneIfMissing = input.cloneIfMissing ?? true
-    const effectiveUseTempWorkspace = input.useTempWorkspace ?? true
-    const effectiveLectureDirName = input.lectureDirName || 'redo-lec'
     const repoName = repoNameFromUrl(input.repoUrl)
+    const gaps: string[] = []
 
-    const candidateLocal = input.localRepoPath
-      ? resolve(input.localRepoPath)
-      : join(baseDir, repoName)
-
-    let sourceRepoPath = candidateLocal
-    if (!(await exists(sourceRepoPath))) {
-      if (!effectiveCloneIfMissing) {
-        return {
-          data: {
-            success: false,
-            repoName,
-            sourceRepoPath,
-            repoPath: sourceRepoPath,
-            redoPath: '',
-            lecturePath: '',
-            totalCommits: 0,
-            selectedCommits: 0,
-            lectureFiles: [],
-            message: `Repository not found locally and cloneIfMissing=false: ${sourceRepoPath}`,
-          },
-        }
-      }
-      await runCommand(['git', 'clone', input.repoUrl, sourceRepoPath], baseDir, signal)
-    } else if (input.forceRefresh) {
-      await runCommand(['git', 'fetch', '--all', '--tags'], sourceRepoPath, signal)
-      await runCommand(['git', 'pull', '--ff-only'], sourceRepoPath, signal)
-    }
-
-    let workspaceBaseDir = baseDir
-    let repoPath = sourceRepoPath
-    if (effectiveUseTempWorkspace) {
-      workspaceBaseDir = await mkdtemp(join(tmpdir(), `redotool-${repoName}-`))
-      const tempRepoPath = join(workspaceBaseDir, repoName)
-      await cp(sourceRepoPath, tempRepoPath, { recursive: true })
-      repoPath = tempRepoPath
-    }
-
-    const redoPath = join(workspaceBaseDir, input.redoDirName || `redo-${repoName}`)
-    const lecturePath = join(workspaceBaseDir, effectiveLectureDirName)
-
-    const revList = await runCommand(['git', 'rev-list', '--reverse', 'HEAD'], repoPath, signal)
-    const hashes = revList.stdout.split('\n').map(v => v.trim()).filter(Boolean)
-
-    if (!hashes.length) {
-      return {
-        data: {
-          success: false,
-          repoName,
-          sourceRepoPath,
-          repoPath,
-          redoPath,
-          lecturePath,
-          totalCommits: 0,
-          selectedCommits: 0,
-          lectureFiles: [],
-          message: 'No commits found in target repository.',
-        },
+    // ── 1. repository ────────────────────────────────────────────────
+    let repoPath = input.localRepoPath ? resolve(input.localRepoPath) : ''
+    if (!repoPath) {
+      repoPath = join(process.cwd(), repoName)
+      if (!(await exists(repoPath))) {
+        await runCommand(['git', 'clone', '--quiet', input.repoUrl, repoPath], process.cwd(), signal)
       }
     }
+    if (!(await exists(repoPath))) {
+      throw new Error(`repository not found: ${repoPath}`)
+    }
 
-    const logFormat = '%H%x09%h%x09%an%x09%ad%x09%s'
-    const logRaw = await runCommand(
-      ['git', 'log', '--reverse', `--format=${logFormat}`, '--date=short'],
-      repoPath,
-      signal,
+    const outputPath = resolve(
+      input.outputPath ?? join(process.cwd(), `${repoName}-编年史.md`),
     )
+    const checkpointPath = join(dirname(outputPath), `.${repoName}-chronicle-state.json`)
 
-    const commits: CommitInfo[] = logRaw.stdout
-      .split('\n')
-      .map(v => v.trim())
-      .filter(Boolean)
-      .map(line => {
-        const [hash, shortHash, author, date, ...subject] = line.split('\t')
-        return {
-          hash: hash || '',
-          shortHash: shortHash || '',
-          author: author || '',
-          date: date || '',
-          subject: subject.join('\t') || '',
-        }
-      })
-      .filter(c => c.hash)
-
-    let selectedCommitsList: CommitInfo[] = commits
-    if (input.targetHashes && input.targetHashes.length > 0) {
-      const picked: CommitInfo[] = []
-      for (const raw of input.targetHashes) {
-        const found = findCommitByPrefix(commits, raw)
-        if (!found) {
-          return {
-            data: {
-              success: false,
-              repoName,
-              sourceRepoPath,
-              repoPath,
-              redoPath,
-              lecturePath,
-              totalCommits: commits.length,
-              selectedCommits: 0,
-              lectureFiles: [],
-              message: `target hash not found or ambiguous: ${raw}`,
-            },
-          }
-        }
-        picked.push(found)
-      }
-      selectedCommitsList = picked
-    } else {
-      let startIndex = 0
-      let endIndex = commits.length - 1
-
-      if (input.startFromHash) {
-        const found = findCommitByPrefix(commits, input.startFromHash)
-        if (!found) {
-          return {
-            data: {
-              success: false,
-              repoName,
-              sourceRepoPath,
-              repoPath,
-              redoPath,
-              lecturePath,
-              totalCommits: commits.length,
-              selectedCommits: 0,
-              lectureFiles: [],
-              message: `startFromHash not found or ambiguous: ${input.startFromHash}`,
-            },
-          }
-        }
-        startIndex = commits.findIndex(c => c.hash === found.hash)
-      }
-
-      if (input.endAtHash) {
-        const found = findCommitByPrefix(commits, input.endAtHash)
-        if (!found) {
-          return {
-            data: {
-              success: false,
-              repoName,
-              sourceRepoPath,
-              repoPath,
-              redoPath,
-              lecturePath,
-              totalCommits: commits.length,
-              selectedCommits: 0,
-              lectureFiles: [],
-              message: `endAtHash not found or ambiguous: ${input.endAtHash}`,
-            },
-          }
-        }
-        endIndex = commits.findIndex(c => c.hash === found.hash)
-      }
-
-      if (startIndex > endIndex) {
-        return {
-          data: {
-            success: false,
-            repoName,
-            sourceRepoPath,
-            repoPath,
-            redoPath,
-            lecturePath,
-            totalCommits: commits.length,
-            selectedCommits: 0,
-            lectureFiles: [],
-            message: 'Invalid range: startFromHash is after endAtHash.',
-          },
-        }
-      }
-
-      selectedCommitsList = commits.slice(startIndex, endIndex + 1)
-    }
-
-    if (!selectedCommitsList.length) {
-      return {
-        data: {
-          success: false,
-          repoName,
-          sourceRepoPath,
-          repoPath,
-          redoPath,
-          lecturePath,
-          totalCommits: commits.length,
-          selectedCommits: 0,
-          lectureFiles: [],
-          message: 'No commits selected after hash filtering.',
-        },
-      }
-    }
-
-    const replayCommit = selectedCommitsList[0] as CommitInfo
-    const firstCommit = replayCommit.hash
-
-    await mkdir(redoPath, { recursive: true })
-    await mkdir(lecturePath, { recursive: true })
-
-    const replayDir = join(redoPath, `0001-${firstCommit.slice(0, 8)}`)
-    await mkdir(replayDir, { recursive: true })
-
-    await runCommand(
-      ['git', '--work-tree', replayDir, 'checkout', firstCommit, '--', '.'],
-      repoPath,
-      signal,
-    )
-
-    const firstPatch = await runCommand(['git', 'show', '--stat', firstCommit], repoPath, signal)
-    await writeFile(join(redoPath, `0001-${firstCommit.slice(0, 8)}.patch.txt`), `${firstPatch.stdout}\n`, 'utf-8')
-
-    const statsMap = new Map<string, CommitStats>()
-    for (const commit of selectedCommitsList) {
-      const statRaw = await runCommand(
-        ['git', 'show', '--numstat', '--pretty=format:', commit.hash],
+    // ── 2. git facts ─────────────────────────────────────────────────
+    const commits = parseCommitLog(
+      await runCommand(
+        ['git', 'log', '--reverse', `--format=${LOG_FORMAT}`, '--date=short'],
         repoPath,
         signal,
-      )
-      statsMap.set(commit.hash, parseNumStat(statRaw.stdout))
+      ),
+    )
+    if (commits.length === 0) {
+      throw new Error('no commits found in the repository')
     }
 
-    let batches: CommitInfo[][]
-    let mappingRule = ''
-    if (input.groupingMode === 'one_per_commit') {
-      batches = splitIntoBatches(selectedCommitsList, 1, input.maxLectures)
-      mappingRule = 'strict: 1 commit -> 1 lecture'
-    } else if (input.groupingMode === 'fixed') {
-      batches = splitIntoBatches(selectedCommitsList, input.batchSize, input.maxLectures)
-      mappingRule = `fixed: ${input.batchSize} commits per lecture`
+    const tags = await readTags(repoPath, signal)
+    const stats = perYear(commits)
+    const authors = perAuthor(commits)
+    const { merges } = resolveIdentities(commits)
+    const pan = panorama(commits)
+
+    // Era signals are used as the per-year "significant events" list rather
+    // than as chapter boundaries: a chronicle is chaptered by year.
+    const { signals } = segmentEras({ commits, tags })
+    const eventsByYear = new Map<string, BoundarySignal[]>()
+    for (const s of signals) {
+      const year = commits[s.index]?.date.slice(0, 4)
+      if (!year) continue
+      eventsByYear.set(year, [...(eventsByYear.get(year) ?? []), s])
+    }
+
+    // ── 3. GitHub ────────────────────────────────────────────────────
+    let gh: GhData = EMPTY_GH_DATA
+    const ownerRepo = ownerRepoFromUrl(input.repoUrl)
+    if (input.skipGitHub) {
+      gh = { ...EMPTY_GH_DATA, reason: '按参数要求跳过 GitHub 数据' }
+    } else if (!ownerRepo) {
+      gh = { ...EMPTY_GH_DATA, reason: `${input.repoUrl} 不是 GitHub 仓库地址，无法获取 issue 与 release` }
     } else {
-      batches = buildAutoBatches(selectedCommitsList, statsMap, input.maxLectures)
-      mappingRule =
-        'auto: dense commit => single lecture; sparse commits => grouped (up to 5 commits)'
+      gh = await fetchGitHubData({ repo: ownerRepo, signal, maxIssues: input.maxIssues })
+    }
+    if (!gh.available && gh.reason) gaps.push(gh.reason)
+
+    const moments = findIntertextualMoments(gh.issues, commits, 40)
+
+    // ── 4. chapters, one per year ────────────────────────────────────
+    const byYear = groupByYear(commits)
+    const years = [...byYear.keys()].filter(y => {
+      const n = Number.parseInt(y, 10)
+      if (input.startYear !== undefined && n < input.startYear) return false
+      if (input.endYear !== undefined && n > input.endYear) return false
+      return true
+    })
+    if (years.length < byYear.size) {
+      gaps.push(
+        `按参数只覆盖 ${years[0]} 到 ${years[years.length - 1]} 年；全库实际跨越 ${[...byYear.keys()][0]} 到 ${[...byYear.keys()].pop()} 年。`,
+      )
     }
 
-    const lectureFiles: string[] = []
+    const checkpoint = input.resume ? await readCheckpoint(checkpointPath) : null
+    const reusable =
+      checkpoint && checkpoint.repoUrl === input.repoUrl ? checkpoint.chapters : {}
 
-    for (let i = 0; i < batches.length; i += 1) {
-      const batch = batches[i] as CommitInfo[]
-      const changedFiles = await aggregateChangedFiles(repoPath, batch, signal)
+    const chapters: ChapterOutput[] = []
+    const storyStates: string[] = []
+    let previousState = ''
+    let failed = 0
 
-      // Read the actual patches. The previous version derived "domain
-      // knowledge" from filenames and the README via a keyword lookup table,
-      // so it never saw a line of code.
-      const patches: Array<{ shortHash: string; subject: string; patch: string }> = []
-      for (const commit of batch) {
-        const shown = await runCommand(
-          ['git', 'show', '--patch', '--no-color', '--pretty=format:', commit.hash],
-          repoPath,
-          signal,
-        )
-        patches.push({ shortHash: commit.shortHash, subject: commit.subject, patch: shown.stdout })
+    for (const year of years) {
+      const evidence = buildYearEvidence({
+        year,
+        commits: byYear.get(year) ?? [],
+        stat: stats.find(s => s.year === year) ?? { year, commits: 0, authors: 0 },
+        releases: gh.releases,
+        issues: gh.issues,
+        moments,
+        events: eventsByYear.get(year) ?? [],
+      })
+
+      const cached = reusable[year]
+      if (cached) {
+        const narrated = {
+          ok: true,
+          title: cached.title,
+          paragraphs: cached.paragraphs as ChapterOutput['narrated']['paragraphs'],
+          storyState: cached.storyState,
+          warnings: cached.warnings ?? [],
+          dropped: cached.dropped ?? [],
+        }
+        chapters.push({ evidence, narrated })
+        previousState = cached.storyState
+        storyStates.push(cached.storyState)
+        continue
       }
 
-      const knowledge = await extractKnowledge({ repoName, patches, signal })
-      const codingSection = knowledge.ok
-        ? renderKnowledgeSection(knowledge.coding, '本批提交未提炼出可迁移的工程要点。')
-        : `_未能提取：${knowledge.error}_`
-      const domainSection = knowledge.ok
-        ? renderKnowledgeSection(knowledge.domain, '本批提交的 diff 未体现领域语义（可能是重命名、格式化或版本号变更）。')
-        : `_未能提取：${knowledge.error}_`
+      const narrated = await narrateChapter({
+        repoName,
+        eraOrdinal: chapters.length + 1,
+        ledger: renderLedger(evidence),
+        previousState,
+        index: citeIndexFor(evidence),
+        signal,
+      })
+      if (!narrated.ok) failed++
+      chapters.push({ evidence, narrated })
+      previousState = narrated.storyState
+      storyStates.push(narrated.storyState)
 
-      const content = formatLecture(repoName, i + 1, batch, changedFiles, codingSection, domainSection)
-
-      const fileName = `${repoName}-lecture-${String(i + 1).padStart(3, '0')}.md`
-      const abs = join(lecturePath, fileName)
-      await writeFile(abs, content, 'utf-8')
-      lectureFiles.push(abs)
+      // Checkpoint after every chapter: a fifteen-year history is a long,
+      // paid-for run, and a failure at year fourteen used to discard the
+      // thirteen chapters already written.
+      reusable[year] = {
+        title: narrated.title,
+        paragraphs: narrated.paragraphs,
+        storyState: narrated.storyState,
+        warnings: narrated.warnings,
+        dropped: narrated.dropped,
+      }
+      await mkdir(dirname(checkpointPath), { recursive: true })
+      await writeFile(
+        checkpointPath,
+        JSON.stringify({ repoUrl: input.repoUrl, chapters: reusable }, null, 1),
+        'utf-8',
+      )
     }
 
-    const index = [
-      '---',
-      `title: "${repoName} Redo Lectures"`,
-      'layout: default',
-      '---',
-      '',
-      `# ${repoName} Redo Lectures`,
-      '',
-      `- Repo: ${input.repoUrl}`,
-      `- Source repo: ${sourceRepoPath}`,
-      `- Working repo: ${repoPath}`,
-      `- Replay commit: ${firstCommit}`,
-      `- Total commits (repo): ${commits.length}`,
-      `- Selected commits: ${selectedCommitsList.length}`,
-      `- Selected start: ${(selectedCommitsList[0] as CommitInfo).hash}`,
-      `- Selected end: ${(selectedCommitsList[selectedCommitsList.length - 1] as CommitInfo).hash}`,
-      `- Grouping mode: ${input.groupingMode}`,
-      `- Batch size (fixed mode): ${input.batchSize}`,
-      `- Mapping rule: ${mappingRule}`,
-      `- Temp workspace: ${effectiveUseTempWorkspace}`,
-      '',
-      '## Lectures',
-      ...lectureFiles.map(f => {
-        const rel = path.basename(f)
-        return `- [${rel}](./${rel})`
-      }),
-      '',
-      '## Replay Artifact',
-      `- First selected commit snapshot: ${join(path.basename(redoPath), `0001-${firstCommit.slice(0, 8)}`)}`,
-      `- First selected commit patch: ${join(path.basename(redoPath), `0001-${firstCommit.slice(0, 8)}.patch.txt`)}`,
-      '',
-    ].join('\n')
+    // ── 5. epilogue, render, verify ──────────────────────────────────
+    const epilogue = await narrateEpilogue({
+      repoName,
+      storyStates: storyStates.filter(Boolean),
+      panoramaSummary: `${pan.lifespan}，${pan.totalCommits} 条提交，${pan.totalAuthors} 位作者。`,
+      signal,
+    })
 
-    await writeFile(join(lecturePath, 'index.md'), index, 'utf-8')
+    const facts: VerificationFacts = {
+      commits: new Map(
+        commits.map(c => [
+          c.shortHash.toLowerCase(),
+          { author: c.author, date: c.date, subject: c.subject },
+        ]),
+      ),
+      // Numbers attested by git itself count as known: a `#N` rendered from a
+      // commit subject is not a fabrication just because the issue fetch
+      // stopped short of it.
+      issues: new Set([
+        ...gh.issues.map(i => i.number),
+        ...commits.flatMap(c => c.refs),
+      ]),
+      releases: new Set(gh.releases.map(r => r.tag.toLowerCase())),
+      yearStats: stats,
+      panorama: pan,
+      githubAvailable: gh.available,
+    }
+
+    // Rendered twice on purpose: the self-check reads the finished document,
+    // and its findings belong inside that document's methodology note.
+    const draft = renderChronicle({
+      repoName,
+      repoUrl: input.repoUrl,
+      generatedAt: new Date().toISOString().slice(0, 10),
+      commits,
+      panorama: pan,
+      yearStats: stats,
+      authors,
+      identityMerges: merges,
+      releases: gh.releases,
+      issues: gh.issues,
+      moments,
+      chapters,
+      epilogue,
+      githubAvailable: gh.available,
+      githubNote: gh.reason,
+      verification: '',
+      gaps,
+    })
+    const report = verifyChronicle(draft, facts)
+    const final = renderChronicle({
+      repoName,
+      repoUrl: input.repoUrl,
+      generatedAt: new Date().toISOString().slice(0, 10),
+      commits,
+      panorama: pan,
+      yearStats: stats,
+      authors,
+      identityMerges: merges,
+      releases: gh.releases,
+      issues: gh.issues,
+      moments,
+      chapters,
+      epilogue,
+      githubAvailable: gh.available,
+      githubNote: gh.reason,
+      verification: renderVerification(report),
+      gaps,
+    })
+
+    await mkdir(dirname(outputPath), { recursive: true })
+    await writeFile(outputPath, final, 'utf-8')
 
     return {
       data: {
         success: true,
         repoName,
-        sourceRepoPath,
-        repoPath,
-        redoPath,
-        lecturePath,
-        firstCommit,
+        outputPath,
         totalCommits: commits.length,
-        selectedCommits: selectedCommitsList.length,
-        selectedStartCommit: (selectedCommitsList[0] as CommitInfo).hash,
-        selectedEndCommit: (selectedCommitsList[selectedCommitsList.length - 1] as CommitInfo).hash,
-        lectureFiles,
-        message: `Redo completed in ${effectiveUseTempWorkspace ? 'temp workspace' : 'current workspace'}: generated ${lectureFiles.length} lecture(s).`,
+        years: years.length,
+        chaptersWritten: chapters.length - failed,
+        chaptersFailed: failed,
+        githubAvailable: gh.available,
+        verificationOk: report.ok,
+        findings: report.findings.map(f => `[${f.severity}] ${f.detail}`),
+        message: `已写出 ${chapters.length} 章编年史到 ${outputPath}`,
       },
     }
   },
   mapToolResultToToolResultBlockParam(content, toolUseID) {
-    const text = content.success
-      ? `redotool done for ${content.repoName}\nsource=${content.sourceRepoPath}\nwork=${content.repoPath}\nredo=${content.redoPath}\nlectures=${content.lecturePath}`
-      : `redotool failed: ${content.message}`
-
-    return {
-      tool_use_id: toolUseID,
-      type: 'tool_result',
-      content: text,
-    }
+    const d = content as Output
+    const lines = [
+      d.success ? `编年史已生成：${d.outputPath}` : `生成失败：${d.message}`,
+      `仓库 ${d.repoName}｜提交 ${d.totalCommits} 条｜${d.years} 个年份章节`,
+      `GitHub 数据：${d.githubAvailable ? '已获取' : '未获取（仅 git 线）'}`,
+      d.chaptersFailed > 0 ? `其中 ${d.chaptersFailed} 章因证据不足未能生成叙述` : null,
+      `自动校验：${d.verificationOk ? '通过' : '发现问题'}`,
+      ...d.findings.slice(0, 10).map(f => `  ${f}`),
+      d.findings.length > 10 ? `  …另有 ${d.findings.length - 10} 项` : null,
+    ].filter(Boolean)
+    return { tool_use_id: toolUseID, type: 'tool_result', content: lines.join('\n') }
   },
 } satisfies ToolDef<InputSchema, Output>)
