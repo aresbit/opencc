@@ -1,4 +1,4 @@
-import { unlink } from 'fs/promises'
+import { stat, unlink } from 'fs/promises'
 import { CircularBuffer } from '../CircularBuffer.js'
 import { logForDebugging } from '../debug.js'
 import { readFileRange, tailFile } from '../fsOperations.js'
@@ -9,6 +9,7 @@ import { DiskTaskOutput, getTaskOutputPath } from './diskOutput.js'
 const DEFAULT_MAX_MEMORY = 8 * 1024 * 1024 // 8MB
 const POLL_INTERVAL_MS = 1000
 const PROGRESS_TAIL_BYTES = 4096
+const FILE_OBSERVATION_CACHE_MS = 1000
 
 type ProgressCallback = (
   lastLines: string,
@@ -46,6 +47,17 @@ export class TaskOutput {
   #outputFileRedundant = false
   /** Set by getStdout() — total file size in bytes. */
   #outputFileSize = 0
+  /**
+   * File-mode consumers used to probe the same output file independently:
+   * progress tailing, the disk-size guard, and the stalled-prompt detector.
+   * Keep a short-lived observation here so those safety checks share I/O.
+   */
+  #observedFileSize = 0
+  #observedFileAt = 0
+  #observedTail = ''
+  #observedTailBytes = 0
+  #observedTailAt = 0
+  #fileSizeRead: Promise<number> | null = null
 
   // --- Shared poller state ---
 
@@ -116,6 +128,8 @@ export class TaskOutput {
           if (!entry.#onProgress) {
             return
           }
+          entry.#recordFileObservation(bytesTotal, content, bytesRead)
+          entry.#totalBytes = bytesTotal
           // Always call onProgress even when content is empty, so the
           // progress loop wakes up and can check for backgrounding.
           // Commands like `git log -S` produce no output for long periods.
@@ -147,7 +161,6 @@ export class TaskOutput {
                   Math.round((bytesTotal / bytesRead) * lineCount),
                 )
           entry.#totalLines = totalLines
-          entry.#totalBytes = bytesTotal
           entry.#onProgress(
             content.slice(n5),
             content.slice(n100),
@@ -343,6 +356,85 @@ export class TaskOutput {
 
   get totalBytes(): number {
     return this.#totalBytes
+  }
+
+  #recordFileObservation(
+    size: number,
+    tail?: string,
+    tailBytes?: number,
+  ): void {
+    const now = Date.now()
+    this.#observedFileSize = size
+    this.#observedFileAt = now
+    if (tail !== undefined && tailBytes !== undefined) {
+      this.#observedTail = tail
+      this.#observedTailBytes = tailBytes
+      this.#observedTailAt = now
+    }
+  }
+
+  /**
+   * Return the file size while coalescing concurrent probes and reusing a
+   * recent progress-tail observation. A negative maxAgeMs forces a fresh
+   * probe, which is useful for tests and one-off exact reads.
+   */
+  async getFileSize(
+    maxAgeMs: number = FILE_OBSERVATION_CACHE_MS,
+  ): Promise<number> {
+    if (!this.stdoutToFile) {
+      return this.#totalBytes
+    }
+    if (
+      maxAgeMs >= 0 &&
+      this.#observedFileAt > 0 &&
+      Date.now() - this.#observedFileAt <= maxAgeMs
+    ) {
+      return this.#observedFileSize
+    }
+    if (this.#fileSizeRead) {
+      return this.#fileSizeRead
+    }
+
+    const pending = stat(this.path).then(result => {
+      this.#recordFileObservation(result.size)
+      return result.size
+    })
+    this.#fileSizeRead = pending
+    try {
+      return await pending
+    } finally {
+      if (this.#fileSizeRead === pending) {
+        this.#fileSizeRead = null
+      }
+    }
+  }
+
+  /**
+   * Read a file tail, reusing the progress poller's recent, larger tail when
+   * it already contains enough data. This avoids an extra open/stat/read/close
+   * sequence when stalled-prompt detection overlaps visible task progress.
+   */
+  async readFileTail(
+    maxBytes: number,
+    maxAgeMs: number = FILE_OBSERVATION_CACHE_MS,
+  ): Promise<string> {
+    if (
+      maxAgeMs >= 0 &&
+      this.#observedTailAt > 0 &&
+      Date.now() - this.#observedTailAt <= maxAgeMs &&
+      (this.#observedTailBytes >= maxBytes ||
+        this.#observedTailBytes >= this.#observedFileSize)
+    ) {
+      return this.#observedTail.slice(-maxBytes)
+    }
+
+    const result = await tailFile(this.path, maxBytes)
+    this.#recordFileObservation(
+      result.bytesTotal,
+      result.content,
+      result.bytesRead,
+    )
+    return result.content
   }
 
   /**

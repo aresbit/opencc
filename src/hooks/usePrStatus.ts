@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { getLastInteractionTime } from '../bootstrap/state.js'
 import { fetchPrStatus, type PrReviewState } from '../utils/ghPrStatus.js'
 
-const POLL_INTERVAL_MS = 60_000
+const ACTIVE_PR_POLL_INTERVAL_MS = 60_000
+const NO_PR_POLL_INTERVAL_MS = 5 * 60_000
 const SLOW_GH_THRESHOLD_MS = 4_000
 const IDLE_STOP_MS = 60 * 60_000 // stop polling after 60 min idle
 
@@ -20,8 +21,14 @@ const INITIAL_STATE: PrStatusState = {
   lastUpdated: 0,
 }
 
+/** Active PRs stay fresh; the much more common no-PR/error path backs off. */
+export function getPrPollInterval(hasActivePr: boolean): number {
+  return hasActivePr ? ACTIVE_PR_POLL_INTERVAL_MS : NO_PR_POLL_INTERVAL_MS
+}
+
 /**
- * Polls PR review status every 60s while the session is active.
+ * Polls active PR review status every 60s while the session is active, and
+ * backs off to every five minutes when no active PR is found.
  * When no interaction is detected for 60 minutes, the loop stops — no
  * timers remain. React re-runs the effect when isLoading changes
  * (turn starts/ends), restarting the loop. Effect setup schedules
@@ -37,6 +44,7 @@ export function usePrStatus(isLoading: boolean, enabled = true): PrStatusState {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const disabledRef = useRef(false)
   const lastFetchRef = useRef(0)
+  const pollIntervalRef = useRef(ACTIVE_PR_POLL_INTERVAL_MS)
 
   useEffect(() => {
     if (!enabled) return
@@ -61,6 +69,7 @@ export function usePrStatus(isLoading: boolean, enabled = true): PrStatusState {
       const result = await fetchPrStatus()
       if (cancelled) return
       lastFetchRef.current = start
+      pollIntervalRef.current = getPrPollInterval(result !== null)
 
       setPrStatus(prev => {
         const newNumber = result?.number ?? null
@@ -82,15 +91,16 @@ export function usePrStatus(isLoading: boolean, enabled = true): PrStatusState {
       }
 
       if (!cancelled) {
-        timeoutRef.current = setTimeout(poll, POLL_INTERVAL_MS)
+        timeoutRef.current = setTimeout(poll, pollIntervalRef.current)
       }
     }
 
     const elapsed = Date.now() - lastFetchRef.current
-    if (elapsed >= POLL_INTERVAL_MS) {
+    const nextInterval = pollIntervalRef.current
+    if (elapsed >= nextInterval) {
       void poll()
     } else {
-      timeoutRef.current = setTimeout(poll, POLL_INTERVAL_MS - elapsed)
+      timeoutRef.current = setTimeout(poll, nextInterval - elapsed)
     }
 
     return () => {
