@@ -234,8 +234,10 @@ export async function shouldAutoCompact(
   // hundreds of MB before token-based compaction triggers. This guard
   // triggers compaction when the estimated byte size exceeds a memory budget,
   // preventing the 2GB+ RSS peaks that cause aggressive GC and segfaults.
-  const byteSizeEstimate = estimateMessagesByteSize(messages)
-  const MAX_MESSAGES_BYTES = 200 * 1024 * 1024 // 200MB — prevents RSS spikes
+  const byteSizeEstimate = estimateMessagesByteSize(
+    messages,
+    MAX_MESSAGES_BYTES,
+  )
 
   logForDebugging(
     `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''} bytes=${byteSizeEstimate}`,
@@ -254,14 +256,21 @@ export async function shouldAutoCompact(
  * Used as a safety net alongside token-based compaction to prevent
  * memory exhaustion when token estimation underestimates actual size.
  */
-function estimateMessagesByteSize(messages: readonly Message[]): number {
+const MAX_MESSAGES_BYTES = 200 * 1024 * 1024
+
+export function estimateMessagesByteSize(
+  messages: readonly Message[],
+  maxBytes = Number.POSITIVE_INFINITY,
+): number {
   let total = 0
+  const seen = new WeakSet<object>()
   for (const msg of messages) {
     if (!msg) continue
     // Each message object has structural overhead
     total += 200
     if (msg.type === 'assistant' || msg.type === 'user') {
-      const content = (msg as { message?: { content?: unknown } }).message?.content
+      const content = (msg as { message?: { content?: unknown } }).message
+        ?.content
       if (typeof content === 'string') {
         total += content.length * 2 // UTF-16 chars are 2 bytes
       } else if (Array.isArray(content)) {
@@ -283,37 +292,128 @@ function estimateMessagesByteSize(messages: readonly Message[]): number {
                 for (const part of tc) {
                   if (typeof part === 'string') {
                     total += part.length * 2
-                  } else if (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') {
-                    total += ((part as { text: string }).text).length * 2
+                  } else if (
+                    part &&
+                    typeof part === 'object' &&
+                    typeof (part as { text?: unknown }).text === 'string'
+                  ) {
+                    total += (part as { text: string }).text.length * 2
+                  } else if (part && typeof part === 'object') {
+                    total += estimateStructuredValueByteSize(
+                      part,
+                      maxBytes - total,
+                      seen,
+                    )
                   }
                 }
               }
             }
             // tool_use: input JSON can be large (file edits, bash commands)
             if (b.type === 'tool_use' && b.input != null) {
-              try {
-                total += JSON.stringify(b.input).length * 2
-              } catch {
-                total += 1000 // fallback if circular
-              }
+              total += estimateStructuredValueByteSize(
+                b.input,
+                maxBytes - total,
+                seen,
+              )
             }
             // image/document: base64 data can be MBs
-            if ((b.type === 'image' || b.type === 'document') && typeof b.data === 'string') {
+            if (
+              (b.type === 'image' || b.type === 'document') &&
+              typeof b.data === 'string'
+            ) {
               total += b.data.length * 2
             }
+            if (b.type === 'image' || b.type === 'document') {
+              const source = b.source
+              if (
+                source &&
+                typeof source === 'object' &&
+                typeof (source as { data?: unknown }).data === 'string'
+              ) {
+                total += (source as { data: string }).data.length * 2
+              }
+            }
+            if (total >= maxBytes) return total
           }
         }
       }
     }
     // Attachment messages can also carry large payloads
     if (msg.type === 'attachment' && msg.attachment) {
-      try {
-        total += JSON.stringify(msg.attachment).length * 2
-      } catch {
-        total += 2000
-      }
+      total += estimateStructuredValueByteSize(
+        msg.attachment,
+        maxBytes - total,
+        seen,
+      )
+    }
+    if (total >= maxBytes) return total
+  }
+  return total
+}
+
+/**
+ * Estimate retained bytes without serializing the value. JSON.stringify used
+ * to allocate a second copy of large tool inputs just to learn their size.
+ * The traversal is iterative (safe for deep inputs), cycle-aware, and stops
+ * as soon as the caller's compaction budget has been reached.
+ */
+function estimateStructuredValueByteSize(
+  value: unknown,
+  maxBytes: number,
+  seen: WeakSet<object>,
+): number {
+  if (maxBytes <= 0) return 0
+
+  const stack: unknown[] = [value]
+  let total = 0
+  while (stack.length > 0 && total < maxBytes) {
+    const current = stack.pop()
+    if (current == null) {
+      total += 4
+      continue
+    }
+
+    switch (typeof current) {
+      case 'string':
+        total += current.length * 2
+        continue
+      case 'number':
+      case 'bigint':
+        total += 8
+        continue
+      case 'boolean':
+        total += 4
+        continue
+      case 'symbol':
+      case 'function':
+        total += 64
+        continue
+      case 'undefined':
+        total += 8
+        continue
+    }
+
+    if (seen.has(current)) continue
+    seen.add(current)
+
+    if (current instanceof ArrayBuffer) {
+      total += current.byteLength + 32
+      continue
+    }
+    if (ArrayBuffer.isView(current)) {
+      total += current.byteLength + 48
+      continue
+    }
+
+    total += Array.isArray(current) ? 32 + current.length * 8 : 64
+    for (const key in current) {
+      if (!Object.hasOwn(current, key)) continue
+      total += key.length * 2 + 16
+      stack.push((current as Record<string, unknown>)[key])
+      if (total >= maxBytes) break
     }
   }
+
   return total
 }
 

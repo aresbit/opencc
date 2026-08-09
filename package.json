@@ -35,7 +35,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun build src/entrypoints/cli.tsx --outdir dist --target bun --external @firecrawl/anydoc",
+    "build": "bun build src/entrypoints/cli.tsx --outdir dist --target bun --external @firecrawl/anydoc --minify",
     "build:ant": "bun run scripts/build-ant.ts",
     "dev": "bun run src/entrypoints/cli.tsx",
     "matebot": "bun run src/entrypoints/cli.tsx --matebot",
