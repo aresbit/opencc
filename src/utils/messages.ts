@@ -291,9 +291,14 @@ export function buildClassifierUnavailableMessage(
   classifierModel: string,
 ): string {
   return (
-    `${classifierModel} is temporarily unavailable, so auto mode cannot determine the safety of ${toolName} right now. ` +
-    `Wait briefly and then try this action again. ` +
-    `If it keeps failing, continue with other tasks that don't require this action and come back to it later. ` +
+    `${classifierModel} is unavailable, so auto mode cannot determine the safety of ${toolName}. ` +
+    `Retry once in case it was transient. ` +
+    // The original wording offered "wait briefly and retry" as the only
+    // remedy, which is unreachable advice when the configured endpoint does
+    // not serve the classifier model at all: every retry fails the same way
+    // for the rest of the session. Name the remedies that actually end it.
+    `If it fails again the outage is not transient — the configured endpoint may not serve that model. ` +
+    `Tell the user they can leave auto mode to approve this manually, and continue meanwhile with tasks that don't need it. ` +
     `Note: reading files, searching code, and other read-only operations do not require the classifier and can still be used.`
   )
 }

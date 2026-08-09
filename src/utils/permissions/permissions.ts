@@ -80,7 +80,7 @@ import {
   clearClassifierChecking,
   setClassifierChecking,
 } from '../classifierApprovals.js'
-import { isInProtectedNamespace } from '../envUtils.js'
+import { isEnvTruthy, isInProtectedNamespace } from '../envUtils.js'
 import { executePermissionRequestHooks } from '../hooks.js'
 import {
   AUTO_REJECT_MESSAGE,
@@ -846,16 +846,37 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
             },
           }
         }
-        // When classifier is unavailable (API error), behavior depends on
-        // the tengu_iron_gate_closed gate.
+        // When the classifier is unavailable (API error), behavior depends on
+        // whether anyone can be asked instead.
+        //
+        // Upstream this is governed by the `tengu_iron_gate_closed` kill
+        // switch, defaulting to fail closed because Anthropic can flip it
+        // remotely for the duration of an outage. GrowthBook is stubbed in
+        // this build — getFeatureValue_CACHED_WITH_REFRESH returns its
+        // defaultValue unconditionally — so the gate is frozen shut and there
+        // is no way to open it. An endpoint that does not serve the classifier
+        // model at all therefore denied every non-read-only tool call for the
+        // whole session, while the message told the agent to "wait briefly and
+        // try again": advice that could never come true.
+        //
+        // So this follows the transcriptTooLong branch above, which already
+        // reasons this way for its own permanent failure: deny when there is
+        // nobody at the keyboard, otherwise fall back to normal handling,
+        // which prompts. Falling back to a prompt is not a weaker gate than
+        // denying — a human still approves each call — it just costs the
+        // convenience auto mode was bought for.
         if (classifierResult.unavailable) {
-          if (
+          const failClosed =
+            appState.toolPermissionContext.shouldAvoidPermissionPrompts ||
+            // Opt back into strict behaviour: refuse rather than prompt.
+            isEnvTruthy(process.env.CLAUDE_CODE_CLASSIFIER_FAIL_CLOSED) ||
             getFeatureValue_CACHED_WITH_REFRESH(
               'tengu_iron_gate_closed',
-              true,
+              false,
               CLASSIFIER_FAIL_CLOSED_REFRESH_MS,
             )
-          ) {
+
+          if (failClosed) {
             logForDebugging(
               'Auto mode classifier unavailable, denying with retry guidance (fail closed)',
               { level: 'warn' },
@@ -873,9 +894,8 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
               ),
             }
           }
-          // Fail open: fall back to normal permission handling
           logForDebugging(
-            'Auto mode classifier unavailable, falling back to normal permission handling (fail open)',
+            'Auto mode classifier unavailable, falling back to normal permission handling (prompting)',
             { level: 'warn' },
           )
           return result
