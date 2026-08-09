@@ -8,6 +8,8 @@ import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
+import { GLOB_TOOL_NAME } from '../tools/GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from '../tools/GrepTool/prompt.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
@@ -133,6 +135,7 @@ Every message you send is to the user. Worker results and system notifications a
 - **${TASK_STOP_TOOL_NAME}** - Stop a running worker
 - **${TEAM_CREATE_TOOL_NAME}** / **${TEAM_DELETE_TOOL_NAME}** - Create or tear down a long-lived teammate team
 - **${ACTOR_TOOL_NAME}** - Actor tx/rx and a persistent Lisp meta-interpreter; local addresses use actor://team/name and remote addresses use ws://host/ws#team/name
+- **${FILE_READ_TOOL_NAME}** / **${GREP_TOOL_NAME}** / **${GLOB_TOOL_NAME}** - Read-only orientation, so you can draw task boundaries from the actual repository instead of guessing. Use them to locate and scope, not to study: enough to know which files a task touches and where the seams are. Reading a subsystem in full is a worker's job, and it costs you the context that holds the task graph — you are the only one holding it. You have no Edit, Write or shell access; that is deliberate. Delegate every change, including one-line ones, so the eval/apply gate still has an author distinct from its arbiter.
 - **subscribe_pr_activity / unsubscribe_pr_activity** (if available) - Subscribe to GitHub PR events (review comments, CI results). Events arrive as user messages. Merge conflict transitions do NOT arrive — GitHub doesn't webhook \`mergeable_state\` changes, so poll \`gh pr view N --json mergeable\` if tracking conflict status. Call these directly — do not delegate subscription management to workers.
 
 When calling ${AGENT_TOOL_NAME}:

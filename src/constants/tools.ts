@@ -156,4 +156,14 @@ export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
   TEAM_CREATE_TOOL_NAME,
   TEAM_DELETE_TOOL_NAME,
   ACTOR_TOOL_NAME,
+  // Read-only investigation. A coordinator that cannot see the repository has
+  // to guess at task boundaries, and guessed boundaries are what produce
+  // overlapping workers. These three cannot author a change, so they do not
+  // reopen the two things this allowlist exists to prevent: a coordinator that
+  // quietly does the work itself instead of delegating, and a coordinator that
+  // both writes a candidate and records its verdict in the eval/apply ledger.
+  // Edit, Write and the shell stay out for exactly those reasons.
+  FILE_READ_TOOL_NAME,
+  GREP_TOOL_NAME,
+  GLOB_TOOL_NAME,
 ])
