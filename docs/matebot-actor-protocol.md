@@ -67,8 +67,11 @@ self
 ```bash
 MATEBOT_WORKER_TOKEN='replace-me' \
 MATEBOT_WORKER_ROOT=/srv/matebot/workspaces \
+MATEBOT_WORKER_HOST=0.0.0.0 \
 bun run matebot:worker
 ```
+
+worker 默认只监听 `127.0.0.1`。任何被接受的 `task.start` 都会以写权限和 worker 自身的环境变量启动一个 OpenCC 会话，所以监听非回环地址时**必须**配置 `MATEBOT_WORKER_TOKEN`——否则 worker 拒绝启动，而不是裸奔等待运维记得看文档。
 
 协调端：
 
@@ -78,7 +81,7 @@ MATEBOT_REMOTE_TOKEN='replace-me' \
 bun run matebot
 ```
 
-生产环境应使用反向代理提供 `wss://`，必须配置 token，并把 `MATEBOT_WORKER_ROOT` 指向专用 workspace。服务端拒绝越过该根目录的远程任务，并限制并发数。
+生产环境应使用反向代理提供 `wss://`，并把 `MATEBOT_WORKER_ROOT` 指向专用 workspace。服务端拒绝越过该根目录的远程任务，并限制并发数。`task.cwd` 用相对路径时相对于 worker root 解析，协调端的本地路径不会（也不应）被发送过去。
 
 ## 与旧邮箱兼容
 

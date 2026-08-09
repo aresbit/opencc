@@ -1,7 +1,7 @@
 import { z } from 'zod/v4'
+import { getProjectRoot } from '../../bootstrap/state.js'
 import { EvalApplyLedger } from '../../matebot/evalApplyLedger.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
-import { getCwd } from '../../utils/cwd.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { EVAL_APPLY_TOOL_NAME } from './constants.js'
 
@@ -74,7 +74,10 @@ export const EvalApplyTool = buildTool({
     return null
   },
   async call(input: Input) {
-    const ledger = new EvalApplyLedger(getCwd())
+    // Anchored to the project root, not getCwd(): a builder running in a
+    // worktree or under an agent cwd override must reach the same ledger the
+    // coordinator gates on, or the quality gate reads an empty file.
+    const ledger = new EvalApplyLedger(getProjectRoot())
     let run
     if (input.action === 'propose') {
       run = await ledger.propose({

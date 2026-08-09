@@ -81,4 +81,45 @@ describe('EvalApplyLedger', () => {
     expect(revised.revision).toBe(2)
     expect(revised.evaluations).toHaveLength(0)
   })
+
+  test('keeps both verdicts when two processes evaluate at once', async () => {
+    // The in-process promise queue is shared by every ledger instance in one
+    // process, so a real second process is required to exercise the file lock.
+    // Without it both sides read the same run and the later rename discards
+    // the earlier verdict -- which can drop a `fail` and let a run apply.
+    //
+    // Whether a given race actually interleaves is up to the scheduler, so
+    // repeat it: one attempt misses the window often enough to be a weak guard.
+    const worker = join(import.meta.dir, 'evalApplyRaceWorker.ts')
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const root = await mkdtemp(join(tmpdir(), 'matebot-ledger-race-'))
+      roots.push(root)
+      const store = new EvalApplyLedger(root)
+      await store.propose({
+        id: 'race',
+        objective: 'concurrent evaluation',
+        candidate: 'candidate',
+        risk: 'low',
+        requiredEvaluations: 1,
+      })
+
+      const startAt = String(Date.now() + 250)
+      const spawn = (evaluator: string, verdict: string, score: string) =>
+        Bun.spawn(
+          [process.execPath, worker, root, evaluator, verdict, score, startAt],
+          { stdio: ['ignore', 'ignore', 'inherit'] },
+        ).exited
+      await Promise.all([
+        spawn('alice', 'pass', '1'),
+        spawn('bob', 'fail', '0'),
+      ])
+
+      const run = await store.get('race')
+      expect(run.evaluations).toHaveLength(2)
+      expect(run.status).toBe('rejected')
+      // The verdict that matters: a lost `fail` would let this apply.
+      await expect(store.apply('race')).rejects.toThrow('not ready to apply')
+    }
+  }, 60_000)
 })

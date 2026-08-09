@@ -56,6 +56,9 @@ export type MateBotRemoteWorkerOptions = {
   actorMailboxRoot?: string
 }
 
+/** Settled tasks retained for late polls before the oldest are dropped. */
+const MAX_SETTLED_TASKS = 64
+
 export type MateBotRemoteWorkerServer = {
   hostname: string
   port: number
@@ -69,6 +72,25 @@ function secureTokenEquals(actual: unknown, expected?: string): boolean {
   const wanted = Buffer.from(`Bearer ${expected}`)
   const received = Buffer.from(actual)
   return wanted.length === received.length && timingSafeEqual(wanted, received)
+}
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
+
+/**
+ * A worker turns any accepted frame into `Bun.spawn` of the OpenCC CLI with
+ * write permissions and the worker's own environment. Reaching that over a
+ * routable interface without a token is remote code execution, so refuse to
+ * bind instead of trusting the operator to have read the docs.
+ */
+function assertReachableOnlyWithCredentials(
+  hostname: string,
+  token?: string,
+): void {
+  if (token || LOOPBACK_HOSTS.has(hostname)) return
+  throw new Error(
+    `MateBot worker refuses to listen on ${hostname} without a token. ` +
+      'Set MATEBOT_WORKER_TOKEN, or bind MATEBOT_WORKER_HOST=127.0.0.1 for local-only use.',
+  )
 }
 
 function parseLaunchInput(value: unknown): MateBotRemoteLaunchInput {
@@ -98,7 +120,9 @@ function parseLaunchInput(value: unknown): MateBotRemoteLaunchInput {
 }
 
 function resolveTaskCwd(root: string, requested?: string): string {
-  const cwd = resolve(requested || root)
+  // Relative requests are relative to the worker root, not to whatever
+  // directory the worker process happens to have been started from.
+  const cwd = requested ? resolve(root, requested) : root
   const pathFromRoot = relative(root, cwd)
   if (
     pathFromRoot === '..' ||
@@ -180,6 +204,7 @@ export function createMateBotRemoteWorkerServer(
   options: MateBotRemoteWorkerOptions = {},
 ): MateBotRemoteWorkerServer {
   const hostname = options.hostname ?? '127.0.0.1'
+  assertReachableOnlyWithCredentials(hostname, options.token)
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd())
   const maxConcurrent = options.maxConcurrent ?? 8
   const cliPath =
@@ -194,6 +219,18 @@ export function createMateBotRemoteWorkerServer(
     [...tasks.values()].filter(task =>
       ['queued', 'running', 'idle'].includes(task.status),
     ).length
+
+  // A finished task keeps its whole event log so a coordinator can still poll
+  // it. Without eviction a long-lived worker retains every transcript it has
+  // ever produced, so drop the oldest settled tasks once they pile up.
+  const evictSettledTasks = () => {
+    const settled = [...tasks.values()].filter(
+      task => !['queued', 'running', 'idle'].includes(task.status),
+    )
+    for (const task of settled.slice(0, settled.length - MAX_SETTLED_TASKS)) {
+      tasks.delete(task.id)
+    }
+  }
 
   const runTask = async (
     task: WorkerTask,
@@ -364,6 +401,7 @@ export function createMateBotRemoteWorkerServer(
               return
             }
             const input = parseLaunchInput(frame.task)
+            evictSettledTasks()
             const id = randomUUID()
             const task: WorkerTask = {
               id,

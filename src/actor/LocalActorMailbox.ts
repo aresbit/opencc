@@ -21,6 +21,19 @@ const LOCK_OPTIONS = {
   retries: { retries: 30, minTimeout: 5, maxTimeout: 100 },
 }
 
+/**
+ * How long a claimed envelope is kept after delivery.
+ *
+ * Claimed records used to be kept forever, so a mailbox only ever grew and
+ * every send and receive rewrote the whole file under a lock. Keeping them for
+ * a window instead bounds the file, at the cost of bounding idempotency with
+ * it: `send` dedupes on envelope id against the records still present, so a
+ * duplicate of the *same* envelope id arriving after this window would be
+ * delivered a second time. Retries in this system happen in seconds, so the
+ * window is the dedupe guarantee that actually matters.
+ */
+const CLAIMED_RETENTION_MS = 5 * 60 * 1000
+
 function isEnvelope(value: unknown): value is ActorEnvelope {
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<ActorEnvelope>
@@ -117,6 +130,11 @@ export class LocalActorMailbox {
           selectedIds.has(record.envelope.id)
             ? { ...record, receivedAt: now }
             : record,
+        )
+        .filter(
+          record =>
+            !record.receivedAt ||
+            Date.parse(record.receivedAt) + CLAIMED_RETENTION_MS > Date.now(),
         )
       await writeFile(path, jsonStringify(compacted, null, 2), 'utf8')
       return selected.map(record => record.envelope)

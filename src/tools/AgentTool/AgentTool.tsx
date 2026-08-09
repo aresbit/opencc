@@ -576,10 +576,13 @@ export const AgentTool = buildTool({
           prompt,
           description,
           role: selectedAgent.agentType,
-          cwd: getCwd(),
+          // Deliberately no cwd: our local path is meaningless on the worker's
+          // filesystem, and the worker rejects anything outside its own root.
+          // The worker defaults the task to that root.
           metadata: {
             parent_session_id: getParentSessionId(),
             invoking_request_id: assistantMessage?.requestId,
+            local_cwd: getCwd(),
           },
         });
         remoteProvider = 'matebot-ws';

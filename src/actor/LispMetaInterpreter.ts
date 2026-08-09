@@ -142,6 +142,10 @@ function requireList(value: LispValue): LispList {
   return value
 }
 
+/** Mirrors the bounds ActorTool enforces on its own rx input schema. */
+const MAX_RX_TIMEOUT_MS = 30_000
+const MAX_RX_LIMIT = 100
+
 function quoted(value: LispValue): LispValue {
   if (isSymbol(value)) return value.name
   if (Array.isArray(value)) return value.map(quoted)
@@ -201,8 +205,14 @@ export class LispMetaInterpreter {
       'rx',
       async (timeoutMs = 0, limit = 1) =>
         (await actor.rx({
-          timeoutMs: requireNumber(timeoutMs),
-          limit: requireNumber(limit),
+          // Clamped like ActorTool's own schema. The step limit bounds how many
+          // expressions run, not how long one of them blocks, so an unclamped
+          // (rx 86400000) would otherwise park the agent's turn for a day.
+          timeoutMs: Math.min(
+            Math.max(0, requireNumber(timeoutMs)),
+            MAX_RX_TIMEOUT_MS,
+          ),
+          limit: Math.min(Math.max(1, requireNumber(limit)), MAX_RX_LIMIT),
         })) as unknown as LispValue,
     )
   }

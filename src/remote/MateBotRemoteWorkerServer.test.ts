@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { ActorRuntime } from '../actor/ActorRuntime.js'
@@ -99,6 +99,75 @@ console.log(JSON.stringify({type:'result', subtype:'success', is_error:false, du
         prompt: 'noop',
         role: 'builder',
         cwd: tmpdir(),
+      }),
+    ).rejects.toThrow('must stay inside worker root')
+  })
+
+  test('refuses to expose an untokened worker beyond loopback', async () => {
+    root = await mkdtemp(join(tmpdir(), 'matebot-worker-'))
+    // Without a token every accepted frame is unauthenticated code execution,
+    // so binding a routable interface has to fail rather than serve.
+    expect(() =>
+      createMateBotRemoteWorkerServer({
+        hostname: '0.0.0.0',
+        port: 0,
+        workspaceRoot: root,
+      }),
+    ).toThrow('refuses to listen on 0.0.0.0 without a token')
+
+    // A token makes it legitimate, and loopback-only needs no token.
+    const tokened = createMateBotRemoteWorkerServer({
+      hostname: '0.0.0.0',
+      port: 0,
+      token: 'secret',
+      workspaceRoot: root,
+    })
+    tokened.stop(true)
+    const local = createMateBotRemoteWorkerServer({
+      hostname: '127.0.0.1',
+      port: 0,
+      workspaceRoot: root,
+    })
+    local.stop(true)
+  })
+
+  test('resolves a relative task.cwd against the worker root', async () => {
+    root = await mkdtemp(join(tmpdir(), 'matebot-worker-'))
+    await mkdir(join(root, 'sub'), { recursive: true })
+    const fakeCli = join(root, 'cli.ts')
+    await writeFile(fakeCli, 'await Bun.stdin.text()\n')
+    server = createMateBotRemoteWorkerServer({
+      hostname: '127.0.0.1',
+      port: 0,
+      token: 'secret',
+      workspaceRoot: root,
+      cliPath: fakeCli,
+    })
+    transport = new MateBotRemoteTransport(server.url, 'secret')
+
+    // "sub" means <workerRoot>/sub, not <serverProcessCwd>/sub.
+    const launched = await transport.launch({
+      description: 'relative cwd',
+      prompt: 'noop',
+      role: 'builder',
+      cwd: 'sub',
+    })
+    expect(launched.id).toBeTruthy()
+
+    // AgentTool omits cwd entirely; the worker defaults it to its own root.
+    const defaulted = await transport.launch({
+      description: 'no cwd',
+      prompt: 'noop',
+      role: 'builder',
+    })
+    expect(defaulted.id).toBeTruthy()
+
+    await expect(
+      transport.launch({
+        description: 'escape',
+        prompt: 'noop',
+        role: 'builder',
+        cwd: '../outside',
       }),
     ).rejects.toThrow('must stay inside worker root')
   })

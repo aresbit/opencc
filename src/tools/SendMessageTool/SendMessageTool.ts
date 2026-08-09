@@ -3,6 +3,7 @@ import { z } from 'zod/v4'
 import { LocalActorMailbox } from '../../actor/LocalActorMailbox.js'
 import { createActorEnvelope, localActorAddress } from '../../actor/types.js'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
+import { logError } from '../../utils/log.js'
 import { getReplBridgeHandle } from '../../bridge/replBridgeHandle.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -140,15 +141,25 @@ async function persistActorMessage(input: {
   summary?: string
 }): Promise<void> {
   const team = input.teamName || 'default'
-  await new LocalActorMailbox().send(
-    createActorEnvelope({
-      from: localActorAddress(team, input.senderName),
-      to: localActorAddress(team, input.recipientName),
-      payload: input.content,
-      kind: 'teammate.message',
-      metadata: input.summary ? { summary: input.summary } : undefined,
-    }),
-  )
+  try {
+    await new LocalActorMailbox().send(
+      createActorEnvelope({
+        from: localActorAddress(team, input.senderName),
+        to: localActorAddress(team, input.recipientName),
+        payload: input.content,
+        kind: 'teammate.message',
+        metadata: input.summary ? { summary: input.summary } : undefined,
+      }),
+    )
+  } catch (error) {
+    // The teammate mailbox write already succeeded and is what the recipient
+    // actually reads today. Mirroring into the actor mailbox is additive, so a
+    // failure here must not fail the send — nor, in a broadcast, abort the
+    // recipients that come after this one.
+    logError(
+      `SendMessage could not mirror to the actor mailbox: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
 }
 
 function findTeammateColor(

@@ -95,6 +95,10 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   CRON_LIST_TOOL_NAME,
   MEMORY_TOOL_NAME,
   ACTOR_TOOL_NAME,
+  // An `evaluator` runs as an async agent, so without this it cannot reach the
+  // ledger it exists to write to and the coordinator has to transcribe the
+  // verdict on its behalf — which is the opposite of independent evaluation.
+  EVAL_APPLY_TOOL_NAME,
 ])
 /**
  * Tools allowed only for in-process teammates (not general async agents).

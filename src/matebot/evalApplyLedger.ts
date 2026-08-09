@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { mkdir, readFile, rename, writeFile } from 'fs/promises'
 import { join } from 'path'
+import * as lockfile from '../utils/lockfile.js'
 
 export type MateBotRisk = 'low' | 'medium' | 'high'
 export type EvaluationVerdict = 'pass' | 'fail' | 'partial'
@@ -57,6 +58,11 @@ export type ProposeInput = {
 
 const runLocks = new Map<string, Promise<void>>()
 
+const LOCK_OPTIONS = {
+  retries: { retries: 30, minTimeout: 10, maxTimeout: 250 },
+  stale: 30_000,
+}
+
 function assertRunId(id: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id)) {
     throw new Error('run id must be 1-128 safe filename characters')
@@ -110,6 +116,18 @@ export class EvalApplyLedger {
     await rename(temporary, target)
   }
 
+  /**
+   * Serializes a read-modify-write on one run.
+   *
+   * Two layers, because the ledger has two kinds of contenders. The promise
+   * queue orders callers inside this process (a file lock is not reentrant,
+   * so concurrent local awaits would deadlock on it). The file lock then
+   * orders this process against every other one — teammates in other
+   * worktrees, remote workers, a second CLI. Without it two evaluators
+   * racing from separate processes both read the old run and the later
+   * rename silently discards the earlier verdict, which can drop a `fail`
+   * and let a run reach `ready`.
+   */
   private async exclusive<T>(
     id: string,
     operation: () => Promise<T>,
@@ -123,11 +141,32 @@ export class EvalApplyLedger {
     runLocks.set(id, queued)
     await previous
     try {
-      return await operation()
+      const releaseFileLock = await this.acquireFileLock(id)
+      try {
+        return await operation()
+      } finally {
+        await releaseFileLock()
+      }
     } finally {
       release()
       if (runLocks.get(id) === queued) runLocks.delete(id)
     }
+  }
+
+  /**
+   * proper-lockfile needs an existing path, and `propose` runs before the run
+   * file exists, so contend on a per-run sentinel instead of the JSON itself.
+   */
+  private async acquireFileLock(id: string): Promise<() => Promise<void>> {
+    assertRunId(id)
+    await mkdir(this.directory, { recursive: true })
+    const sentinel = join(this.directory, `${id}.lock`)
+    try {
+      await writeFile(sentinel, '', { flag: 'wx' })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+    return lockfile.lock(sentinel, LOCK_OPTIONS)
   }
 
   async get(id: string): Promise<EvalApplyRun> {
