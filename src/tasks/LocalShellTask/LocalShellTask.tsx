@@ -1,5 +1,4 @@
 import { feature } from 'bun:bundle';
-import { stat } from 'fs/promises';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG } from '../../constants/xml.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
 import type { AppState } from '../../state/AppState.js';
@@ -7,7 +6,6 @@ import type { LocalShellSpawnInput, SetAppState, Task, TaskContext, TaskHandle }
 import { createTaskStateBase } from '../../Task.js';
 import type { AgentId } from '../../types/ids.js';
 import { registerCleanup } from '../../utils/cleanupRegistry.js';
-import { tailFile } from '../../utils/fsOperations.js';
 import { logError } from '../../utils/log.js';
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
 import type { ShellCommand } from '../../utils/ShellCommand.js';
@@ -43,23 +41,22 @@ export function looksLikePrompt(tail: string): boolean {
 
 // Output-side analog of peekForStdinData (utils/process.ts): fire a one-shot
 // notification if output stops growing and the tail looks like a prompt.
-function startStallWatchdog(taskId: string, description: string, kind: BashTaskKind | undefined, toolUseId?: string, agentId?: AgentId): () => void {
+function startStallWatchdog(taskOutput: ShellCommand['taskOutput'], description: string, kind: BashTaskKind | undefined, toolUseId?: string, agentId?: AgentId): () => void {
   if (kind === 'monitor') return () => {};
-  const outputPath = getTaskOutputPath(taskId);
+  const taskId = taskOutput.taskId;
+  const outputPath = taskOutput.path;
   let lastSize = 0;
   let lastGrowth = Date.now();
   let cancelled = false;
   const timer = setInterval(() => {
-    void stat(outputPath).then(s => {
-      if (s.size > lastSize) {
-        lastSize = s.size;
+    void taskOutput.getFileSize().then(size => {
+      if (size > lastSize) {
+        lastSize = size;
         lastGrowth = Date.now();
         return;
       }
       if (Date.now() - lastGrowth < STALL_THRESHOLD_MS) return;
-      void tailFile(outputPath, STALL_TAIL_BYTES).then(({
-        content
-      }) => {
+      void taskOutput.readFileTail(STALL_TAIL_BYTES).then(content => {
         if (cancelled) return;
         if (!looksLikePrompt(content)) {
           // Not a prompt — keep watching. Reset so the next check is
@@ -218,7 +215,7 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
   // Data flows through TaskOutput automatically — no stream listeners needed.
   // Just transition to backgrounded state so the process keeps running.
   shellCommand.background(taskId);
-  const cancelStallWatchdog = startStallWatchdog(taskId, description, kind, toolUseId, agentId);
+  const cancelStallWatchdog = startStallWatchdog(taskOutput, description, kind, toolUseId, agentId);
   void shellCommand.result.then(async result => {
     cancelStallWatchdog();
     await flushAndCleanup(shellCommand);
@@ -325,7 +322,7 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
       }
     };
   });
-  const cancelStallWatchdog = startStallWatchdog(taskId, description, kind, toolUseId, agentId);
+  const cancelStallWatchdog = startStallWatchdog(shellCommand.taskOutput, description, kind, toolUseId, agentId);
 
   // Set up result handler
   void shellCommand.result.then(async result => {
@@ -439,7 +436,7 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
       }
     };
   });
-  const cancelStallWatchdog = startStallWatchdog(taskId, description, undefined, toolUseId, agentId);
+  const cancelStallWatchdog = startStallWatchdog(shellCommand.taskOutput, description, undefined, toolUseId, agentId);
 
   // Set up result handler (mirrors backgroundTask's handler)
   void shellCommand.result.then(async result => {

@@ -1127,14 +1127,6 @@ async function execCommandHook(
     }
   }
 
-  let stdout = ''
-  let stderr = ''
-  let output = ''
-
-  // Set up output data collection with explicit UTF-8 encoding
-  child.stdout.setEncoding('utf8')
-  child.stderr.setEncoding('utf8')
-
   let initialResponseChecked = false
 
   let asyncResolve:
@@ -1160,18 +1152,31 @@ async function execCommandHook(
   const processedPromptLines = new Set<string>()
   // Serialize async prompt handling so responses are sent in order
   let promptChain = Promise.resolve()
-  // Line buffer for detecting prompt requests in streaming output
-  let lineBuffer = ''
+  // Only protocol parsing needs a live stdout buffer. Command output itself is
+  // already owned by hookTaskOutput (via wrapSpawn), which spills to disk after
+  // 8MB. Keeping separate stdout/stderr/output strings here used to bypass that
+  // bound and made a 32MB hook peak around 1.4GB RSS due to repeated rope
+  // flattening. Bound the one incomplete protocol line as well: a hook can
+  // still emit arbitrary-size output, but it cannot make the parser retain an
+  // arbitrary-size line in addition to TaskOutput.
+  const MAX_PROTOCOL_LINE_LENGTH = 1024 * 1024
+  let firstLineBuffer = ''
+  let promptLineBuffer = ''
+  let promptParsingDisabled = false
 
   child.stdout.on('data', data => {
-    stdout += data
-    output += data
-
     // When requestPrompt is provided, parse stdout line-by-line for prompt requests
-    if (requestPrompt) {
-      lineBuffer += data
-      const lines = lineBuffer.split('\n')
-      lineBuffer = lines.pop() ?? '' // last element is an incomplete line
+    if (requestPrompt && !promptParsingDisabled) {
+      promptLineBuffer += data
+      if (
+        !promptLineBuffer.includes('\n') &&
+        promptLineBuffer.length > MAX_PROTOCOL_LINE_LENGTH
+      ) {
+        promptParsingDisabled = true
+        promptLineBuffer = ''
+      }
+      const lines = promptLineBuffer.split('\n')
+      promptLineBuffer = lines.pop() ?? '' // last element is an incomplete line
 
       for (const line of lines) {
         const trimmed = line.trim()
@@ -1199,7 +1204,6 @@ async function execCommandHook(
                 child.stdin.destroy()
               }
             })
-            continue
           }
         } catch {
           // Not JSON, just a normal line
@@ -1213,9 +1217,25 @@ async function execCommandHook(
     // before this 'data' event fires, parsing the full accumulated stdout fails
     // and an async hook blocks for its full duration instead of backgrounding.
     if (!initialResponseChecked) {
-      const firstLine = firstLineOf(stdout).trim()
-      if (!firstLine.includes('}')) return
+      firstLineBuffer += data
+      if (
+        !firstLineBuffer.includes('\n') &&
+        firstLineBuffer.length > MAX_PROTOCOL_LINE_LENGTH
+      ) {
+        initialResponseChecked = true
+        firstLineBuffer = ''
+        return
+      }
+      const firstLine = firstLineOf(firstLineBuffer).trim()
+      if (!firstLine.includes('}')) {
+        if (firstLineBuffer.includes('\n')) {
+          initialResponseChecked = true
+          firstLineBuffer = ''
+        }
+        return
+      }
       initialResponseChecked = true
+      firstLineBuffer = ''
       logForDebugging(`Hooks: Checking first line for async: ${firstLine}`)
       try {
         const parsed = jsonParse(firstLine)
@@ -1240,12 +1260,9 @@ async function execCommandHook(
           })
           if (backgrounded) {
             shellCommandTransferred = true
-            asyncResolve?.({
-              stdout,
-              stderr,
-              output,
-              status: 0,
-            })
+            void readHookTaskOutput(hookTaskOutput).then(result =>
+              asyncResolve?.({ ...result, status: 0 }),
+            )
           }
         } else if (isAsyncHookJSONOutput(parsed) && forceSyncExecution) {
           logForDebugging(
@@ -1262,16 +1279,11 @@ async function execCommandHook(
     }
   })
 
-  child.stderr.on('data', data => {
-    stderr += data
-    output += data
-  })
-
   const stopProgressInterval = startHookProgressInterval({
     hookId,
     hookName,
     hookEvent,
-    getOutput: async () => ({ stdout, stderr, output }),
+    getOutput: () => readHookTaskOutput(hookTaskOutput),
   })
 
   // Wait for stdout and stderr streams to finish before considering output complete
@@ -1333,7 +1345,9 @@ async function execCommandHook(
       exitCode = code ?? 1
 
       // Wait for both streams to end before resolving with the final output
-      void Promise.all([stdoutEndPromise, stderrEndPromise]).then(() => {
+      void Promise.all([stdoutEndPromise, stderrEndPromise]).then(async () => {
+        const { stdout, stderr, output } =
+          await readHookTaskOutput(hookTaskOutput)
         // Strip lines we processed as prompt requests so parseHookOutput
         // only sees the final hook result. Content-matching against the set
         // of actually-processed lines means prompt JSON can never leak
@@ -1430,6 +1444,15 @@ async function execCommandHook(
       shellCommand.cleanup()
     }
   }
+}
+
+async function readHookTaskOutput(
+  taskOutput: TaskOutput,
+): Promise<{ stdout: string; stderr: string; output: string }> {
+  await taskOutput.flush()
+  const stdout = await taskOutput.getStdout()
+  const stderr = taskOutput.getStderr()
+  return { stdout, stderr, output: stdout + stderr }
 }
 
 /**

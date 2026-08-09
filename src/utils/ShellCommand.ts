@@ -1,5 +1,4 @@
 import type { ChildProcess } from 'child_process'
-import { stat } from 'fs/promises'
 import type { Readable } from 'stream'
 import treeKill from 'tree-kill'
 import { generateTaskId } from '../Task.js'
@@ -238,12 +237,12 @@ class ShellCommandImpl implements ShellCommand {
 
   #startSizeWatchdog(): void {
     this.#sizeWatchdog = setInterval(() => {
-      void stat(this.taskOutput.path).then(
-        s => {
+      void this.taskOutput.getFileSize().then(
+        size => {
           // Bail if the watchdog was cleared while this stat was in flight
           // (process exited on its own) — otherwise we'd mislabel stderr.
           if (
-            s.size > this.#maxOutputBytes &&
+            size > this.#maxOutputBytes &&
             this.#status === 'backgrounded' &&
             this.#sizeWatchdog !== null
           ) {

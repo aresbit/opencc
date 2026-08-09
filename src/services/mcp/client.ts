@@ -96,6 +96,7 @@ import {
 import { recursivelySanitizeUnicode } from '../../utils/sanitization.js'
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js'
 import { subprocessEnv } from '../../utils/subprocessEnv.js'
+import { EndTruncatingAccumulator } from '../../utils/stringUtils.js'
 import {
   isPersistError,
   persistToolResult,
@@ -966,19 +967,15 @@ export const connectToServer = memoize(
       // outputs emitted during the connection start (this can be useful for debugging failed connections).
       // Store handler reference for cleanup to prevent memory leaks
       let stderrHandler: ((data: Buffer) => void) | undefined
-      let stderrOutput = ''
+      const stderrOutput = new EndTruncatingAccumulator(256 * 1024)
       if (serverRef.type === 'stdio' || !serverRef.type) {
         const stdioTransport = transport as StdioClientTransport
         if (stdioTransport.stderr) {
           stderrHandler = (data: Buffer) => {
-            // Cap stderr accumulation to prevent unbounded memory growth
-            if (stderrOutput.length < 64 * 1024 * 1024) {
-              try {
-                stderrOutput += data.toString()
-              } catch {
-                // Ignore errors from exceeding max string length
-              }
-            }
+            // Connection stderr is diagnostic context, not a tool result.
+            // Retaining up to 64MB here made noisy/broken MCP servers consume
+            // hundreds of MB through repeated string concatenation.
+            stderrOutput.append(data)
           }
           stdioTransport.stderr.on('data', stderrHandler)
         }
@@ -1080,9 +1077,9 @@ export const connectToServer = memoize(
 
       try {
         await Promise.race([connectPromise, timeoutPromise])
-        if (stderrOutput) {
-          logMCPError(name, `Server stderr: ${stderrOutput}`)
-          stderrOutput = '' // Release accumulated string to prevent memory growth
+        if (stderrOutput.length > 0) {
+          logMCPError(name, `Server stderr: ${stderrOutput.toString()}`)
+          stderrOutput.clear()
         }
         const elapsed = Date.now() - connectStartTime
         logMCPDebug(
@@ -1150,8 +1147,8 @@ export const connectToServer = memoize(
           inProcessServer.close().catch(() => {})
         }
         transport.close().catch(() => {})
-        if (stderrOutput) {
-          logMCPError(name, `Server stderr: ${stderrOutput}`)
+        if (stderrOutput.length > 0) {
+          logMCPError(name, `Server stderr: ${stderrOutput.toString()}`)
         }
         throw error
       }
