@@ -13,11 +13,27 @@ export type EvalApplyStatus =
   | 'applied'
 
 export type EvaluationRecord = {
+  /**
+   * Runtime identity of whoever recorded this, resolved from the agent context
+   * rather than from tool input. Independence is counted on this field: a model
+   * that picks two different `evaluator` labels is still one agent, and a
+   * high-risk run that needs two evaluators must actually get two of them.
+   */
+  evaluatorId: string
+  /** Human-readable label for transcripts. Not trusted for counting. */
   evaluator: string
   verdict: EvaluationVerdict
   score: number
   evidence: string[]
   createdAt: string
+}
+
+/**
+ * Ledgers written before evaluations carried a runtime identity fall back to
+ * the label, which is what they were already being counted by.
+ */
+function identityOf(evaluation: EvaluationRecord): string {
+  return evaluation.evaluatorId || evaluation.evaluator
 }
 
 export type EvalApplyEvent = {
@@ -94,6 +110,46 @@ function deriveStatus(run: EvalApplyRun): EvalApplyStatus {
     average >= run.threshold
     ? 'ready'
     : 'rejected'
+}
+
+/**
+ * Says what is missing and who has to supply it. A bare "status: evaluating"
+ * invites the model to retry the same call; naming the shortfall points it at
+ * the action that actually advances the run.
+ */
+function explainNotReady(run: EvalApplyRun): string {
+  const failed = run.evaluations.filter(item => item.verdict !== 'pass')
+  if (failed.length > 0) {
+    const who = failed.map(item => `${item.evaluator}=${item.verdict}`)
+    return (
+      `run is not ready to apply (status: ${run.status}). ` +
+      `Non-passing evaluations: ${who.join(', ')}. ` +
+      'Address the findings, then call revise to open a new revision — ' +
+      'revising clears prior evaluations so the fixed candidate is judged fresh.'
+    )
+  }
+  const missing = run.requiredEvaluations - run.evaluations.length
+  if (missing > 0) {
+    const recorded =
+      run.evaluations.map(item => item.evaluator).join(', ') || 'none'
+    return (
+      `run is not ready to apply (status: ${run.status}). ` +
+      `${run.risk}-risk needs ${run.requiredEvaluations} independent ` +
+      `evaluation(s); ${missing} still missing (recorded: ${recorded}). ` +
+      'Evaluations are counted per evaluating agent, so re-recording from ' +
+      'the same agent replaces its verdict rather than adding one — spawn ' +
+      'another evaluator agent to supply the next.'
+    )
+  }
+  const average =
+    run.evaluations.reduce((sum, item) => sum + item.score, 0) /
+    Math.max(1, run.evaluations.length)
+  return (
+    `run is not ready to apply (status: ${run.status}). ` +
+    `All evaluations passed but the mean score ${average.toFixed(2)} is below ` +
+    `the ${run.risk}-risk threshold ${run.threshold}. ` +
+    'Improve the candidate and revise, rather than re-scoring the same work.'
+  )
 }
 
 export class EvalApplyLedger {
@@ -270,6 +326,8 @@ export class EvalApplyLedger {
     evaluation: Omit<EvaluationRecord, 'createdAt'>,
   ): Promise<EvalApplyRun> {
     assertScore(evaluation.score)
+    if (!evaluation.evaluatorId.trim())
+      throw new Error('evaluatorId is required')
     if (!evaluation.evaluator.trim()) throw new Error('evaluator is required')
     if (evaluation.evidence.length === 0)
       throw new Error('evaluation evidence is required')
@@ -278,12 +336,15 @@ export class EvalApplyLedger {
       if (run.status === 'applied')
         throw new Error('an applied run cannot be evaluated')
       const now = new Date().toISOString()
+      // Keyed on identity, not label: re-recording replaces this agent's own
+      // verdict instead of adding a second one under a new name.
       run.evaluations = [
         ...run.evaluations.filter(
-          item => item.evaluator !== evaluation.evaluator,
+          item => identityOf(item) !== evaluation.evaluatorId,
         ),
         {
           ...evaluation,
+          evaluatorId: evaluation.evaluatorId.trim(),
           evaluator: evaluation.evaluator.trim(),
           createdAt: now,
         },
@@ -310,7 +371,7 @@ export class EvalApplyLedger {
       const run = await this.get(id)
       if (run.status === 'applied') return run
       if (run.status !== 'ready') {
-        throw new Error(`run is not ready to apply (status: ${run.status})`)
+        throw new Error(explainNotReady(run))
       }
       if (run.risk === 'high' && !approval?.trim()) {
         throw new Error(

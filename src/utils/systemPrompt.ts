@@ -8,6 +8,7 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { isBuiltInAgent } from '../tools/AgentTool/loadAgentsDir.js'
 import { isEnvTruthy } from './envUtils.js'
 import { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
+import { isMateBotModeEnabled } from './matebotMode.js'
 
 export { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
 
@@ -60,8 +61,7 @@ export function buildEffectiveSystemPrompt({
   // Use inline env check instead of coordinatorModule to avoid circular
   // dependency issues during test module loading.
   if (
-    (process.argv.includes('--matebot') ||
-      isEnvTruthy(process.env.OPENCC_MATEBOT) ||
+    (isMateBotModeEnabled() ||
       isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)) &&
     !mainThreadAgentDefinition
   ) {

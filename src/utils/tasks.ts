@@ -13,6 +13,7 @@ import { createSignal } from './signal.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import { getTeamName } from './teammate.js'
 import { getTeammateContext } from './teammateContext.js'
+import { isMateBotModeEnabled } from './matebotMode.js'
 
 // Listeners for task list updates (used for immediate UI refresh in same process)
 const tasksUpdated = createSignal()
@@ -133,10 +134,7 @@ async function writeHighWaterMark(
 export function isTodoV2Enabled(): boolean {
   // MateBot's control plane always needs a durable task DAG, including in
   // headless/cloud sessions where the legacy UI heuristic would disable it.
-  if (
-    process.argv.includes('--matebot') ||
-    isEnvTruthy(process.env.OPENCC_MATEBOT)
-  ) {
+  if (isMateBotModeEnabled()) {
     return true
   }
   // Force-enable tasks in non-interactive mode (e.g. SDK users who want Task tools over TodoWrite)

@@ -15,6 +15,7 @@ import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
 import { ACTOR_TOOL_NAME } from '../tools/ActorTool/constants.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
+import { isMateBotModeEnabled } from '../utils/matebotMode.js'
 
 // Checks the same gate as isScratchpadEnabled() in
 // utils/permissions/filesystem.ts. Duplicated here because importing
@@ -35,8 +36,7 @@ const INTERNAL_WORKER_TOOLS = new Set([
 
 export function isCoordinatorMode(): boolean {
   return (
-    process.argv.includes('--matebot') ||
-    isEnvTruthy(process.env.OPENCC_MATEBOT) ||
+    isMateBotModeEnabled() ||
     isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
   )
 }

@@ -72,6 +72,7 @@ const getTeammatePromptAddendum = () => require('./utils/swarm/teammatePromptAdd
 const getTeammateModeSnapshot = () => require('./utils/swarm/backends/teammateModeSnapshot.js') as typeof import('./utils/swarm/backends/teammateModeSnapshot.js');
 /* eslint-enable @typescript-eslint/no-require-imports */
 import * as coordinatorModeModule from './coordinator/coordinatorMode.js';
+import { setMateBotMode } from './utils/matebotMode.js';
 // Dead code elimination: conditional import for KAIROS (assistant mode)
 /* eslint-disable @typescript-eslint/no-require-imports */
 const assistantModule = feature('KAIROS') ? require('./assistant/index.js') as typeof import('./assistant/index.js') : null;
@@ -903,6 +904,11 @@ async function run(): Promise<CommanderCommand> {
   // not when displaying help. This avoids the need for env variable signaling.
   program.hook('preAction', async thisCommand => {
     profileCheckpoint('preAction_start');
+    // Commander owns flag semantics -- aliases, the `--` end-of-options marker,
+    // unknown-option handling. Hand its verdict to the MateBot gate so every
+    // downstream check agrees with what the user actually typed, instead of
+    // each one re-scanning raw argv and disagreeing about edge cases.
+    setMateBotMode(thisCommand.opts().matebot === true);
     // Await async subprocess loads started at module evaluation (lines 12-20).
     // Nearly free — subprocesses complete during the ~135ms of imports above.
     // Must resolve before init() which triggers the first settings read

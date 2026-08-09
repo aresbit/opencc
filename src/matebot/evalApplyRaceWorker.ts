@@ -12,6 +12,7 @@ const [root, evaluator, verdict, score, startAt] = process.argv.slice(2)
 while (Date.now() < Number(startAt)) await Bun.sleep(1)
 
 await new EvalApplyLedger(root!).evaluate('race', {
+  evaluatorId: `agent:${evaluator}`,
   evaluator: evaluator!,
   verdict: verdict as 'pass' | 'fail',
   score: Number(score),

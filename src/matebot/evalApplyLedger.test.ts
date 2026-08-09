@@ -29,7 +29,8 @@ describe('EvalApplyLedger', () => {
     })
     await expect(store.apply('r1')).rejects.toThrow('not ready')
     const ready = await store.evaluate('r1', {
-      evaluator: 'qa',
+      evaluatorId: 'agent:qa',
+        evaluator: 'qa',
       verdict: 'pass',
       score: 0.9,
       evidence: ['bun test: pass'],
@@ -48,12 +49,14 @@ describe('EvalApplyLedger', () => {
     })
     await Promise.all([
       store.evaluate('r2', {
+        evaluatorId: 'agent:qa-1',
         evaluator: 'qa-1',
         verdict: 'pass',
         score: 0.95,
         evidence: ['test A'],
       }),
       store.evaluate('r2', {
+        evaluatorId: 'agent:qa-2',
         evaluator: 'qa-2',
         verdict: 'pass',
         score: 0.92,
@@ -71,7 +74,8 @@ describe('EvalApplyLedger', () => {
     const store = await ledger()
     await store.propose({ id: 'r3', objective: 'fix', candidate: 'v1' })
     await store.evaluate('r3', {
-      evaluator: 'qa',
+      evaluatorId: 'agent:qa',
+        evaluator: 'qa',
       verdict: 'fail',
       score: 0.2,
       evidence: ['reproduction failed'],
@@ -122,4 +126,82 @@ describe('EvalApplyLedger', () => {
       await expect(store.apply('race')).rejects.toThrow('not ready to apply')
     }
   }, 60_000)
+
+  test('two labels from one agent do not satisfy a two-evaluator gate', async () => {
+    const store = await ledger()
+    await store.propose({
+      id: 'r-identity',
+      objective: 'high-risk change',
+      candidate: 'candidate',
+      risk: 'high', // requires 2 independent evaluations
+    })
+
+    // One agent, two self-chosen labels. Counting on the label would read this
+    // as two independent evaluations and unlock apply.
+    const sameAgent = 'agent:11111111-1111-1111-1111-111111111111'
+    await store.evaluate('r-identity', {
+      evaluatorId: sameAgent,
+      evaluator: 'alice',
+      verdict: 'pass',
+      score: 1,
+      evidence: ['ran the suite'],
+    })
+    await store.evaluate('r-identity', {
+      evaluatorId: sameAgent,
+      evaluator: 'bob',
+      verdict: 'pass',
+      score: 1,
+      evidence: ['ran it again'],
+    })
+
+    const run = await store.get('r-identity')
+    expect(run.evaluations).toHaveLength(1)
+    expect(run.evaluations[0]?.evaluator).toBe('bob') // replaced, not appended
+    expect(run.status).toBe('evaluating')
+    await expect(store.apply('r-identity', 'coordinator', 'approved')).rejects.toThrow(
+      /needs 2 independent evaluation/,
+    )
+
+    // A genuinely different agent is what unlocks it.
+    await store.evaluate('r-identity', {
+      evaluatorId: 'agent:22222222-2222-2222-2222-222222222222',
+      evaluator: 'carol',
+      verdict: 'pass',
+      score: 1,
+      evidence: ['independent repro'],
+    })
+    expect((await store.get('r-identity')).status).toBe('ready')
+  })
+
+  test('a refused apply explains what is missing', async () => {
+    const store = await ledger()
+    await store.propose({
+      id: 'r-explain',
+      objective: 'o',
+      candidate: 'c',
+      risk: 'low',
+      threshold: 0.9,
+    })
+    await store.evaluate('r-explain', {
+      evaluatorId: 'agent:a',
+      evaluator: 'qa',
+      verdict: 'fail',
+      score: 0.1,
+      evidence: ['crashes on empty input'],
+    })
+    // Names the failing evaluator and points at revise, not at a retry.
+    await expect(store.apply('r-explain')).rejects.toThrow(/qa=fail/)
+    await expect(store.apply('r-explain')).rejects.toThrow(/call revise/)
+
+    // Passing but below threshold is a distinct, separately-explained state.
+    await store.revise('r-explain', 'better candidate')
+    await store.evaluate('r-explain', {
+      evaluatorId: 'agent:a',
+      evaluator: 'qa',
+      verdict: 'pass',
+      score: 0.5,
+      evidence: ['works, but slow'],
+    })
+    await expect(store.apply('r-explain')).rejects.toThrow(/below the low-risk threshold 0.9/)
+  })
 })

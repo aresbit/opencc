@@ -14,6 +14,7 @@ import { STATUSLINE_SETUP_AGENT } from './built-in/statuslineSetup.js'
 import { VERIFICATION_AGENT } from './built-in/verificationAgent.js'
 import { VIRAL_WRITER_AGENT } from './built-in/viralWriterAgent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
+import { isMateBotModeEnabled } from '../../utils/matebotMode.js'
 
 export function areExplorePlanAgentsEnabled(): boolean {
   if (feature('BUILTIN_EXPLORE_PLAN_AGENTS')) {
@@ -38,8 +39,7 @@ export function getBuiltInAgents(): AgentDefinition[] {
   // issues at module init time. The coordinatorMode module depends on tools
   // which depend on AgentTool which imports this file.
   if (
-    process.argv.includes('--matebot') ||
-    isEnvTruthy(process.env.OPENCC_MATEBOT) ||
+    isMateBotModeEnabled() ||
     isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
   ) {
     /* eslint-disable @typescript-eslint/no-require-imports */

@@ -1,8 +1,10 @@
 import { z } from 'zod/v4'
-import { getProjectRoot } from '../../bootstrap/state.js'
+import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import { EvalApplyLedger } from '../../matebot/evalApplyLedger.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import { getAgentContext, isSubagentContext } from '../../utils/agentContext.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { getAgentId, getAgentName } from '../../utils/teammate.js'
 import { EVAL_APPLY_TOOL_NAME } from './constants.js'
 
 export { EVAL_APPLY_TOOL_NAME } from './constants.js'
@@ -17,7 +19,14 @@ const inputSchema = lazySchema(() =>
     risk: z.enum(['low', 'medium', 'high']).optional(),
     requiredEvaluations: z.number().int().min(1).max(20).optional(),
     threshold: z.number().min(0).max(1).optional(),
-    evaluator: z.string().optional(),
+    evaluator: z
+      .string()
+      .optional()
+      .describe(
+        'Optional display label for this evaluation. Independence is counted ' +
+          'from the calling agent, not from this string, so a second label ' +
+          'does not count as a second evaluator.',
+      ),
     verdict: z.enum(['pass', 'fail', 'partial']).optional(),
     score: z.number().min(0).max(1).optional(),
     evidence: z.array(z.string()).optional(),
@@ -47,13 +56,51 @@ function requireValue<T>(value: T | undefined, name: string): T {
   return value
 }
 
+/**
+ * Who is calling, according to the runtime rather than the model.
+ *
+ * The `evaluator` field is a label the model writes, so counting independence
+ * on it means one agent can satisfy a two-evaluator gate by picking two names.
+ * The agent context is assigned when an agent is spawned and is not reachable
+ * from prompt text, so it is what the gate counts.
+ */
+function resolveEvaluatorIdentity(supplied?: string): {
+  evaluatorId: string
+  evaluator: string
+} {
+  const agentContext = getAgentContext()
+  if (agentContext) {
+    const role = isSubagentContext(agentContext)
+      ? (agentContext.subagentName ?? 'subagent')
+      : 'teammate'
+    return {
+      evaluatorId: `agent:${agentContext.agentId}`,
+      evaluator: supplied?.trim() || role,
+    }
+  }
+  const teammateId = getAgentId()
+  if (teammateId) {
+    return {
+      evaluatorId: `agent:${teammateId}`,
+      evaluator: supplied?.trim() || getAgentName() || 'teammate',
+    }
+  }
+  // Main thread: the coordinator itself. Counts as exactly one evaluator.
+  return {
+    evaluatorId: `session:${getSessionId()}`,
+    evaluator: supplied?.trim() || 'coordinator',
+  }
+}
+
 export const EvalApplyTool = buildTool({
   name: EVAL_APPLY_TOOL_NAME,
   async description() {
     return 'Durable MateBot quality gate: propose a candidate, record independent evaluations, and apply only after policy passes.'
   },
   async prompt() {
-    return `Use this as the source of truth for MateBot delivery state. Builders create candidates; evaluators attach command-backed evidence; apply is rejected until the evaluation count, verdicts, score threshold, and high-risk human-approval rule are satisfied.`
+    return `Use this as the source of truth for MateBot delivery state. Builders create candidates; evaluators attach command-backed evidence; apply is rejected until the evaluation count, verdicts, score threshold, and high-risk human-approval rule are satisfied.
+
+Each evaluation is attributed to the agent that records it. Recording twice from the same agent replaces that agent's verdict rather than adding a second one, so a run needing two independent evaluations needs two separate evaluator agents. When apply is refused the error names what is missing — read it and act on it instead of retrying the same call.`
   },
   get inputSchema() {
     return inputSchema()
@@ -99,7 +146,7 @@ export const EvalApplyTool = buildTool({
       )
     } else if (input.action === 'evaluate') {
       run = await ledger.evaluate(requireValue(input.runId, 'runId'), {
-        evaluator: requireValue(input.evaluator, 'evaluator'),
+        ...resolveEvaluatorIdentity(input.evaluator),
         verdict: requireValue(input.verdict, 'verdict'),
         score: requireValue(input.score, 'score'),
         evidence: requireValue(input.evidence, 'evidence'),
