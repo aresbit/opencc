@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type ToolPermissionContext = any;
-export type Tool = any;
-export type ToolUseContext = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../Tool.js'

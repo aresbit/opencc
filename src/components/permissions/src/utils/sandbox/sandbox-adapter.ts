@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type NetworkHostPattern = any;
-export type shouldAllowManagedSandboxDomainsOnly = any;
-export type SandboxManager = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../utils/sandbox/sandbox-adapter.js'

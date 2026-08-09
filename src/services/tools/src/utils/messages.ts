@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type createUserMessage = any;
-export type REJECT_MESSAGE = any;
-export type withMemoryCorrectionHint = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../utils/messages.js'

@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type getDefaultMainLoopModelSetting = any;
-export type isNonCustomOpusModel = any;
-export type getSmallFastModel = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../utils/model/model.js'

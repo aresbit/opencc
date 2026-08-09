@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type AUTO_MODE_DESCRIPTION = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../components/AutoModeOptInDialog.js'

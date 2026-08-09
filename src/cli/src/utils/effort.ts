@@ -1,5 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type modelSupportsEffort = any;
-export type modelSupportsMaxEffort = any;
-export type EFFORT_LEVELS = any;
-export type resolveAppliedEffort = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../utils/effort.js'

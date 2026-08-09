@@ -1,7 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type CooldownReason = any;
-export type isFastModeEnabled = any;
-export type onCooldownExpired = any;
-export type onCooldownTriggered = any;
-export type onFastModeOverageRejection = any;
-export type onOrgFastModeChanged = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../utils/fastMode.js'

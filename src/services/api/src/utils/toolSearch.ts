@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type extractDiscoveredToolNames = any;
-export type isDeferredToolsDeltaEnabled = any;
-export type isToolSearchEnabled = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../utils/toolSearch.js'

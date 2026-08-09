@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type describeMcpConfigFilePath = any;
-export type getScopeLabel = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../services/mcp/utils.js'

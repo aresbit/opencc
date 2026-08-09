@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type getSystemPrompt = any;
-export type SYSTEM_PROMPT_DYNAMIC_BOUNDARY = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../constants/prompts.js'

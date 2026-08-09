@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type AgentDefinition = { name: string; [key: string]: unknown };
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../tools/AgentTool/loadAgentsDir.js'

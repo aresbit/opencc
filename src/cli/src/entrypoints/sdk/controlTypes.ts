@@ -1,9 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type StdoutMessage = any;
-export type SDKControlInitializeRequest = any;
-export type SDKControlInitializeResponse = any;
-export type SDKControlRequest = any;
-export type SDKControlResponse = any;
-export type SDKControlMcpSetServersResponse = any;
-export type SDKControlReloadPluginsResponse = any;
-export type StdinMessage = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../entrypoints/sdk/controlTypes.js'

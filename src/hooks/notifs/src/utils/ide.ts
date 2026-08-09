@@ -1,5 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type detectIDEs = any;
-export type IDEExtensionInstallationStatus = any;
-export type isJetBrainsIde = any;
-export type isSupportedTerminal = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../utils/ide.js'

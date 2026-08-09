@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type LIST_MCP_RESOURCES_TOOL_NAME = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../tools/ListMcpResourcesTool/prompt.js'

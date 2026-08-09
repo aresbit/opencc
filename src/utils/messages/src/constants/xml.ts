@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type LOCAL_COMMAND_STDERR_TAG = any;
-export type LOCAL_COMMAND_STDOUT_TAG = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../constants/xml.js'

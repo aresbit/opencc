@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type downloadUserSettings = any;
-export type redownloadUserSettings = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../services/settingsSync/index.js'

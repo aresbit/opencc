@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../entrypoints/sdk/runtimeTypes.js'

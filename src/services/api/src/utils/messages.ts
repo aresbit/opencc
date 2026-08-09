@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type createAssistantAPIErrorMessage = any;
-export type NO_RESPONSE_REQUESTED = any;
-export type createSystemAPIErrorMessage = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../utils/messages.js'

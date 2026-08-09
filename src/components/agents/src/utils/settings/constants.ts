@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type SettingSource = any;
-export type getSettingSourceName = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../utils/settings/constants.js'

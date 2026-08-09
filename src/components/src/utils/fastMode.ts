@@ -1,5 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type FAST_MODE_MODEL_DISPLAY = any;
-export type isFastModeAvailable = any;
-export type isFastModeCooldown = any;
-export type isFastModeEnabled = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../utils/fastMode.js'

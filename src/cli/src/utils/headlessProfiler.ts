@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type headlessProfilerStartTurn = any;
-export type headlessProfilerCheckpoint = any;
-export type logHeadlessProfilerTurn = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../utils/headlessProfiler.js'

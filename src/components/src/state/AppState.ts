@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type useAppState = any;
-export type useSetAppState = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../state/AppState.js'

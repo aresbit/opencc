@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type isConnectorTextBlock = (block: unknown) => boolean;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../types/connectorText.js'

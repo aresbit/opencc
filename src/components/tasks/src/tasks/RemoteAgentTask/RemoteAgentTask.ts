@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type RemoteAgentTaskState = any;
-export type RemoteAgentTask = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../tasks/RemoteAgentTask/RemoteAgentTask.js'

@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type CLAUDE_IN_CHROME_MCP_SERVER_NAME = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../utils/claudeInChrome/common.js'

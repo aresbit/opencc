@@ -1,4 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type isDebugMode = any;
-export type isDebugToStdErr = any;
-export type getDebugLogPath = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../utils/debug.js'

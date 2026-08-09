@@ -1,5 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type tryGenerateSuggestion = any;
-export type logSuggestionOutcome = any;
-export type logSuggestionSuppressed = any;
-export type PromptVariant = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../services/PromptSuggestion/promptSuggestion.js'

@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type logEvent = any;
-export type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../services/analytics/index.js'

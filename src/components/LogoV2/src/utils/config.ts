@@ -1,3 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type getGlobalConfig = any;
-export type saveGlobalConfig = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../utils/config.js'

@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type EnterPlanModeTool = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../tools/EnterPlanModeTool/EnterPlanModeTool.js'

@@ -1,2 +1,2 @@
-// Auto-generated type stub — replace with real implementation
-export type getModeColor = any;
+// Forward to the canonical module; restored from a decompiler-generated stub.
+export * from '../../../../../utils/permissions/PermissionMode.js'
