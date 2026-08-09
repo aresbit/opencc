@@ -315,6 +315,8 @@ export type RemoteAgentMetadata = {
   isUltraplan?: boolean
   isRemoteReview?: boolean
   remoteTaskMetadata?: Record<string, unknown>
+  remoteProvider?: 'anthropic' | 'matebot-ws'
+  remoteSessionUrl?: string
 }
 
 function getRemoteAgentsDir(): string {

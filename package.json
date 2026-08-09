@@ -38,6 +38,8 @@
     "build": "bun build src/entrypoints/cli.tsx --outdir dist --target bun --external @firecrawl/anydoc",
     "build:ant": "bun run scripts/build-ant.ts",
     "dev": "bun run src/entrypoints/cli.tsx",
+    "matebot": "bun run src/entrypoints/cli.tsx --matebot",
+    "matebot:worker": "bun run src/entrypoints/matebot-worker.ts",
     "prepublishOnly": "bun run build",
     "lint": "biome lint src/",
     "lint:fix": "biome lint --fix src/",

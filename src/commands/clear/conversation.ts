@@ -227,7 +227,7 @@ export async function clearConversation({
   // knows what the new post-clear session was in. clearSessionMetadata
   // wiped both from the cache, but the process is still in the same mode
   // and (if applicable) the same worktree directory.
-  if (feature('COORDINATOR_MODE')) {
+  {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { saveMode } = require('../../utils/sessionStorage.js')
     const {

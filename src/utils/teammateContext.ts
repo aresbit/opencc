@@ -14,6 +14,8 @@
  */
 
 import { AsyncLocalStorage } from 'async_hooks'
+import type { ActorRuntime } from '../actor/ActorRuntime.js'
+import type { LispMetaInterpreter } from '../actor/LispMetaInterpreter.js'
 
 /**
  * Runtime context for in-process teammates.
@@ -36,6 +38,9 @@ export type TeammateContext = {
   isInProcess: true
   /** Abort controller for lifecycle management (linked to parent) */
   abortController: AbortController
+  /** Durable actor transport and the agent's persistent meta-interpreter. */
+  actorRuntime: ActorRuntime
+  lispInterpreter: LispMetaInterpreter
 }
 
 const teammateContextStorage = new AsyncLocalStorage<TeammateContext>()
@@ -88,6 +93,8 @@ export function createTeammateContext(config: {
   planModeRequired: boolean
   parentSessionId: string
   abortController: AbortController
+  actorRuntime: ActorRuntime
+  lispInterpreter: LispMetaInterpreter
 }): TeammateContext {
   return {
     ...config,

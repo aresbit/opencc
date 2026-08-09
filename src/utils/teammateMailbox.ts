@@ -34,7 +34,10 @@ import { getAgentName, getTeammateColor, getTeamName } from './teammate.js'
 // to achieve the same serialization semantics.
 const LOCK_OPTIONS = {
   retries: {
-    retries: 10,
+    // A coordinator can fan out to more than ten actors at once. Keep the
+    // budget aligned with the durable task graph so a burst does not silently
+    // drop the last writer while earlier writers hold the mailbox lock.
+    retries: 30,
     minTimeout: 5,
     maxTimeout: 100,
   },
@@ -1161,7 +1164,12 @@ export function getLastPeerDmSummary(messages: Message[]): string | undefined {
     if (!Array.isArray(content)) continue
     for (const block of content) {
       if (typeof block === 'string') continue
-      const b = block as unknown as { type: string; name?: string; input?: Record<string, unknown>; [key: string]: unknown }
+      const b = block as unknown as {
+        type: string
+        name?: string
+        input?: Record<string, unknown>
+        [key: string]: unknown
+      }
       if (
         b.type === 'tool_use' &&
         b.name === SEND_MESSAGE_TOOL_NAME &&
@@ -1177,7 +1185,7 @@ export function getLastPeerDmSummary(messages: Message[]): string | undefined {
         const to = b.input.to as string
         const summary =
           'summary' in b.input && typeof b.input.summary === 'string'
-            ? b.input.summary as string
+            ? (b.input.summary as string)
             : (b.input.message as string).slice(0, 80)
         return `[to ${to}] ${summary}`
       }

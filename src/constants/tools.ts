@@ -32,6 +32,16 @@ import {
   CRON_DELETE_TOOL_NAME,
   CRON_LIST_TOOL_NAME,
 } from '../tools/ScheduleCronTool/prompt.js'
+import { EVAL_APPLY_TOOL_NAME } from '../tools/EvalApplyTool/constants.js'
+import { MEMORY_TOOL_NAME } from '../tools/MemoryTool/constants.js'
+import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
+import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
+import { ACTOR_TOOL_NAME } from '../tools/ActorTool/constants.js'
+import {
+  GOAL_CREATE_TOOL_NAME,
+  GOAL_GET_TOOL_NAME,
+  GOAL_UPDATE_TOOL_NAME,
+} from '../tools/GoalTool/constants.js'
 
 export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   TASK_OUTPUT_TOOL_NAME,
@@ -68,6 +78,23 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   TOOL_SEARCH_TOOL_NAME,
   ENTER_WORKTREE_TOOL_NAME,
   EXIT_WORKTREE_TOOL_NAME,
+  // MateBot specialist capabilities. They are stateful, but each worker is
+  // assigned a bounded phase and the underlying stores provide serialization.
+  'mythos',
+  'pm-tool',
+  'se-tool',
+  GOAL_CREATE_TOOL_NAME,
+  GOAL_GET_TOOL_NAME,
+  GOAL_UPDATE_TOOL_NAME,
+  TASK_CREATE_TOOL_NAME,
+  TASK_GET_TOOL_NAME,
+  TASK_LIST_TOOL_NAME,
+  TASK_UPDATE_TOOL_NAME,
+  CRON_CREATE_TOOL_NAME,
+  CRON_DELETE_TOOL_NAME,
+  CRON_LIST_TOOL_NAME,
+  MEMORY_TOOL_NAME,
+  ACTOR_TOOL_NAME,
 ])
 /**
  * Tools allowed only for in-process teammates (not general async agents).
@@ -80,6 +107,7 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
   TASK_LIST_TOOL_NAME,
   TASK_UPDATE_TOOL_NAME,
   SEND_MESSAGE_TOOL_NAME,
+  ACTOR_TOOL_NAME,
   // Teammate-created crons are tagged with the creating agentId and routed to
   // that teammate's pendingUserMessages queue (see useScheduledTasks.ts).
   ...(feature('AGENT_TRIGGERS')
@@ -109,4 +137,19 @@ export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
   TASK_STOP_TOOL_NAME,
   SEND_MESSAGE_TOOL_NAME,
   SYNTHETIC_OUTPUT_TOOL_NAME,
+  EVAL_APPLY_TOOL_NAME,
+  GOAL_CREATE_TOOL_NAME,
+  GOAL_GET_TOOL_NAME,
+  GOAL_UPDATE_TOOL_NAME,
+  TASK_CREATE_TOOL_NAME,
+  TASK_GET_TOOL_NAME,
+  TASK_LIST_TOOL_NAME,
+  TASK_UPDATE_TOOL_NAME,
+  CRON_CREATE_TOOL_NAME,
+  CRON_DELETE_TOOL_NAME,
+  CRON_LIST_TOOL_NAME,
+  MEMORY_TOOL_NAME,
+  TEAM_CREATE_TOOL_NAME,
+  TEAM_DELETE_TOOL_NAME,
+  ACTOR_TOOL_NAME,
 ])

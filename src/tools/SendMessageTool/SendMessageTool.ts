@@ -1,5 +1,7 @@
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
+import { LocalActorMailbox } from '../../actor/LocalActorMailbox.js'
+import { createActorEnvelope, localActorAddress } from '../../actor/types.js'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
 import { getReplBridgeHandle } from '../../bridge/replBridgeHandle.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
@@ -130,6 +132,25 @@ export type SendMessageToolOutput =
   | RequestOutput
   | ResponseOutput
 
+async function persistActorMessage(input: {
+  teamName?: string
+  senderName: string
+  recipientName: string
+  content: string
+  summary?: string
+}): Promise<void> {
+  const team = input.teamName || 'default'
+  await new LocalActorMailbox().send(
+    createActorEnvelope({
+      from: localActorAddress(team, input.senderName),
+      to: localActorAddress(team, input.recipientName),
+      payload: input.content,
+      kind: 'teammate.message',
+      metadata: input.summary ? { summary: input.summary } : undefined,
+    }),
+  )
+}
+
 function findTeammateColor(
   appState: {
     teamContext?: { teammates: { [id: string]: { color?: string } } }
@@ -169,6 +190,13 @@ async function handleMessage(
     },
     teamName,
   )
+  await persistActorMessage({
+    teamName,
+    senderName,
+    recipientName,
+    content,
+    summary,
+  })
 
   const recipientColor = findTeammateColor(appState, recipientName)
 
@@ -247,6 +275,13 @@ async function handleBroadcast(
       },
       teamName,
     )
+    await persistActorMessage({
+      teamName,
+      senderName,
+      recipientName,
+      content,
+      summary,
+    })
   }
 
   return {
@@ -826,7 +861,9 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
                 prompt: input.message,
                 toolUseContext: context,
                 canUseTool,
-                invokingRequestId: assistantMessage?.requestId as string | undefined,
+                invokingRequestId: assistantMessage?.requestId as
+                  | string
+                  | undefined,
               })
               return {
                 data: {
@@ -853,7 +890,9 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
                 prompt: input.message,
                 toolUseContext: context,
                 canUseTool,
-                invokingRequestId: assistantMessage?.requestId as string | undefined,
+                invokingRequestId: assistantMessage?.requestId as
+                  | string
+                  | undefined,
               })
               return {
                 data: {

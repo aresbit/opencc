@@ -34,6 +34,12 @@ export const DEFAULT_MAX_AGE_DAYS =
  * `CLAUDE_CODE_DISABLE_CRON` is a local override that wins over GB.
  */
 export function isKairosCronEnabled(): boolean {
+  if (
+    (process.argv.includes('--matebot') || isEnvTruthy(process.env.OPENCC_MATEBOT)) &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON)
+  ) {
+    return true
+  }
   return feature('AGENT_TRIGGERS')
     ? !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON) &&
         getFeatureValue_CACHED_WITH_REFRESH(
@@ -54,6 +60,9 @@ export function isKairosCronEnabled(): boolean {
  * scheduler via isKairosCronEnabled).
  */
 export function isDurableCronEnabled(): boolean {
+  if (process.argv.includes('--matebot') || isEnvTruthy(process.env.OPENCC_MATEBOT)) {
+    return true
+  }
   return getFeatureValue_CACHED_WITH_REFRESH(
     'tengu_kairos_cron_durable',
     true,

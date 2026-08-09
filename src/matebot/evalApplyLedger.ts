@@ -1,0 +1,296 @@
+import { randomUUID } from 'crypto'
+import { mkdir, readFile, rename, writeFile } from 'fs/promises'
+import { join } from 'path'
+
+export type MateBotRisk = 'low' | 'medium' | 'high'
+export type EvaluationVerdict = 'pass' | 'fail' | 'partial'
+export type EvalApplyStatus =
+  | 'candidate'
+  | 'evaluating'
+  | 'rejected'
+  | 'ready'
+  | 'applied'
+
+export type EvaluationRecord = {
+  evaluator: string
+  verdict: EvaluationVerdict
+  score: number
+  evidence: string[]
+  createdAt: string
+}
+
+export type EvalApplyEvent = {
+  type: 'proposed' | 'revised' | 'evaluated' | 'applied'
+  at: string
+  actor: string
+  detail: string
+}
+
+export type EvalApplyRun = {
+  id: string
+  objective: string
+  candidate: string
+  artifacts: string[]
+  risk: MateBotRisk
+  revision: number
+  requiredEvaluations: number
+  threshold: number
+  status: EvalApplyStatus
+  evaluations: EvaluationRecord[]
+  events: EvalApplyEvent[]
+  createdAt: string
+  updatedAt: string
+  appliedAt?: string
+  approval?: string
+}
+
+export type ProposeInput = {
+  id?: string
+  objective: string
+  candidate: string
+  artifacts?: string[]
+  risk?: MateBotRisk
+  requiredEvaluations?: number
+  threshold?: number
+  actor?: string
+}
+
+const runLocks = new Map<string, Promise<void>>()
+
+function assertRunId(id: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(id)) {
+    throw new Error('run id must be 1-128 safe filename characters')
+  }
+}
+
+function assertScore(score: number): void {
+  if (!Number.isFinite(score) || score < 0 || score > 1) {
+    throw new Error('evaluation score must be between 0 and 1')
+  }
+}
+
+function defaultThreshold(risk: MateBotRisk): number {
+  if (risk === 'high') return 0.9
+  if (risk === 'medium') return 0.8
+  return 0.7
+}
+
+function deriveStatus(run: EvalApplyRun): EvalApplyStatus {
+  if (run.appliedAt) return 'applied'
+  if (run.evaluations.some(item => item.verdict === 'fail')) return 'rejected'
+  if (run.evaluations.length < run.requiredEvaluations) {
+    return run.evaluations.length === 0 ? 'candidate' : 'evaluating'
+  }
+  const average =
+    run.evaluations.reduce((sum, item) => sum + item.score, 0) /
+    run.evaluations.length
+  return run.evaluations.every(item => item.verdict === 'pass') &&
+    average >= run.threshold
+    ? 'ready'
+    : 'rejected'
+}
+
+export class EvalApplyLedger {
+  readonly directory: string
+
+  constructor(workspaceRoot: string) {
+    this.directory = join(workspaceRoot, '.matebot', 'eval-apply')
+  }
+
+  private path(id: string): string {
+    assertRunId(id)
+    return join(this.directory, `${id}.json`)
+  }
+
+  private async persist(run: EvalApplyRun): Promise<void> {
+    await mkdir(this.directory, { recursive: true })
+    const target = this.path(run.id)
+    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`
+    await writeFile(temporary, `${JSON.stringify(run, null, 2)}\n`, 'utf8')
+    await rename(temporary, target)
+  }
+
+  private async exclusive<T>(
+    id: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = runLocks.get(id) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const queued = previous.then(() => current)
+    runLocks.set(id, queued)
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (runLocks.get(id) === queued) runLocks.delete(id)
+    }
+  }
+
+  async get(id: string): Promise<EvalApplyRun> {
+    const value = JSON.parse(
+      await readFile(this.path(id), 'utf8'),
+    ) as EvalApplyRun
+    value.status = deriveStatus(value)
+    return value
+  }
+
+  async propose(input: ProposeInput): Promise<EvalApplyRun> {
+    const id = input.id ?? `run-${randomUUID()}`
+    assertRunId(id)
+    if (!input.objective.trim() || !input.candidate.trim()) {
+      throw new Error('objective and candidate are required')
+    }
+    const risk = input.risk ?? 'medium'
+    const requiredEvaluations =
+      input.requiredEvaluations ?? (risk === 'high' ? 2 : 1)
+    if (
+      !Number.isInteger(requiredEvaluations) ||
+      requiredEvaluations < 1 ||
+      requiredEvaluations > 20
+    ) {
+      throw new Error('requiredEvaluations must be an integer between 1 and 20')
+    }
+    const threshold = input.threshold ?? defaultThreshold(risk)
+    assertScore(threshold)
+    const now = new Date().toISOString()
+    const run: EvalApplyRun = {
+      id,
+      objective: input.objective.trim(),
+      candidate: input.candidate.trim(),
+      artifacts: input.artifacts ?? [],
+      risk,
+      revision: 1,
+      requiredEvaluations,
+      threshold,
+      status: 'candidate',
+      evaluations: [],
+      events: [
+        {
+          type: 'proposed',
+          at: now,
+          actor: input.actor ?? 'coordinator',
+          detail: input.candidate.trim(),
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    }
+    await this.exclusive(id, async () => {
+      try {
+        await this.get(id)
+        throw new Error(`eval/apply run already exists: ${id}`)
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.startsWith('eval/apply run already exists')
+        ) {
+          throw error
+        }
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        await this.persist(run)
+      }
+    })
+    return run
+  }
+
+  async revise(
+    id: string,
+    candidate: string,
+    artifacts: string[] = [],
+    actor = 'coordinator',
+  ): Promise<EvalApplyRun> {
+    return this.exclusive(id, async () => {
+      const run = await this.get(id)
+      if (run.status === 'applied')
+        throw new Error('an applied run cannot be revised')
+      if (!candidate.trim()) throw new Error('candidate is required')
+      const now = new Date().toISOString()
+      run.candidate = candidate.trim()
+      run.artifacts = artifacts
+      run.revision += 1
+      run.evaluations = []
+      run.updatedAt = now
+      run.status = 'candidate'
+      run.events.push({
+        type: 'revised',
+        at: now,
+        actor,
+        detail: run.candidate,
+      })
+      await this.persist(run)
+      return run
+    })
+  }
+
+  async evaluate(
+    id: string,
+    evaluation: Omit<EvaluationRecord, 'createdAt'>,
+  ): Promise<EvalApplyRun> {
+    assertScore(evaluation.score)
+    if (!evaluation.evaluator.trim()) throw new Error('evaluator is required')
+    if (evaluation.evidence.length === 0)
+      throw new Error('evaluation evidence is required')
+    return this.exclusive(id, async () => {
+      const run = await this.get(id)
+      if (run.status === 'applied')
+        throw new Error('an applied run cannot be evaluated')
+      const now = new Date().toISOString()
+      run.evaluations = [
+        ...run.evaluations.filter(
+          item => item.evaluator !== evaluation.evaluator,
+        ),
+        {
+          ...evaluation,
+          evaluator: evaluation.evaluator.trim(),
+          createdAt: now,
+        },
+      ]
+      run.updatedAt = now
+      run.status = deriveStatus(run)
+      run.events.push({
+        type: 'evaluated',
+        at: now,
+        actor: evaluation.evaluator,
+        detail: `${evaluation.verdict}:${evaluation.score}`,
+      })
+      await this.persist(run)
+      return run
+    })
+  }
+
+  async apply(
+    id: string,
+    actor = 'coordinator',
+    approval?: string,
+  ): Promise<EvalApplyRun> {
+    return this.exclusive(id, async () => {
+      const run = await this.get(id)
+      if (run.status === 'applied') return run
+      if (run.status !== 'ready') {
+        throw new Error(`run is not ready to apply (status: ${run.status})`)
+      }
+      if (run.risk === 'high' && !approval?.trim()) {
+        throw new Error(
+          'high-risk apply requires explicit human approval evidence',
+        )
+      }
+      const now = new Date().toISOString()
+      run.appliedAt = now
+      run.approval = approval?.trim()
+      run.updatedAt = now
+      run.status = 'applied'
+      run.events.push({
+        type: 'applied',
+        at: now,
+        actor,
+        detail: approval?.trim() ?? 'policy',
+      })
+      await this.persist(run)
+      return run
+    })
+  }
+}

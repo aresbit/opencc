@@ -71,10 +71,7 @@ const getTeammateUtils = () => require('./utils/teammate.js') as typeof import('
 const getTeammatePromptAddendum = () => require('./utils/swarm/teammatePromptAddendum.js') as typeof import('./utils/swarm/teammatePromptAddendum.js');
 const getTeammateModeSnapshot = () => require('./utils/swarm/backends/teammateModeSnapshot.js') as typeof import('./utils/swarm/backends/teammateModeSnapshot.js');
 /* eslint-enable @typescript-eslint/no-require-imports */
-// Dead code elimination: conditional import for COORDINATOR_MODE
-/* eslint-disable @typescript-eslint/no-require-imports */
-const coordinatorModeModule = feature('COORDINATOR_MODE') ? require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js') : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
+import * as coordinatorModeModule from './coordinator/coordinatorMode.js';
 // Dead code elimination: conditional import for KAIROS (assistant mode)
 /* eslint-disable @typescript-eslint/no-require-imports */
 const assistantModule = feature('KAIROS') ? require('./assistant/index.js') as typeof import('./assistant/index.js') : null;
@@ -1869,7 +1866,7 @@ async function run(): Promise<CommanderCommand> {
 
     // Apply coordinator mode tool filtering for headless path
     // (mirrors useMergedTools.ts filtering for REPL/interactive path)
-    if (feature('COORDINATOR_MODE') && isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)) {
+    if (coordinatorModeModule.isCoordinatorMode()) {
       const {
         applyCoordinatorToolFilter
       } = await import('./utils/toolPool.js');
@@ -3767,9 +3764,7 @@ async function run(): Promise<CommanderCommand> {
       maybeActivateProactive(options);
       maybeActivateBrief(options);
       // Persist the current mode for fresh sessions so future resumes know what mode was used
-      if (feature('COORDINATOR_MODE')) {
-        saveMode(coordinatorModeModule?.isCoordinatorMode() ? 'coordinator' : 'normal');
-      }
+      saveMode(coordinatorModeModule.isCoordinatorMode() ? 'coordinator' : 'normal');
 
       // If launched via a deep link, show a provenance banner so the user
       // knows the session originated externally. Linux xdg-open and
@@ -3810,6 +3805,7 @@ async function run(): Promise<CommanderCommand> {
   // Worktree flags
   program.option('-w, --worktree [name]', 'Create a new git worktree for this session (optionally specify a name)');
   program.option('--tmux', 'Create a tmux session for the worktree (requires --worktree). Uses iTerm2 native panes when available; use --tmux=classic for traditional tmux.');
+  program.option('--matebot', 'Run as a MateBot swarm coordinator with specialist workers and eval/apply gates');
   if (canUserConfigureAdvisor()) {
     program.addOption(new Option('--advisor <model>', 'Enable the server-side advisor tool with the specified model (alias or full ID).').hideHelp());
   }
@@ -4590,7 +4586,7 @@ async function logTenguInit({
         appendSystemPromptFlag: appendSystemPromptFlag as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       }),
       is_simple: isBareMode() || undefined,
-      is_coordinator: feature('COORDINATOR_MODE') && coordinatorModeModule?.isCoordinatorMode() ? true : undefined,
+      is_coordinator: coordinatorModeModule.isCoordinatorMode() ? true : undefined,
       ...(assistantActivationPath && {
         assistantActivationPath: assistantActivationPath as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       }),

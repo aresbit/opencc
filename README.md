@@ -2,6 +2,25 @@
 
 `opencc` 是 Anthropic Claude Code CLI 的逆向工程重建版：恢复核心功能，裁剪次要能力。构建与安装由仓库根目录的 `Makefile` 驱动。
 
+## MateBot 群体智能模式
+
+OpenCC 现在可作为 MateBot 的多 Agent harness 运行：协调者将目标分解给 `researcher` / `planner` / `builder` / `evaluator` 等异构角色，通过持久化 `eval/apply` 门禁防止“实现完成”被误当作“产品交付”。
+
+```bash
+# package.json 提供的 MateBot 启动命令（推荐）
+bun run matebot
+
+# 开发模式：通过环境变量启用 MateBot
+OPENCC_MATEBOT=1 bun run dev
+
+# 通过 make install / make install-local 安装 opencc 后
+opencc --matebot
+```
+
+三种方式都会启用 MateBot Coordinator、专家 Agent、持久任务图、Actor 通信与 eval/apply 门禁。不带 `--matebot` 且未设置 `OPENCC_MATEBOT=1` 时，默认运行普通 OpenCC 单 Agent 模式。
+
+架构、质量门禁和云端/HCI 接入边界见 [MateBot 群体智能 Harness](docs/matebot-swarm-harness.md)。
+
 ## 编译与安装
 
 | 命令 | 作用 |

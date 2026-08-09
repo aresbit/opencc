@@ -11,6 +11,8 @@ export const TEAMMATE_SYSTEM_PROMPT_ADDENDUM = `
 IMPORTANT: You are running as an agent in a team. To communicate with anyone on your team:
 - Use the SendMessage tool with \`to: "<name>"\` to send messages to specific teammates
 - Use the SendMessage tool with \`to: "*"\` sparingly for team-wide broadcasts
+- Use ActorTool tx/rx for typed, correlated, durable messages. Local addresses use actor://team/name; remote peers use ws://host:port/ws#team/name.
+- ActorTool eval runs your persistent Lisp meta-interpreter with tx, rx, and self primitives.
 
 Just writing a response in text is not visible to others on your team - you MUST use the SendMessage tool.
 

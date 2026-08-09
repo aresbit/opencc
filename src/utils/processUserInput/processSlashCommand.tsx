@@ -19,6 +19,7 @@ import { renderToolUseProgressMessage } from '../../tools/AgentTool/UI.js';
 import type { CommandResultDisplay } from '../../types/command.js';
 import { createAbortController } from '../abortController.js';
 import { getAgentContext } from '../agentContext.js';
+import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js';
 import { createAttachmentMessage, getAttachmentMessages } from '../attachments.js';
 import { logForDebugging } from '../debug.js';
 import { isEnvTruthy } from '../envUtils.js';
@@ -834,7 +835,7 @@ async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCom
   // parent env, so we also check !context.agentId: agentId is only set for
   // subagents, letting workers fall through to getPromptForCommand and receive
   // the real skill content when they invoke the Skill tool.
-  if (feature('COORDINATOR_MODE') && isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) && !context.agentId) {
+  if (isCoordinatorMode() && !context.agentId) {
     const metadata = formatCommandLoadingMetadata(command, args);
     const parts: string[] = [`Skill "/${command.name}" is available for workers.`];
     if (command.description) {

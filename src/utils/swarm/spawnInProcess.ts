@@ -14,6 +14,9 @@
  */
 
 import sample from 'lodash-es/sample.js'
+import { ActorRuntime } from '../../actor/ActorRuntime.js'
+import { LispMetaInterpreter } from '../../actor/LispMetaInterpreter.js'
+import { localActorAddress } from '../../actor/types.js'
 import { getSessionId } from '../../bootstrap/state.js'
 import { getSpinnerVerbs } from '../../constants/spinnerVerbs.js'
 import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js'
@@ -136,6 +139,12 @@ export async function spawnInProcessTeammate(
 
     // Create teammate context for AsyncLocalStorage
     // This will be used by runWithTeammateContext() during agent execution
+    const actorRuntime = new ActorRuntime(localActorAddress(teamName, name), {
+      token:
+        process.env.MATEBOT_ACTOR_TOKEN?.trim() ||
+        process.env.MATEBOT_REMOTE_TOKEN?.trim(),
+    })
+    const lispInterpreter = new LispMetaInterpreter(actorRuntime)
     const teammateContext = createTeammateContext({
       agentId,
       agentName: name,
@@ -144,6 +153,8 @@ export async function spawnInProcessTeammate(
       planModeRequired,
       parentSessionId,
       abortController,
+      actorRuntime,
+      lispInterpreter,
     })
 
     // Register agent in Perfetto trace for hierarchy visualization

@@ -8,7 +8,9 @@ import { isEnvTruthy } from './envUtils.js'
  * pass it anyway, it will work (subject to the killswitch).
  */
 function isAgentTeamsFlagSet(): boolean {
-  return process.argv.includes('--agent-teams')
+  return (
+    process.argv.includes('--agent-teams') || process.argv.includes('--matebot')
+  )
 }
 
 /**
@@ -24,6 +26,15 @@ function isAgentTeamsFlagSet(): boolean {
 export function isAgentSwarmsEnabled(): boolean {
   // Ant: always on
   if (process.env.USER_TYPE === 'ant') {
+    return true
+  }
+
+  // MateBot is OpenCC's supported swarm product mode. It must not depend on
+  // an Anthropic-hosted experiment flag or GrowthBook availability.
+  if (
+    isEnvTruthy(process.env.OPENCC_MATEBOT) ||
+    process.argv.includes('--matebot')
+  ) {
     return true
   }
 

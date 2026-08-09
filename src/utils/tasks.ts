@@ -131,6 +131,14 @@ async function writeHighWaterMark(
 }
 
 export function isTodoV2Enabled(): boolean {
+  // MateBot's control plane always needs a durable task DAG, including in
+  // headless/cloud sessions where the legacy UI heuristic would disable it.
+  if (
+    process.argv.includes('--matebot') ||
+    isEnvTruthy(process.env.OPENCC_MATEBOT)
+  ) {
+    return true
+  }
   // Force-enable tasks in non-interactive mode (e.g. SDK users who want Task tools over TodoWrite)
   if (isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_TASKS)) {
     return true
