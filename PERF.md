@@ -15,7 +15,7 @@ bun build src/entrypoints/cli.tsx --outdir dist --target bun --external @firecra
 | Variant | Bundle size | Peak RSS, median | Elapsed, median | Verdict |
 |---|---:|---:|---:|---|
 | Baseline | 25.61 MB | 217,464 KB | 0.45 s | replaced |
-| `--minify` | 13.85 MB | 189,084 KB | 0.38 s | kept |
+| `--minify` | 13.85 MB | 189,084 KB | 0.38 s | superseded, see below |
 
 The heap profile attributed 45.8 MB of retained heap to the bundled module
 environment. Minification reduces executable/module metadata as well as the
@@ -26,6 +26,29 @@ Running the minified bundle with Bun's `--smol` mode was not adopted: median
 RSS moved only from 189,192 KB to 185,448 KB (-2.0%), while median startup time
 rose from 0.39s to 0.57s (+46%). The memory change is too small for that latency
 cost.
+
+### Amendment: identifier mangling separated from the rest
+
+`--minify` bundles three transforms, and they were re-measured separately
+because the identifier pass is the one that costs debuggability: it renames
+`computeUserPermissionGate` to `t`, so every stack trace out of a shipped
+build loses its function names.
+
+| Variant | Bundle size | Peak RSS, median | Elapsed, median | Trace names |
+|---|---:|---:|---:|---|
+| Baseline | 25 MB | 217,696 KB | 0.45 s | readable |
+| `--minify-whitespace --minify-syntax` | 19 MB | 200,976 KB | 0.42 s | readable |
+| Full `--minify` | 14 MB | 189,724 KB | 0.39 s | mangled |
+
+Whitespace and syntax minification alone capture 16,720 KB of the 27,972 KB
+total, or 60%. Mangling identifiers buys the remaining 11,252 KB — 5.6% of
+baseline RSS — in exchange for unreadable production traces. The first two are
+kept and identifier mangling is dropped; it is one flag away if peak RSS ever
+becomes the binding constraint.
+
+Source maps were evaluated as a way to keep both and rejected. Bun loads the
+46 MB map eagerly, so `--minify --sourcemap=linked` measured 0.53 s and
+381,368 KB — worse than shipping no minification at all on both axes.
 
 ## 2026-08-10: bounded command-hook output
 
