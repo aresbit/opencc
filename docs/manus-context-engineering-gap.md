@@ -133,8 +133,10 @@ opencc 只有"写"没有"读"：`TodoWrite` 把清单推进 `AppStateStore`，RE
 
 ## 下一步
 
-1. **工具集合稳定化（第 2 条）** —— 把 `isEnabled()` 过滤从"删定义"改为"留定义 + permission 层拒绝"，
-   减少会话中途的缓存失效
+1. **扫一遍其余 `isEnabled()` 的会话内稳定性** —— LSPTool 是查到的第一个实例，
+   `ChromeCDPTool`（探测 CDP 脚本是否存在）等还没逐个核实。可以考虑加一条不变量：
+   `isEnabled()` 必须是会话内稳定的，可用性随时变化的属于 call time
 2. **子 agent 沙箱隔离** —— 云端 agent 与本地 CLI 最本质的差别，工作量最大
 3. **扇出编排原语** —— Wide Research 式的"对 N 个同类条目并行处理"
 4. 补核实第 6 条与 Skills 渐进披露的实现状态
+5. 装上 node_modules 后补 LSPTool 那项的测试（见上文说明）
