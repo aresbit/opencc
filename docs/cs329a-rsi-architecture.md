@@ -39,10 +39,11 @@ opencc 的策略 θ 本来就不是权重，而是 (系统提示 + skills + memd
 
 ## 为什么先做第 2、3 步：单次退出码不构成证据
 
-opencc 的完成闸门本来就是机器核验而非模型自述——`auditCompletion()` 会 stat 文件、
-跑命令、读退出码。但每一项都是**单次**的，而单次检查在验证器带随机性的仓库里问的是错问题。
-机器人仓库恰恰全是这种验证器：带随机种子的物理仿真、传感器噪声下的控制器、
-和定时器赛跑的测试。那里一次绿不是事实，是一次伯努利抽样。
+opencc 的完成闸门本来就有机器核验的部分——`admitEvidence()` 会 stat 文件、校验 URL 形状。
+但那只覆盖到 `file` 和 `url`：**命令类证据一次都没跑过**，它是关于另一次工具调用的自述，
+note 的长度要求只让这句话更具体，没让它更真。而机器人仓库的验证器恰恰全带随机性——
+带随机种子的物理仿真、传感器噪声下的控制器、和定时器赛跑的测试——
+那里就算自述完全诚实（"我跑了一次，绿了"），一次绿也不是事实，是一次伯努利抽样。
 
 这就是 `src/services/rsi/` 的全部动机。
 
@@ -101,6 +102,35 @@ Result:  5/5 passed (100.0%)
 About 35 consecutive passes are needed to claim 90.0%.
 ```
 
+### `ledger.ts` + GoalTool 对接 —— 让"命令跑过了"这句话可核验
+
+这是本轮的第二步。原来的完成闸门有一处结构性弱点：`command` / `test` 证据是
+**关于另一次工具调用的自述** —— 模型在 Bash 里跑 `pytest`，然后告诉 `update_goal`
+它通过了。闸门能确认文件存在，却无法确认一句关于命令行为的话；note 的长度要求
+只让这句话更具体，并没有让它更真。而对随机验证器来说，
+就算这句话完全诚实（"我跑了一次，绿了"），它也仍然不是证据。
+
+现在 `rsi` 的每次 `measure` / `compare` 会把**退出码实际是什么**写进一个
+会话内的账本，按命令 + 目录索引。`admitEvidence` 查这个账本：
+
+- 记录为 `flaky` / `broken` → **直接拒绝**。note 说不过测量。
+- 记录的工作树指纹与当前不符 → **拒绝为陈旧**：那组数字描述的是已经不存在的代码。
+- 记录为 `verified` → admit，并打上 `machineChecked`，计数存进 `Evidence.measurement`。
+- 没有记录 → 照旧 admit。大多数仓库的大多数命令是确定性的，
+  为 `tsc` 强制跑一轮试验是仪式而不是严谨；但 `auditCompletion` 会把它报成自述，
+  而不是让它冒充测量过的主张。
+
+不对称是刻意的：**测量是可选的，但测量不可撤销。** 一旦 `rsi` 记下某命令是 flaky，
+再多的 note 也不能让它通过，直到一次新的测量取代旧的。
+账本只有 `rsi` 能写——模型可以写 note，写不了计数。
+
+账本是会话内、内存里的：一次测量是关于某一份工作树的陈述，
+跨会话持久化等于把关于早已改掉的代码的主张复活。
+
+`auditCompletion` 也不再只说"全部满足"了。它现在分开报
+`measured` / `unmeasuredCommands` / `observationOnly`——
+只说成功而不说证据是什么，等于邀请读者假设每一条都测量过。
+
 ---
 
 ## 三处我没照抄课程公式
@@ -154,8 +184,10 @@ search 的 `C/t_s` 包含第一份初稿，refinement 的 `C/t_r` 是在 `p0` **
 1. **§7.3.1 第 4 步 / §7.4 Reflexion —— 把验证过的轨迹蒸馏进技能库。**
    这是真正的 RSI 闭环，也是"知识进仓库"那一半。本轮做的是它的前置：
    没有可信的筛选闸门，蒸馏只会把噪声写进技能库。
-2. **`rsi` 与 GoalTool 证据闸门的对接。** `auditCompletion()` 现在还是单次跑命令；
-   把它换成 `readEvidence` 之后，随机验证器下的完成判定才成立。
+2. ~~**`rsi` 与 GoalTool 证据闸门的对接。**~~ 已做，见上文。
+   （顺带更正我上一轮的说法：`auditCompletion()` 从来没有跑过命令，
+   `admitEvidence()` 也没有——弱点不是"只跑一次"，而是**一次都没跑**，
+   命令类证据完全是自述。）
 3. **PRM 式的过程评估。** §3.3 的蒙特卡洛步骤标注需要从每一步 rollout，
    估计量本身是确定性的，但采样成本是 agent 调用，得先想清楚预算。
 4. **`compare` 自动取基线。** 现在要求调用方先 `measure` 存下计数——
@@ -172,6 +204,9 @@ search 的 `C/t_s` 包含第一份初稿，refinement 的 `C/t_r` 是在 `p0` **
 | `src/services/rsi/credit.ts` | 合取链的逐步信用分配 |
 | `src/services/rsi/uct.ts` | UCB/UCT 候选选择 |
 | `src/services/rsi/trials.ts` | 重复执行验证器、失败聚类 |
+| `src/services/rsi/ledger.ts` | 测量账本、工作树指纹、陈旧判定 |
 | `src/tools/SelfImproveTool/` | `rsi` 工具与报告渲染 |
-| `src/services/rsi/__tests__/` | 102 个测试 |
+| `src/services/rsi/__tests__/` | 115 个测试 |
 | `src/tools/SelfImproveTool/__tests__/` | 28 个测试 |
+| `src/tools/GoalTool/__tests__/evidenceMeasurement.test.ts` | 15 个测试 |
+| `src/tools/GoalTool/__tests__/rsiGateIntegration.test.ts` | 5 个端到端测试 |

@@ -4,6 +4,10 @@ import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { getSessionId } from '../../bootstrap/state.js'
 import { getCwd } from '../../utils/cwd.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
+import {
+  checkStaleness,
+  lookupMeasurement,
+} from '../../services/rsi/ledger.js'
 
 export type GoalStatus =
   | 'active'
@@ -80,6 +84,22 @@ export const EVIDENCE_KINDS: readonly EvidenceKind[] = [
   'observation',
 ]
 
+/**
+ * What a measurement of the evidence's ref showed, when one exists.
+ *
+ * Only present for `command` / `test` evidence whose ref has been through
+ * `rsi measure`. The counts come from the ledger, which only that tool writes,
+ * so this is the one part of a command claim the model does not author.
+ */
+export interface EvidenceMeasurement {
+  passes: number
+  attempts: number
+  /** Wilson lower bound — the worst true rate the evidence still permits. */
+  lowerBound: number
+  verdict: 'verified' | 'flaky' | 'broken' | 'insufficient'
+  measuredAt: number
+}
+
 export interface Evidence {
   kind: EvidenceKind
   /** The command run, file path, test name, or URL the claim rests on. */
@@ -89,6 +109,8 @@ export interface Evidence {
   at: number
   /** Set when the runtime independently confirmed the ref (e.g. file exists). */
   machineChecked?: boolean
+  /** Present when the ref was measured by `rsi`, absent when it was not. */
+  measurement?: EvidenceMeasurement
 }
 
 export interface SuccessCriterion {
@@ -545,8 +567,29 @@ export interface EvidenceAdmission {
  * - every kind needs a concrete `ref`;
  * - `file` evidence is confirmed against the filesystem;
  * - `url` refs must actually look like URLs;
+ * - `command` / `test` refs are checked against the measurement ledger, which
+ *   only `rsi` writes to — see below;
  * - `observation` — the only kind with no external referent — needs a
  *   substantive note, because it is pure self-report.
+ *
+ * **On command evidence.** A claim about what a command did is self-report
+ * about something that happened in another tool call: the model runs `pytest`
+ * in a Bash call and then tells `update_goal` that it passed. The note
+ * requirement makes that claim specific; it does not make it true, and for a
+ * stochastic verifier a truthful note about one green run still is not
+ * evidence the thing works.
+ *
+ * So when the ref has been measured, the measurement decides. A ref on record
+ * as `flaky` or `broken` is rejected outright, and a ref measured against a
+ * different working tree is rejected as stale — the numbers describe code that
+ * no longer exists. An unmeasured ref is still admitted, because most commands
+ * in most repositories are deterministic and demanding a trial run for `tsc`
+ * would be ceremony; it is admitted as self-report, and `auditCompletion`
+ * reports it as such rather than letting it pass for a measured claim.
+ *
+ * The asymmetry is deliberate: measuring is optional, but a measurement cannot
+ * be un-taken. Once `rsi` has recorded that a command is flaky, no note
+ * admits it.
  */
 export async function admitEvidence(
   input: EvidenceInput,
@@ -594,6 +637,35 @@ export async function admitEvidence(
     }
   }
 
+  let measurement: EvidenceMeasurement | undefined
+  if (kind === 'command' || kind === 'test') {
+    const recorded = lookupMeasurement(ref)
+    if (recorded) {
+      const { reading } = recorded
+      if (reading.verdict === 'flaky' || reading.verdict === 'broken') {
+        return {
+          ok: false,
+          error: `Evidence rejected: "${ref}" is on record as ${reading.verdict}. ${reading.summary} A note cannot override a measurement — fix the underlying problem and measure again with rsi.`,
+        }
+      }
+      const staleness = await checkStaleness(recorded)
+      if (staleness === 'stale') {
+        return {
+          ok: false,
+          error: `Evidence rejected: "${ref}" was measured against a different working tree, so those ${reading.passes}/${reading.attempts} runs describe code that has since changed. Re-run rsi measure against the current tree.`,
+        }
+      }
+      measurement = {
+        passes: reading.passes,
+        attempts: reading.attempts,
+        lowerBound: reading.interval.low,
+        verdict: reading.verdict,
+        measuredAt: recorded.recordedAt,
+      }
+      machineChecked = reading.verdict === 'verified'
+    }
+  }
+
   if (kind === 'observation' && note.length < 20) {
     return {
       ok: false,
@@ -610,6 +682,7 @@ export async function admitEvidence(
       note: note || undefined,
       at: Date.now(),
       machineChecked: machineChecked || undefined,
+      measurement,
     },
   }
 }
@@ -738,6 +811,15 @@ export interface CompletionAudit {
   open: SuccessCriterion[]
   /** Criteria whose only support is model self-report. */
   observationOnly: SuccessCriterion[]
+  /**
+   * Criteria resting on a command or test that was never measured. Admitted,
+   * but they are a claim about a command's behaviour rather than a reading of
+   * it — which for anything stochastic is the difference between a fact and
+   * one draw.
+   */
+  unmeasuredCommands: SuccessCriterion[]
+  /** Criteria backed by a measurement that cleared its confidence bar. */
+  measured: SuccessCriterion[]
   /** Subgoals still awaiting a result. */
   inFlightSubgoals: Subgoal[]
   /** Gates the user has not decided yet. */
@@ -755,6 +837,13 @@ export function auditCompletion(goal: Goal): CompletionAudit {
   const met = criteria.filter(c => c.status === 'met')
   const waived = criteria.filter(c => c.status === 'waived')
   const observationOnly = met.filter(c => c.evidence?.kind === 'observation')
+  const commandBacked = met.filter(
+    c => c.evidence?.kind === 'command' || c.evidence?.kind === 'test',
+  )
+  const unmeasuredCommands = commandBacked.filter(c => !c.evidence?.measurement)
+  const measured = commandBacked.filter(
+    c => c.evidence?.measurement?.verdict === 'verified',
+  )
   const inFlightSubgoals = (goal.subgoals ?? []).filter(
     s => s.status === 'in_flight',
   )
@@ -766,6 +855,8 @@ export function auditCompletion(goal: Goal): CompletionAudit {
     waived: waived.length,
     open,
     observationOnly,
+    unmeasuredCommands,
+    measured,
     inFlightSubgoals,
     openGates: undecidedGates,
   }
@@ -804,10 +895,34 @@ export function auditCompletion(goal: Goal): CompletionAudit {
       reason: `${undecidedGates.length} gate(s) still await a user decision:\n${list}\nThe user resolves these with /goal gate <id> approve|reject.`,
     }
   }
+  // Admitted, but the reason states what the evidence actually is. A gate that
+  // reports "all criteria satisfied" and nothing else invites the reader to
+  // assume every one of them was measured.
+  const caveats: string[] = []
+  if (measured.length > 0) {
+    caveats.push(`${measured.length} measured`)
+  }
+  if (unmeasuredCommands.length > 0) {
+    caveats.push(
+      `${unmeasuredCommands.length} resting on an unmeasured command (${unmeasuredCommands
+        .map(c => c.id)
+        .join(', ')}) — fine for a deterministic check, not for anything with a random seed`,
+    )
+  }
+  if (observationOnly.length > 0) {
+    caveats.push(
+      `${observationOnly.length} on self-report alone (${observationOnly
+        .map(c => c.id)
+        .join(', ')})`,
+    )
+  }
+
   return {
     ...base,
     admitted: true,
-    reason: `All ${criteria.length} success criteria satisfied (${met.length} with evidence, ${waived.length} waived).`,
+    reason:
+      `All ${criteria.length} success criteria satisfied (${met.length} with evidence, ${waived.length} waived).` +
+      (caveats.length > 0 ? ` Of those: ${caveats.join('; ')}.` : ''),
   }
 }
 

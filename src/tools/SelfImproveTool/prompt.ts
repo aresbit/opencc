@@ -32,6 +32,8 @@ action: "measure", command: "pytest tests/test_grasp.py", trials: 10
 
 **\`attribute\` instead of guessing which step broke.** A conjunctive pipeline multiplies: thirty steps at 95% each succeed 21% of the time end to end. Feed per-step counts and it names the step carrying the loss, and refuses to blame steps it has barely observed.
 
+**A measurement is on record.** Every \`measure\` and \`compare\` writes what the exit codes were, keyed by the command and directory. When you later satisfy a goal success criterion with \`command\` or \`test\` evidence naming that command, the gate reads the measurement instead of your note: a command on record as flaky or broken is rejected outright, and one measured before the working tree changed is rejected as stale. So measure after the change, not before, and pass the command exactly as you ran it.
+
 **\`select\` when several approaches are open.** Three theories for why the sim diverges, four candidate patches — pure greed locks onto whichever got lucky first, and even rotation wastes budget on approaches already shown to be bad. Pass each candidate's mean score and trial count; it applies UCB, so an untried candidate always gets its first look and a neglected one stays in contention until it has actually been ruled out.
 
 **\`allocate\` before spending a big retry budget.** Sampling fresh attempts and revising a draft scale differently. On an easy task one careful revision beats several fresh attempts; on a hard one only independent draws find the rare good solution. The rates it needs come from \`measure\`, not from a guess.`

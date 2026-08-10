@@ -1,6 +1,7 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { getCwd } from '../../utils/cwd.js'
 import { chooseStrategy } from '../../services/rsi/allocation.js'
 import { attributeFailure } from '../../services/rsi/credit.js'
 import { compareRuns } from '../../services/rsi/estimators.js'
@@ -10,6 +11,10 @@ import {
   runTrials,
   type TrialRun,
 } from '../../services/rsi/trials.js'
+import {
+  recordMeasurement,
+  treeFingerprint,
+} from '../../services/rsi/ledger.js'
 import { rankByUct } from '../../services/rsi/uct.js'
 import {
   renderAllocation,
@@ -235,6 +240,7 @@ export const SelfImproveTool = buildTool({
           abortSignal,
           requiredLowerBound: input.required_lower_bound,
         })
+        await record(run, input.cwd)
         return {
           data: {
             action: 'measure',
@@ -282,6 +288,7 @@ export const SelfImproveTool = buildTool({
           passes: run.reading.passes,
           attempts: run.reading.attempts,
         })
+        await record(run, input.cwd)
         return {
           data: {
             action: 'compare',
@@ -376,6 +383,27 @@ export const SelfImproveTool = buildTool({
     }
   },
 } satisfies ToolDef<InputSchema, Output>)
+
+/**
+ * Put the measurement on record.
+ *
+ * This is what lets the completion gate check a claim about a command instead
+ * of believing a sentence about it: only this tool writes to the ledger, and it
+ * writes the exit codes it observed. A truncated run is not recorded — the
+ * counts would understate the trials, and a partial sample masquerading as a
+ * measurement is worse than no measurement.
+ */
+async function record(run: TrialRun, cwd: string | undefined): Promise<void> {
+  if (run.aborted || run.reading.attempts === 0) return
+  const directory = cwd ?? getCwd()
+  recordMeasurement({
+    command: run.command,
+    cwd: directory,
+    reading: run.reading,
+    recordedAt: Date.now(),
+    treeFingerprint: await treeFingerprint(directory),
+  })
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)

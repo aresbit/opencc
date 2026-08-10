@@ -29,7 +29,7 @@ const evidenceSchema = lazySchema(() =>
     ref: z
       .string()
       .describe(
-        'The concrete referent: the exact command, test name, file path, or URL.',
+        'The concrete referent: the exact command, test name, file path, or URL. For command/test evidence this is matched against the rsi measurement ledger, so give the command exactly as it was run.',
       ),
     note: z
       .string()
@@ -68,7 +68,7 @@ const inputSchema = lazySchema(() =>
         })
         .optional()
         .describe(
-          'Satisfy a success criterion with concrete evidence. Evidence is admitted deterministically: file paths must exist, URLs must be URLs, and command/test/observation evidence must carry a note.',
+          'Satisfy a success criterion with concrete evidence. Evidence is admitted deterministically: file paths must exist, URLs must be URLs, and command/test/observation evidence must carry a note. A command already measured by rsi is judged on that measurement, not on the note — one on record as flaky or broken is rejected, as is one measured against a working tree that has since changed.',
         ),
       criterion_waive: z
         .object({
