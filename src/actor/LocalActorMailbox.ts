@@ -1,5 +1,6 @@
+import { createHash } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import * as lockfile from '../utils/lockfile.js'
 import { jsonParse, jsonStringify } from '../utils/slowOperations.js'
@@ -54,19 +55,34 @@ export class LocalActorMailbox {
     this.root = root
   }
 
+  /**
+   * Sanitizing is lossy: every character outside [A-Za-z0-9_-] collapses to
+   * '-', so `文档-opencc`, `下载-opencc` and `資料-opencc` all name the same
+   * file. Sharing a mailbox is not a cosmetic problem — delivery is
+   * at-most-once, so co-located actors would claim each other's envelopes.
+   * Append a digest of the exact component when sanitizing changed anything,
+   * which keeps the readable prefix and leaves clean ASCII names untouched.
+   */
+  private safeComponent(value: string): string {
+    const sanitized = sanitizePathComponent(value)
+    if (sanitized === value) return sanitized
+    const digest = createHash('sha256').update(value).digest('hex').slice(0, 8)
+    return `${sanitized}-${digest}`
+  }
+
   private pathFor(address: ActorAddress): string {
     return join(
       this.root,
-      sanitizePathComponent(address.team),
-      `${sanitizePathComponent(address.name)}.json`,
+      this.safeComponent(address.team),
+      `${this.safeComponent(address.name)}.json`,
     )
   }
 
   private async ensure(address: ActorAddress): Promise<string> {
     const path = this.pathFor(address)
-    await mkdir(join(this.root, sanitizePathComponent(address.team)), {
-      recursive: true,
-    })
+    // Must agree with pathFor, or a non-ASCII team creates one directory and
+    // the write targets another.
+    await mkdir(dirname(path), { recursive: true })
     try {
       await writeFile(path, '[]', { flag: 'wx' })
     } catch (error) {

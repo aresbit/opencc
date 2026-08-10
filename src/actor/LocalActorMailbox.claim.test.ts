@@ -85,4 +85,42 @@ describe('LocalActorMailbox.claim', () => {
 
     expect(await box.peek(ADDRESS)).toEqual([])
   })
+
+  test('non-ASCII names get distinct mailboxes', async () => {
+    // sanitizePathComponent maps every character outside [A-Za-z0-9_-] to '-',
+    // so these three used to name one file. Delivery is at-most-once, so they
+    // would have claimed each other's envelopes rather than merely looking odd.
+    const box = await mailbox()
+    const names = ['文档-opencc', '下载-opencc', '資料-opencc', 'yysapp-opencc']
+
+    for (const name of names) {
+      await box.send(
+        createActorEnvelope({
+          from: localActorAddress('local', 'sender'),
+          to: localActorAddress('local', name),
+          payload: name,
+        }),
+      )
+    }
+
+    for (const name of names) {
+      const delivered = await box.peek(localActorAddress('local', name))
+      expect(delivered.map(e => e.payload)).toEqual([name])
+    }
+  })
+
+  test('a non-ASCII team writes and reads the same directory', async () => {
+    // ensure() used to mkdir with the raw sanitizer while pathFor used the
+    // digest form, so the directory created and the file written diverged.
+    const box = await mailbox()
+    const address = localActorAddress('团队', 'qa')
+    await box.send(
+      createActorEnvelope({
+        from: localActorAddress('团队', 'dev'),
+        to: address,
+        payload: 'ok',
+      }),
+    )
+    expect((await box.peek(address)).map(e => e.payload)).toEqual(['ok'])
+  })
 })
