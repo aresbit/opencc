@@ -26,7 +26,47 @@
 | **5. 保留错误现场** | **已满足** | `is_error` 原样进入上下文；`utils/messages.ts` 里唯一的 sanitize 是剥离 error 结果中的非 text 块，属 API 协议要求（"all content must be type text if is_error is true"），不是隐藏错误 |
 | **6. 别把自己 few-shot 进沟里** | 未核实 | — |
 | **Wide Research** —— 完整实例子 agent、独立 VM、全新上下文、彼此不通信 | **隔离已具备（此前记错）**；缺扇出编排原语 | 见下
-| **Agent Skills 渐进披露** | 未核实 | SkillTool 解析 frontmatter、按需加载 body，看起来至少有两级 |
+| **Agent Skills 渐进披露** | **已实现，三级齐全** | 见下
+
+---
+
+## 核实：Agent Skills 渐进披露
+
+三级全部落实，且实现得比规范描述的更细。
+
+| 级别 | 规范 | opencc 实现 |
+|---|---|---|
+| 1 | 启动时只进 name + description（约 100 token/skill） | `SkillTool/prompt.ts:65` 只输出 `- ${name}: ${description} - ${whenToUse}`，正文不进上下文。第 26 行还有注释解释为什么 whenToUse 不能写长：会浪费 turn-1 的 cache_creation |
+| 2 | 激活时载入 SKILL.md 正文（建议 < 5000 token） | invoke 时读 SKILL.md、`parseFrontmatter` 剥掉 frontmatter、以 meta user message 注入，前置 `Base directory for this skill:` |
+| 3 | 引用文件按需才读 | `loadSkillsDir.ts:490`：**"When a SKILL.md file exists in a directory, only that file is loaded"** —— 发现阶段不碰 scripts/references/assets；模型拿到 base directory 后用 Read 按需取 |
+
+四个 skill 来源（本地目录 / bundled / 远程 canonical / plugin）都统一加了 base directory
+前缀，第 3 级入口一致。
+
+**超出规范的两点**：invoke 结束后 `clearInvokedSkillsForAgent()` 把 skill 正文从状态里
+释放；注入时记录来源，使压缩后能按引用恢复（正是第 3 条"可还原压缩"用在 skill 上）。
+
+### 预算核查
+
+量了本仓库自己的 skill，第 2 级正文都在预算内：
+
+| skill | 第 2 级约 token | 第 3 级 `files:` |
+|---|---|---|
+| `claude-tool-add-skill` | 2,968 | — |
+| `brainstorm` | 1,587 | 有（methods/session-types/templates） |
+| `updateConfig` | 1,090 | — |
+| `paper2code/SKILL.md` | 1,761 | 有（pipeline/guardrails/knowledge/scaffolds/worked） |
+
+> 我最初按"文件里所有模板字面量求和"估算，得出 brainstorm ≈10k token 超预算，
+> **那是测量错误** —— 它把第 3 级的引用文件也算进去了。`brainstorm.ts` 的大常量
+> （`METHODS_DETAILED` 等）挂在 `files:` 映射上，只在模型主动读时才进上下文。
+> 这恰恰说明渐进披露在正常工作。
+
+### 一处无害残留
+
+`src/skills/bundled/verify/SKILL.md` 只有 8 字节（`# Skill`），同目录还有 `examples/`。
+但 `verify.ts` 的内容来自 `verifyContent.ts` 这个 TS 模块，不读磁盘上那个文件；且该
+skill 被 `USER_TYPE !== 'ant'` 挡住，本 build 不注册。属于反编译残留，不影响运行。
 
 ---
 
