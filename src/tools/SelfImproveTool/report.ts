@@ -10,6 +10,7 @@
 import type { Comparison, EvidenceReading } from '../../services/rsi/estimators.js'
 import type { Attribution } from '../../services/rsi/credit.js'
 import type { StrategyChoice } from '../../services/rsi/allocation.js'
+import type { Lesson } from '../../services/rsi/distill.js'
 import type { Localization } from '../../services/rsi/prm.js'
 import type { ScoredCandidate } from '../../services/rsi/uct.js'
 import type { TrialRun } from '../../services/rsi/trials.js'
@@ -172,6 +173,39 @@ export function renderLocalization(result: Localization): string {
   }
 
   lines.push('', `Rollouts consumed: ${result.totalRollouts}.`)
+  return lines.join('\n')
+}
+
+export function renderRecall(
+  found: readonly Lesson[],
+  librarySize: number,
+  situation: string,
+): string {
+  if (librarySize === 0) {
+    return 'No lessons have been distilled for this repository yet. `rsi distill` adds one, and it will only accept a lesson whose command carries a measurement.'
+  }
+  if (found.length === 0) {
+    return `Nothing in the ${librarySize}-lesson library matches "${situation}".`
+  }
+
+  const lines: string[] = [
+    `${found.length} of ${librarySize} lesson(s) may apply:`,
+    '',
+  ]
+  for (const lesson of found) {
+    const { passes, attempts, verdict } = lesson.evidence
+    const confirmed =
+      lesson.confirmations > 0 ? `, re-derived ${lesson.confirmations}×` : ''
+    lines.push(
+      `[${lesson.kind === 'worked' ? 'worked' : 'failed'}] ${lesson.trigger}`,
+      `  → ${lesson.action}`,
+      `  evidence: \`${lesson.evidenceRef}\` ${passes}/${attempts} (${verdict})${confirmed}`,
+      '',
+    )
+  }
+  lines.push(
+    'These were admitted on a measurement, not on an impression — but they describe the repository as it was when each was distilled. Re-measure before relying on one that matters.',
+  )
   return lines.join('\n')
 }
 

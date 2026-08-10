@@ -32,7 +32,8 @@ opencc 的策略 θ 本来就不是权重，而是 (系统提示 + skills + memd
 | 3 筛选 | 阈值或 top-K | 本轮落地的证据闸门 |
 | 4 训练 | 加权最大似然 | 写进技能库 / memdir |
 
-第 4 步还没做（见文末）。本轮做的是第 2、3 步——**没有它俩，第 4 步只会把噪声写进技能库**，
+四步现在都落了，但顺序是刻意的：先做第 2、3 步，最后才做第 4 步——
+**没有可信的筛选闸门，蒸馏只会把噪声写进技能库**，
 那正是 §7.3.3 警告的 reward hacking：阈值一松，攒下来的就不是经验而是运气。
 
 ---
@@ -86,7 +87,7 @@ note 的长度要求只让这句话更具体，没让它更真。而机器人仓
 
 ### `tools/SelfImproveTool` —— `rsi` 工具
 
-五个 action：`measure` / `compare` / `allocate` / `attribute` / `select`。
+八个 action：`measure` / `compare` / `allocate` / `attribute` / `localize` / `select` / `distill` / `recall`。
 
 渲染和算术一样重要。`insufficient` 印在 "5/5 passed" 旁边一定会被读成通过，
 除非文字直说它不是：
@@ -130,6 +131,71 @@ About 35 consecutive passes are needed to claim 90.0%.
 `auditCompletion` 也不再只说"全部满足"了。它现在分开报
 `measured` / `unmeasuredCommands` / `observationOnly`——
 只说成功而不说证据是什么，等于邀请读者假设每一条都测量过。
+
+
+### `prm.ts` + `rsi localize` —— 只有终局可判时，哪一步坏的
+
+`attribute` 要求每步各有 pass/fail，而很多真实轨迹没有：五个 commit 的重构没有
+逐 commit 判决，套件要么最后过、要么不过；终局的一个标量分不出任何位置。
+
+§3.3 的 Math-Shepherd 用**采样代替标注**：从前缀 s_1..s_k 跑 M 条补全，
+数有多少条最终到达通过态。这收敛到 P(通过 | 前缀)——沿着好的部分它保持住，
+在第一个坏步骤上掉下去。于是"哪一步坏的"就是找那个下降。
+
+两个守卫，都是因为朴素版本会自信地指错人：
+
+- **报第一个显著下降，不是最大的那个。** 轨迹一旦走错，后面每个前缀也都是坏的，
+  值往往继续滑；取最大跌幅会指到真正错误的下游。基线取"至今最好的前缀"而非紧邻前一个，
+  这样一次噪声性的小坑不会把它后面真正的塌陷挡住。
+- **全零报 `no_signal`，不报"第一步坏的"。** §3.3 自己点出这条局限：
+  难题加上小 M，正确前缀也可能一条补全都对不上。那是预算不够分辨步骤，
+  把它解释成元凶会把下一轮工作派到无辜的步骤上。
+
+显著性走 `compareRuns` 而不是拍一个阈值，这让预算变得诚实：**每前缀 4 条补全只能分辨
+75% 的塌陷**，更温和的真实回归会正确地报成 "no drop found"。
+`detectableDrop` / `completionsForDrop` 把这件事提前说清楚。
+
+写的时候发现两个函数各自独立实现时会互相矛盾：给定 M 能达到的下降是 1/M 的倍数，
+把目标四舍五入到最近的计数会返回一个实际分辨率比要求更粗的 M——
+一个高估自己分辨率的预算函数比没有更糟。改成 `completionsForDrop` 定义为
+`detectableDrop` 的反函数。另外 `detectableDrop` 因为同样的粒度原因**对 M 不单调**，
+所以反函数是扫描而不是二分，这条也写了测试钉住。
+
+### `distill.ts` + `lessonStore.ts` —— 第 4 步，用文件写代替梯度
+
+§7.3.1 的第 4 步 opencc 做不了：进程里没有权重。§9.1.2 直接给了替代品——**技能库**，
+"把持续学习从参数层抬升到检索层"。opencc 的策略本来就不是权重，
+所以这一步就是一次文件写，回路闭合。
+
+两类教训，对应两半原文：
+
+- `worked` —— STaR/ReST：验证过的成功。§7.3.1 的筛选步，阈值 τ 定在"测量过"。
+- `failed` —— Reflexion（§7.4）：语言强化学习。改进信号是一句关于为什么失败的话，
+  存下来让下次尝试以它为条件。θ 全程不变，变的是下一步动作的分布。
+
+**闸门就是全部设计。** §7.3.3 警告阈值一松攒下来的是运气不是经验，
+接着就是 reward hacking：没有东西核验筛选，蒸馏把噪声写进库，之后每一轮再读回来当知识。
+所以一条教训必须引用一个命令，而那个命令必须有测量——从账本里读，而账本只有 `rsi` 能写。
+声称"有效"的教训需要 `verified`；声称"失败"的需要 `broken` 或 `flaky`。
+两边都不能凭观点写出来。**这正是第 2 步账本的回报。**
+
+**重复不追加，而是确认。** 近似重复会给已有条目的 confirmations 加一，
+而不是新增一条。这是 §7.3.3"别坍缩成重复模板"的具体化：
+朴素追加会让库里塞满同一个想法的四十种说法，之后每次检索都把四十份都返回。
+合并意味着重复提升的是置信度而不是体积——而且那本来就是更有用的信号。
+
+**保留打分是 §9.1.2 的稳定性/可塑性权衡，写成显式的。** confirmations 主张留下，
+距上次重新推导的时间主张淘汰；确认过 6 次但三个月没碰的教训，
+分数低于一条全新未确认的。只增不减的库，是"学不进新东西"在检索层的版本。
+
+去重用的相似度对 CJK 走**字符 bigram**、其余走词。按词切分会把一整句中文变成一个巨大 token，
+然后判定任意两条中文教训完全不相似——恰好在笔记是中文的仓库里让去重失效。
+
+**落地在仓库里，不在 config home。** `.claude/skills/rsi-lessons/`：
+`lessons.json` 是事实来源，`SKILL.md` 每次写入时重新生成。写成 skill 是因为
+opencc 的 skill 加载器本来就做检索——前置只读 frontmatter，正文按需拉取，
+这正是一个会长大的教训库需要的渐进披露。也因为它该在仓库里：
+**公式进二进制，知识进仓库。**
 
 ---
 
@@ -181,15 +247,12 @@ search 的 `C/t_s` 包含第一份初稿，refinement 的 `C/t_r` 是在 `p0` **
 
 ## 没做的
 
-1. **§7.3.1 第 4 步 / §7.4 Reflexion —— 把验证过的轨迹蒸馏进技能库。**
-   这是真正的 RSI 闭环，也是"知识进仓库"那一半。本轮做的是它的前置：
-   没有可信的筛选闸门，蒸馏只会把噪声写进技能库。
+1. ~~**§7.3.1 第 4 步 / §7.4 Reflexion —— 把验证过的轨迹蒸馏进技能库。**~~ 已做，见上文。
 2. ~~**`rsi` 与 GoalTool 证据闸门的对接。**~~ 已做，见上文。
    （顺带更正我上一轮的说法：`auditCompletion()` 从来没有跑过命令，
    `admitEvidence()` 也没有——弱点不是"只跑一次"，而是**一次都没跑**，
    命令类证据完全是自述。）
-3. **PRM 式的过程评估。** §3.3 的蒙特卡洛步骤标注需要从每一步 rollout，
-   估计量本身是确定性的，但采样成本是 agent 调用，得先想清楚预算。
+3. ~~**PRM 式的过程评估。**~~ 已做，见上文 `prm.ts`。
 4. **`compare` 自动取基线。** 现在要求调用方先 `measure` 存下计数——
    改完之后基线就取不到了，工具会明说这一点而不是猜。
 
@@ -205,8 +268,11 @@ search 的 `C/t_s` 包含第一份初稿，refinement 的 `C/t_r` 是在 `p0` **
 | `src/services/rsi/uct.ts` | UCB/UCT 候选选择 |
 | `src/services/rsi/trials.ts` | 重复执行验证器、失败聚类 |
 | `src/services/rsi/ledger.ts` | 测量账本、工作树指纹、陈旧判定 |
+| `src/services/rsi/prm.ts` | 前缀 rollout 标注、首个显著下降、§3.4 聚合族 |
+| `src/services/rsi/distill.ts` | 教训准入闸门、去重合并、保留打分、技能渲染 |
+| `src/services/rsi/lessonStore.ts` | 仓库内教训库的读写（JSON 为准，SKILL.md 派生） |
 | `src/tools/SelfImproveTool/` | `rsi` 工具与报告渲染 |
-| `src/services/rsi/__tests__/` | 115 个测试 |
-| `src/tools/SelfImproveTool/__tests__/` | 28 个测试 |
+| `src/services/rsi/__tests__/` | 175 个测试 |
+| `src/tools/SelfImproveTool/__tests__/` | 42 个测试（含 9 个端到端蒸馏回路） |
 | `src/tools/GoalTool/__tests__/evidenceMeasurement.test.ts` | 15 个测试 |
 | `src/tools/GoalTool/__tests__/rsiGateIntegration.test.ts` | 5 个端到端测试 |

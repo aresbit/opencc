@@ -5,6 +5,14 @@ import { getCwd } from '../../utils/cwd.js'
 import { chooseStrategy } from '../../services/rsi/allocation.js'
 import { attributeFailure } from '../../services/rsi/credit.js'
 import { localizeFailure } from '../../services/rsi/prm.js'
+import {
+  admitLesson,
+  mergeLesson,
+  pruneLibrary,
+  recallLessons,
+} from '../../services/rsi/distill.js'
+import { loadLessons, saveLessons } from '../../services/rsi/lessonStore.js'
+import { lookupMeasurement } from '../../services/rsi/ledger.js'
 import { compareRuns } from '../../services/rsi/estimators.js'
 import {
   DEFAULT_TRIALS,
@@ -23,6 +31,7 @@ import {
   renderComparison,
   renderLocalization,
   renderMeasurement,
+  renderRecall,
   renderSelection,
 } from './report.js'
 import {
@@ -43,6 +52,8 @@ const inputSchema = lazySchema(() =>
         'attribute',
         'localize',
         'select',
+        'distill',
+        'recall',
       ])
       .describe('What to do. See the tool description.'),
 
@@ -165,6 +176,39 @@ const inputSchema = lazySchema(() =>
       )
       .optional()
       .describe('Candidate approaches to choose between. For select.'),
+    lesson_kind: z
+      .enum(['worked', 'failed'])
+      .optional()
+      .describe(
+        '"worked" needs a verified measurement; "failed" needs a broken or flaky one. For distill.',
+      ),
+    trigger: z
+      .string()
+      .optional()
+      .describe(
+        'When this lesson applies — the situation a later turn would recognise. For distill.',
+      ),
+    lesson_action: z
+      .string()
+      .optional()
+      .describe('What to do, or what not to do. For distill.'),
+    evidence_ref: z
+      .string()
+      .optional()
+      .describe(
+        'The command whose measurement earns this lesson, exactly as measured. For distill.',
+      ),
+    situation: z
+      .string()
+      .optional()
+      .describe('What you are about to do, to recall lessons for. For recall.'),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe('How many lessons to recall. Default 5.'),
+
     exploration: z
       .number()
       .nonnegative()
@@ -194,6 +238,9 @@ const outputSchema = lazySchema(() =>
     located_step: z.string().optional(),
     outcome: z.string().optional(),
     selected: z.string().optional(),
+    lesson_outcome: z.string().optional(),
+    confirmations: z.number().optional(),
+    library_size: z.number().optional(),
     error: z.string().optional(),
   }),
 )
@@ -421,6 +468,78 @@ export const SelfImproveTool = buildTool({
           }
         } catch (error) {
           return fail('select', errorText(error))
+        }
+      }
+
+      case 'distill': {
+        const admission = admitLesson(
+          {
+            kind: input.lesson_kind ?? 'worked',
+            trigger: input.trigger ?? '',
+            action: input.lesson_action ?? '',
+            evidenceRef: input.evidence_ref ?? '',
+          },
+          input.evidence_ref
+            ? lookupMeasurement(input.evidence_ref, input.cwd)
+            : undefined,
+        )
+        if (!admission.ok) return fail('distill', admission.error!)
+
+        const existing = await loadLessons(input.cwd)
+        const merged = mergeLesson(existing, admission.lesson!)
+        const pruned = pruneLibrary(merged.lessons)
+        const { dir } = await saveLessons(pruned.kept, input.cwd)
+
+        const stored = merged.mergedInto ?? admission.lesson!
+        const lines = [
+          merged.outcome === 'confirmed'
+            ? `CONFIRMED an existing lesson (now re-derived ${stored.confirmations}×)`
+            : 'ADDED a new lesson',
+          '',
+          `Trigger: ${stored.trigger}`,
+          `Action:  ${stored.action}`,
+          `Evidence: \`${stored.evidenceRef}\` measured ${stored.evidence.passes}/${stored.evidence.attempts} (${stored.evidence.verdict})`,
+          '',
+          `Library: ${pruned.kept.length} lesson(s) in ${dir}`,
+        ]
+        if (merged.outcome === 'confirmed') {
+          lines.push(
+            '',
+            'It was folded into the existing entry rather than appended. Repetition raises confidence, not volume — otherwise the library fills with one insight restated many ways and every recall returns all of them.',
+          )
+        }
+        if (pruned.dropped.length > 0) {
+          lines.push(
+            '',
+            `Pruned ${pruned.dropped.length} lesson(s) that had not been re-derived recently: ${pruned.dropped.map(l => l.trigger).join('; ')}.`,
+          )
+        }
+        return {
+          data: {
+            action: 'distill',
+            ok: true,
+            report: lines.join('\n'),
+            lesson_outcome: merged.outcome,
+            confirmations: stored.confirmations,
+            library_size: pruned.kept.length,
+          },
+        }
+      }
+
+      case 'recall': {
+        const library = await loadLessons(input.cwd)
+        const found = recallLessons(
+          library,
+          input.situation ?? '',
+          input.limit ?? 5,
+        )
+        return {
+          data: {
+            action: 'recall',
+            ok: true,
+            report: renderRecall(found, library.length, input.situation ?? ''),
+            library_size: library.length,
+          },
         }
       }
 
