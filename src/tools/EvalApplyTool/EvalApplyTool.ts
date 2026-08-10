@@ -1,6 +1,7 @@
 import { z } from 'zod/v4'
-import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
+import { getSessionId } from '../../bootstrap/state.js'
 import { EvalApplyLedger } from '../../matebot/evalApplyLedger.js'
+import { getSharedProjectRoot } from '../../matebot/sharedProjectRoot.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getAgentContext, isSubagentContext } from '../../utils/agentContext.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -121,10 +122,11 @@ Each evaluation is attributed to the agent that records it. Recording twice from
     return null
   },
   async call(input: Input) {
-    // Anchored to the project root, not getCwd(): a builder running in a
-    // worktree or under an agent cwd override must reach the same ledger the
-    // coordinator gates on, or the quality gate reads an empty file.
-    const ledger = new EvalApplyLedger(getProjectRoot())
+    // Anchored to the repository, not getCwd() or the per-worktree project
+    // root: a builder under an agent cwd override, or an evaluator running in
+    // a sibling git worktree, must reach the same ledger the gate reads, or
+    // the verdict lands in a file nobody checks.
+    const ledger = new EvalApplyLedger(await getSharedProjectRoot())
     let run
     if (input.action === 'propose') {
       run = await ledger.propose({
