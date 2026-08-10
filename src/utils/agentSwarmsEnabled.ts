@@ -1,15 +1,20 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
+import { scanArgvForFlag } from './argvFlags.js'
 import { isEnvTruthy } from './envUtils.js'
 import { isMateBotModeEnabled } from './matebotMode.js'
+
+export const AGENT_TEAMS_FLAG = '--agent-teams'
 
 /**
  * Check if --agent-teams flag is provided via CLI.
  * Checks process.argv directly to avoid import cycles with bootstrap/state.
- * Note: The flag is only shown in help for ant users, but if external users
- * pass it anyway, it will work (subject to the killswitch).
+ * The flag is only shown in help for ant users, but it is registered for every
+ * build, so external users who pass it get the opt-in (subject to the
+ * killswitch). Scanned through the shared helper so `claude -- --agent-teams`
+ * is read as a positional argument here and by commander alike.
  */
 function isAgentTeamsFlagSet(): boolean {
-  return process.argv.includes('--agent-teams') || isMateBotModeEnabled()
+  return scanArgvForFlag(AGENT_TEAMS_FLAG) || isMateBotModeEnabled()
 }
 
 /**

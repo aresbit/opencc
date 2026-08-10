@@ -11,6 +11,7 @@
  * turned on coordinator mode instead.
  */
 
+import { scanArgvForFlag } from './argvFlags.js'
 import { isEnvTruthy } from './envUtils.js'
 
 export const MATEBOT_FLAG = '--matebot'
@@ -18,25 +19,15 @@ export const MATEBOT_FLAG = '--matebot'
 let parsedOverride: boolean | undefined
 let cached: boolean | undefined
 
-/**
- * Pre-parse approximation of what the CLI parser will conclude. Used by the
- * modules that need an answer before (or without) a commander parse; once
- * main.tsx has parsed, setMateBotMode() replaces this with the real answer.
- */
-function scanArgv(argv: readonly string[]): boolean {
-  for (const argument of argv.slice(2)) {
-    // Everything past `--` is a positional argument, never a flag.
-    if (argument === '--') return false
-    if (argument === MATEBOT_FLAG) return true
-  }
-  return false
-}
-
 export function isMateBotModeEnabled(): boolean {
   if (parsedOverride !== undefined) return parsedOverride
   if (cached === undefined) {
+    // Pre-parse approximation of what the CLI parser will conclude, for the
+    // modules that need an answer before (or without) a commander parse; once
+    // main.tsx has parsed, setMateBotMode() replaces this with the real answer.
     cached =
-      isEnvTruthy(process.env.OPENCC_MATEBOT) || scanArgv(process.argv)
+      isEnvTruthy(process.env.OPENCC_MATEBOT) ||
+      scanArgvForFlag(MATEBOT_FLAG, process.argv)
   }
   return cached
 }
