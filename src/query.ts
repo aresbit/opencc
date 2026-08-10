@@ -44,6 +44,7 @@ import {
 } from './services/api/errors.js'
 import { logAntError, logForDebugging } from './utils/debug.js'
 import { applyTodoRecitation } from './utils/todoRecitation.js'
+import { applyRepeatedFailureNotice } from './utils/repeatedFailure.js'
 import {
   createUserMessage,
   createUserInterruptionMessage,
@@ -434,6 +435,14 @@ async function* queryLoop(
     {
       const recitation = applyTodoRecitation(messagesForQuery)
       messagesForQuery = recitation.messages
+    }
+
+    // Rut break: a call that has failed identically several times will fail
+    // again, and a context full of that pattern invites repeating it. Same
+    // discipline as the recitation — tail-only and self-replacing.
+    {
+      const rut = applyRepeatedFailureNotice(messagesForQuery)
+      messagesForQuery = rut.messages
     }
 
     // Project the collapsed context view and maybe commit more collapses.
