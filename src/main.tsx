@@ -3826,8 +3826,15 @@ async function run(): Promise<CommanderCommand> {
       permissionMode: 'auto'
     }));
     program.addOption(new Option('--tasks [id]', '[ANT-ONLY] Tasks mode: watch for tasks and auto-process them. Optional id is used as both the task list ID and agent ID (defaults to "tasklist").').argParser(String).hideHelp());
-    program.option('--agent-teams', '[ANT-ONLY] Force Claude to use multi-agent mode for solving problems', () => true);
   }
+  // Registered for every build, not just ant: isAgentSwarmsEnabled() offers
+  // external users two opt-in doors — CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS or
+  // this flag — and reads it straight off process.argv. Registering it inside
+  // the ant block left the second door walled off: commander rejects unknown
+  // options, so passing --agent-teams outside ant killed the process before
+  // isAgentTeamsFlagSet() could ever see it. The flag only opts in; the gate
+  // still applies, including the external killswitch.
+  program.addOption(new Option('--agent-teams', 'Enable multi-agent teammate mode (experimental)').hideHelp().argParser(() => true));
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     program.addOption(new Option('--enable-auto-mode', 'Opt in to auto mode').hideHelp());
   }
