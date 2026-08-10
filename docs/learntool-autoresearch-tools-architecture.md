@@ -128,10 +128,11 @@ plan_training
 ```
 init_experiment(name, metric, direction)
   ↓
-run_experiment（30min 超时，解析 stdout 中的 METRIC key=value）
+run_experiment（锁定 benchmark/verifier；解析重复 METRIC key=value）
   ↓
 log_experiment
-  ├── keep: git add -A && git commit
+  ├── 首次有效运行必须 baseline（不提交）
+  ├── keep: 中位数越过相对改善阈值 && git commit
   ├── discard/crash/checks_failed: git restore（保留 autoresearch 自身文件）
   └── 检查 auto_stop_non_keep_streak → 自动停止
   ↓（循环至 maxIterations 或 autoStop）
@@ -141,10 +142,16 @@ log_experiment
 
 - benchmark 失败 → 必须设为 `crash`
 - checks 失败/超时 → `checks_failed`，绝不能 `keep`
-- `keep` 必须严格优于段内 `bestMetric`
+- 每段首次有效运行必须是 measured `baseline`
+- benchmark 命令与 `autoresearch.sh` / `autoresearch.checks.sh` 指纹在段内锁定，漂移即拒绝
+- `keep` 必须达到 `min_repetitions`，并超过段内 `bestMetric` 的 `min_relative_improvement`
+- 重复指标保留全部样本，以中位数判定，并记录 MAD、范围和原始样本
+- `keep` / `discard` 必须记录可证伪 hypothesis 与 `explore|review|implement|tune` 阶段
 - 非 keep 自动 `git restore`
 - 连续 N 次非 keep 自动停止
 - `autoresearch.sh` 存在时必须使用，不能替换
+- `target_value` 表示当前可达的近邻目标；到达后推进目标或开启新 segment
+- 规则、架构地图、idea、近期正负实验和外部 scoreboard 构成压缩研究记忆
 
 ### 2.4 指标溯源（2026-08-01 新增）
 
@@ -175,19 +182,33 @@ const primaryMetric = input.metric_value ?? lastRun.parsedPrimaryMetric
 **`keep` 必须建立在 `measured` 之上**——不可逆动作要求不可伪造的通道；`force` 是刻意且被
 记录的逃生门。JSONL 记录 `metricSource`，事后可审计。`metricProvenance.eval.ts` 14/14。
 
-### 2.5 实验队列 (queue)
+### 2.5 Loop engineering（2026-08-10 新增）
+
+本轮参考 Ravi Theja 的 [GPU Mode AutoResearch 实践](https://x.com/i/status/2086678012037394526)，把“模型能力”之外的循环工程固化进状态机：
+
+- `autoresearch.rules.md` 定义有效实验和反 reward-hacking 边界
+- `autoresearch.architecture.md` 保存短而密的代码/热路径地图，避免全仓上下文腐化
+- `autoresearch.jsonl` 保存 hypothesis、phase、全部样本、指标来源和负结果
+- `autoresearch.scoreboard.jsonl` 约定只记录真实外部观测，区分本地改善与官方迁移
+- resume 上下文保留目标开头、最新进展、最近 16 条证据和架构/规则，不把所有 scratch token 塞回会话
+- 审计额外验证 baseline 链、evaluator 一致性、假设/阶段与重复测量证据
+
+### 2.6 实验队列 (queue)
 
 - 作业 DAG：`depends_on` 定义依赖，失败自动跳过下游
 - 最大并行度可配置（默认 4）
 - 内置重试（最多 2 次，间隔 10 秒）
 - 状态持久化至 `.autoresearch_queues/{name}.json`
 
-### 2.6 审计 (audit)
+### 2.7 审计 (audit)
 
 1. `jsonl_integrity` — 总行数、解析错误
 2. `metric_consistency` — 变异系数 CV < 2 pass
 3. `expected_metrics` — 预期指标完备性
 4. `status_distribution` — keep rate ≥ 10% pass
+5. `baseline_chain` — 每段 keep 之前存在 measured baseline
+6. `evaluator_integrity` — benchmark 命令和 verifier 指纹段内不漂移
+7. `research_memory` — hypothesis、phase、指标来源和样本数完备
 
 ---
 
@@ -221,6 +242,7 @@ LearnTool 管**跨会话的经验沉淀**（有人工审阅兜底）。两者不
 | `src/tools/LearnTool/prompt.ts` | 工具描述与「何时使用」提示词 |
 | `src/tools/AutoresearchTool/AutoresearchTool.ts` | 实验引擎 |
 | `src/tools/AutoresearchTool/metricProvenance.ts` | 指标溯源与 keep 门控 |
+| `src/tools/AutoresearchTool/loopEngineering.ts` | 重复测量、稳健汇总、近邻目标与 evaluator 锁 |
 
 自测：
 

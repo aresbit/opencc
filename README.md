@@ -212,7 +212,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | CodeActTool | `CodeAct` | 沙箱内八语言代码执行（TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme）；内置 TS/Python/C++23 函数式控制库、函数式 Bash、OCaml 5 effects 与 Scheme continuations，支持运行时探测及错误行号映射 |
 | ActionTool | `Action` | 执行 `~/.claude/action/` 下可复用的 Actions 脚本 |
 | MythosTool | `mythos` | 六阶段深度研究：结构化 claim + 证据 + 对抗性验证，带运行完整性自检 |
-| AutoresearchTool | `autoresearch` | Karpathy 式自主迭代优化：改 → 验证 → keep/discard，可跑实验队列 |
+| AutoresearchTool | `autoresearch` | verifier 锁定的自主研究循环：强制 measured baseline、近邻数值目标、重复测量中位数/MAD、假设与阶段化研究记忆，只保留通过正确性门禁且超过噪声阈值的改进；支持独立实验队列与证据审计 |
 | WikiTool | `wikitool` | 三层个人 wiki 知识库：`save` 抓取归档，`search` / `list` / `get` 检索，`distill` / `compare` 提炼 |
 | MemoryTool | `MemoryTool` | 四层记忆系统（临时 / 工作 / 长期 / 主动），支持搜索、晋级、降级、合成 |
 | KimiTool | `kimitool` | 免费 Kimi 对话 API，跨设备自动加载 refresh_token |
@@ -222,6 +222,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | LearnTool | `learn-tool` | 受控自我改进闭环，见上文专章 |
 | Paper2CodeTool | `paper2code` | `extract` 把 arXiv 论文切成可引用产物并裁定提取质量；`verify` 对写出的实现跑确定性检查（结构 / 语法 / 引用锚定 / UNSPECIFIED 审计 / import / 冒烟） |
 | QuantVerifyTool | `quant_verify` | 量化结果硬门禁：从收益序列重算 Sharpe/MaxDD/Calmar 并核对报告数字，检查成本是否真扣、留出集是否被反复评分、样本是否撑得起结论；定价侧核对 NPV/Greeks 与基准偏差 |
+| SoftwareAnalysisTool | `software_analysis` | 软件分析方法选择与可复算内核：按约束规划测试/模糊测试/静态分析/符号执行等方法，求解 GEN/KILL 数据流不动点，并以 Tarantula/Ochiai/DStar 定位可疑代码；明确假阳性/假阴性与证据边界 |
 | ManuscriptCheckTool | `manuscript_check` | 中文稿件硬检查：AI 痕迹模式扫描（带行号与改法）、对话占比、五感覆盖、角色声音辨识度（字符二元组分布比对）、伏笔回收台账 |
 | RedTeamSkill | `RedTeamSkill` / `redteam` | 授权 CTF/靶场安全模式：固化 ELF/ABI、内存破坏、NX/ASLR/PIE、ROP、canary/RELRO/FORTIFY 与盲 oracle 方法；生成证据驱动的 binary plan 和 hardening audit，且不提升权限或关闭沙箱 |
 | RedoTool | `redotool` | 重放仓库早期提交历史，生成可发布的教学讲解 |

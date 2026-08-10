@@ -119,7 +119,7 @@ export function renderToolResultMessage(output: Output): React.ReactNode {
     <MessageResponse>
       <Box flexDirection="column">
         <Text>
-          🔬 autoresearch {output.mode} | runs {session.totalRuns} | keep {session.keep} (
+          🔬 autoresearch {output.mode} | runs {session.totalRuns} | baseline {session.baseline} | keep {session.keep} (
           {percent(session.keep, session.totalRuns)})
         </Text>
         <Text dimColor={true}>

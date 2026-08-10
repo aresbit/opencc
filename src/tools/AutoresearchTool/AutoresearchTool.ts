@@ -1,5 +1,6 @@
 import { access, readFile, rm, stat, writeFile } from 'fs/promises'
 import { constants as fsConstants } from 'fs'
+import { createHash } from 'crypto'
 import { isAbsolute, join, resolve } from 'path'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -60,6 +61,24 @@ const inputSchema = lazySchema(() =>
       .enum(['lower', 'higher'])
       .optional()
       .describe('Whether lower or higher metric is better for init_experiment'),
+    target_value: z
+      .number()
+      .finite()
+      .optional()
+      .describe('Nearby numerical target for the current hill-climbing segment.'),
+    min_repetitions: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('Minimum repeated METRIC observations required before baseline/keep. Default: 1.'),
+    min_relative_improvement: z
+      .number()
+      .min(0)
+      .max(1)
+      .optional()
+      .describe('Minimum relative improvement over the current champion required for keep. Default: 0.'),
     command: z
       .string()
       .optional()
@@ -72,11 +91,19 @@ const inputSchema = lazySchema(() =>
       .optional()
       .describe('Timeout in seconds for autoresearch.checks.sh'),
     status: z
-      .enum(['keep', 'discard', 'crash', 'checks_failed'])
+      .enum(['baseline', 'keep', 'discard', 'crash', 'checks_failed'])
       .optional()
       .describe('Final status for log_experiment'),
     metric_value: z.number().optional().describe('Primary metric value for log_experiment'),
     description: z.string().optional().describe('One-line summary for log_experiment'),
+    hypothesis: z
+      .string()
+      .optional()
+      .describe('Falsifiable hypothesis tested by this run; required for keep/discard.'),
+    phase: z
+      .enum(['explore', 'review', 'implement', 'tune'])
+      .optional()
+      .describe('Research role for this run, following explore -> review -> implement -> tune.'),
     metrics: z
       .record(z.string(), z.number())
       .optional()
@@ -154,6 +181,7 @@ const sessionSchema = z.object({
   discard: z.number(),
   crash: z.number(),
   checksFailed: z.number(),
+  baseline: z.number(),
   keepRate: z.number(),
   metricName: z.string().optional(),
   lastMetric: z.number().optional(),
@@ -239,19 +267,30 @@ export type AutoresearchProgress = {
 
 import { createAgentId } from '../../utils/uuid.js'
 import { canKeepOn, resolveMetric } from './metricProvenance.js'
+import {
+  evaluatorLockError,
+  improvementFraction,
+  parseMetricSamples,
+  reachesTarget,
+  summarizeSamples,
+  type SampleSummary,
+} from './loopEngineering.js'
 
 const AUTORESEARCH_CONFIG = 'autoresearch.config.json'
 const AUTORESEARCH_RUNTIME = '.autoresearch.runtime.json'
 const AUTORESEARCH_JSONL = 'autoresearch.jsonl'
 const AUTORESEARCH_MD = 'autoresearch.md'
 const AUTORESEARCH_IDEAS = 'autoresearch.ideas.md'
+const AUTORESEARCH_RULES = 'autoresearch.rules.md'
+const AUTORESEARCH_ARCHITECTURE = 'autoresearch.architecture.md'
+const AUTORESEARCH_SCOREBOARD = 'autoresearch.scoreboard.jsonl'
 const AUTORESEARCH_SH = 'autoresearch.sh'
 const AUTORESEARCH_CHECKS = 'autoresearch.checks.sh'
 const DEFAULT_ITERATIONS = 10
 const DEFAULT_AUTO_STOP_NON_KEEP_STREAK = 3
 
 type SessionMode = 'active' | 'inactive'
-type ExperimentStatus = 'keep' | 'discard' | 'crash' | 'checks_failed'
+type ExperimentStatus = 'baseline' | 'keep' | 'discard' | 'crash' | 'checks_failed'
 type MetricDirection = 'lower' | 'higher'
 type AutoresearchAction = NonNullable<Input['action']>
 
@@ -325,6 +364,12 @@ interface RuntimeExperimentState {
   secondaryMetrics: string[]
   currentSegment: number
   bestMetric?: number
+  targetValue?: number
+  minRepetitions: number
+  minRelativeImprovement: number
+  verifierFingerprint?: string
+  benchmarkCommand?: string
+  guardCommand?: string
   autoStopNonKeepStreak: number
   currentNonKeepStreak: number
   stopReason?: string
@@ -337,6 +382,8 @@ interface RuntimeLastRun {
   outputTail: string
   parsedPrimaryMetric?: number
   parsedMetrics: Record<string, number>
+  parsedMetricSamples: Record<string, number[]>
+  primarySummary?: SampleSummary
   checksPass: boolean | null
   checksTimedOut: boolean
   checksOutputTail: string
@@ -348,6 +395,7 @@ interface SessionSummary {
   discard: number
   crash: number
   checksFailed: number
+  baseline: number
   lastMetric?: number
   configMetric?: string
 }
@@ -359,6 +407,7 @@ interface SessionSnapshot {
   discard: number
   crash: number
   checksFailed: number
+  baseline: number
   keepRate: number
   metricName?: string
   lastMetric?: number
@@ -409,6 +458,16 @@ async function isDir(filePath: string): Promise<boolean> {
   }
 }
 
+async function fingerprintVerifier(workDir: string): Promise<string | undefined> {
+  const parts: string[] = []
+  for (const name of [AUTORESEARCH_SH, AUTORESEARCH_CHECKS]) {
+    const path = join(workDir, name)
+    if (await exists(path)) parts.push(`${name}\0${await readFile(path, 'utf-8')}`)
+  }
+  if (parts.length === 0) return undefined
+  return createHash('sha256').update(parts.join('\0')).digest('hex')
+}
+
 function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
@@ -436,8 +495,7 @@ function parseMetricLines(output: string): Record<string, number> {
 
 function getPrimaryMetric(metrics: Record<string, number>, metricName: string): number | undefined {
   if (typeof metrics[metricName] === 'number') return metrics[metricName]
-  const first = Object.values(metrics).find(v => Number.isFinite(v))
-  return first
+  return undefined
 }
 
 function isAutoresearchShCommand(command: string): boolean {
@@ -551,6 +609,21 @@ async function readRuntime(cwd: string): Promise<RuntimeState | null> {
                 : [],
               currentSegment: typeof exp.currentSegment === 'number' ? Math.max(0, Math.floor(exp.currentSegment)) : 0,
               bestMetric: typeof exp.bestMetric === 'number' ? exp.bestMetric : undefined,
+              targetValue: typeof exp.targetValue === 'number' ? exp.targetValue : undefined,
+              minRepetitions:
+                typeof exp.minRepetitions === 'number' && exp.minRepetitions > 0
+                  ? Math.floor(exp.minRepetitions)
+                  : 1,
+              minRelativeImprovement:
+                typeof exp.minRelativeImprovement === 'number' && exp.minRelativeImprovement >= 0
+                  ? exp.minRelativeImprovement
+                  : 0,
+              verifierFingerprint:
+                typeof exp.verifierFingerprint === 'string' ? exp.verifierFingerprint : undefined,
+              benchmarkCommand:
+                typeof exp.benchmarkCommand === 'string' ? exp.benchmarkCommand : undefined,
+              guardCommand:
+                typeof exp.guardCommand === 'string' ? exp.guardCommand : undefined,
               autoStopNonKeepStreak:
                 typeof exp.autoStopNonKeepStreak === 'number' && exp.autoStopNonKeepStreak > 0
                   ? Math.floor(exp.autoStopNonKeepStreak)
@@ -560,7 +633,23 @@ async function readRuntime(cwd: string): Promise<RuntimeState | null> {
                   ? Math.floor(exp.currentNonKeepStreak)
                   : 0,
               stopReason: typeof exp.stopReason === 'string' ? exp.stopReason : undefined,
-              lastRun: exp.lastRun,
+              lastRun: exp.lastRun
+                ? {
+                    ...exp.lastRun,
+                    parsedMetricSamples:
+                      exp.lastRun.parsedMetricSamples ??
+                      Object.fromEntries(
+                        Object.entries(exp.lastRun.parsedMetrics ?? {}).map(
+                          ([name, value]) => [name, [value]],
+                        ),
+                      ),
+                    primarySummary:
+                      exp.lastRun.primarySummary ??
+                      (typeof exp.lastRun.parsedPrimaryMetric === 'number'
+                        ? summarizeSamples([exp.lastRun.parsedPrimaryMetric])
+                        : undefined),
+                  }
+                : undefined,
             }
           : undefined
       return {
@@ -594,6 +683,9 @@ async function maybeSeedAutoresearchMd(workDir: string, input: Input, maxIterati
     '## Primary Metric',
     input.metric ?? 'TBD',
     '',
+    '## Nearby Target',
+    typeof input.target_value === 'number' ? String(input.target_value) : 'TBD',
+    '',
     '## Benchmark Command',
     input.verify ?? `bash ${AUTORESEARCH_SH}`,
     '',
@@ -608,6 +700,9 @@ async function maybeSeedAutoresearchMd(workDir: string, input: Input, maxIterati
     '',
     '## Rules',
     '- Run baseline first.',
+    '- Treat benchmark and correctness checks as immutable after the segment starts.',
+    '- Record a falsifiable hypothesis and negative results; never invent or reuse stale measurements.',
+    '- Repeat noisy measurements and keep only improvements above the configured threshold.',
     '- Small, reversible changes each iteration.',
     '- Keep only when primary metric improves and guards pass.',
     '- On discard/crash/checks_failed, revert code changes but preserve autoresearch files.',
@@ -621,6 +716,45 @@ async function maybeSeedAutoresearchMd(workDir: string, input: Input, maxIterati
   return true
 }
 
+async function seedLoopEngineeringArtifacts(workDir: string): Promise<void> {
+  const artifacts = [
+    {
+      name: AUTORESEARCH_RULES,
+      body: [
+        '# Autoresearch Rules',
+        '',
+        '- Correctness guards are mandatory; performance never overrides correctness.',
+        '- The benchmark command and verifier files are immutable within a segment.',
+        '- Do not cache outputs, reuse stale measurements, batch hidden cases, or optimize around the oracle contract.',
+        '- Record every hypothesis and result, especially negative results.',
+        '- Only externally observed official scores belong in the scoreboard; never infer or invent them.',
+        '- Change one reviewable idea at a time unless an explicit composition experiment says otherwise.',
+        '',
+      ].join('\n'),
+    },
+    {
+      name: AUTORESEARCH_ARCHITECTURE,
+      body: [
+        '# Architecture Map',
+        '',
+        'Keep this map short and current. Record the files, entry points, hot paths, benchmark cases, and invariants needed to inspect only the relevant code.',
+        '',
+        '## Components',
+        '- TBD',
+        '',
+        '## Hot Paths / Headroom',
+        '- TBD',
+        '',
+      ].join('\n'),
+    },
+    { name: AUTORESEARCH_SCOREBOARD, body: '' },
+  ]
+  for (const artifact of artifacts) {
+    const path = join(workDir, artifact.name)
+    if (!(await exists(path))) await writeFile(path, artifact.body, 'utf-8')
+  }
+}
+
 async function parseSessionSummary(workDir: string): Promise<SessionSummary> {
   const summary: SessionSummary = {
     totalRuns: 0,
@@ -628,6 +762,7 @@ async function parseSessionSummary(workDir: string): Promise<SessionSummary> {
     discard: 0,
     crash: 0,
     checksFailed: 0,
+    baseline: 0,
   }
 
   const jsonlPath = join(workDir, AUTORESEARCH_JSONL)
@@ -649,6 +784,7 @@ async function parseSessionSummary(workDir: string): Promise<SessionSummary> {
         if (status === 'discard') summary.discard += 1
         if (status === 'crash') summary.crash += 1
         if (status === 'checks_failed') summary.checksFailed += 1
+        if (status === 'baseline') summary.baseline += 1
         if (typeof rec.metric === 'number') summary.lastMetric = rec.metric
       } catch {
         // Ignore malformed lines and continue parsing.
@@ -673,6 +809,9 @@ async function buildStatusMessage(cwd: string, workDir: string): Promise<string>
     AUTORESEARCH_SH,
     AUTORESEARCH_CHECKS,
     AUTORESEARCH_IDEAS,
+    AUTORESEARCH_RULES,
+    AUTORESEARCH_ARCHITECTURE,
+    AUTORESEARCH_SCOREBOARD,
   ]
   const fileStates = await Promise.all(files.map(async f => ({ name: f, present: await exists(join(workDir, f)) })))
 
@@ -680,7 +819,7 @@ async function buildStatusMessage(cwd: string, workDir: string): Promise<string>
   lines.push(`Mode: ${runtime?.mode ?? 'inactive'}`)
   lines.push(`Work dir: ${workDir}`)
   if (runtime?.goal) lines.push(`Goal: ${runtime.goal}`)
-  lines.push(`Runs: ${summary.totalRuns} (keep=${summary.keep}, discard=${summary.discard}, crash=${summary.crash}, checks_failed=${summary.checksFailed})`)
+  lines.push(`Runs: ${summary.totalRuns} (baseline=${summary.baseline}, keep=${summary.keep}, discard=${summary.discard}, crash=${summary.crash}, checks_failed=${summary.checksFailed})`)
   if (summary.configMetric || typeof summary.lastMetric === 'number') {
     lines.push(`Metric: ${summary.configMetric ?? 'metric'}${typeof summary.lastMetric === 'number' ? `, last=${summary.lastMetric}` : ''}`)
   }
@@ -702,6 +841,7 @@ async function buildSessionSnapshot(cwd: string, workDir: string): Promise<Sessi
     discard: summary.discard,
     crash: summary.crash,
     checksFailed: summary.checksFailed,
+    baseline: summary.baseline,
     keepRate,
     metricName: summary.configMetric,
     lastMetric: summary.lastMetric,
@@ -748,13 +888,14 @@ function buildAutoresearchPrompt(input: Input, params: { workDir: string; maxIte
     '',
     'Mandatory protocol (in order):',
     `1. Read ${AUTORESEARCH_MD} first (if present), then scan recent git log and ${AUTORESEARCH_JSONL} if present.`,
-    `2. Establish/confirm baseline by running benchmark before optimization.`,
-    '3. For each iteration: write a concise hypothesis, apply a small change, run benchmark, evaluate result.',
+    `2. Establish the baseline first and log it with status="baseline" before changing code.`,
+    '3. For each iteration: write one falsifiable hypothesis, choose phase explore|review|implement|tune, apply a small change, run repeated benchmark observations, evaluate result.',
     `4. If ${AUTORESEARCH_CHECKS} exists and benchmark passed, run it. If checks fail/timed out => status must be checks_failed (never keep).`,
-    `5. Log every iteration to ${AUTORESEARCH_JSONL} with JSON fields: run, status(keep|discard|crash|checks_failed), metric, metrics(optional), description, timestamp, asi.`,
+    `5. Log every iteration to ${AUTORESEARCH_JSONL} with JSON fields: run, status(baseline|keep|discard|crash|checks_failed), hypothesis, phase, metric, samples, metrics(optional), description, timestamp, asi.`,
     '6. keep: commit change with metric delta in commit message. discard/crash/checks_failed: revert code changes while preserving autoresearch files.',
     `7. Continuously update ${AUTORESEARCH_MD} "What Has Been Tried"; put deferred ideas into ${AUTORESEARCH_IDEAS}.`,
-    `8. Stop only when max iterations reached, no promising hypotheses remain, or user interrupts. Then provide a summary with best kept result.`,
+    `8. Keep ${AUTORESEARCH_ARCHITECTURE} information-dense and append only externally observed results to ${AUTORESEARCH_SCOREBOARD}. Never edit the locked verifier inside a segment.`,
+    `9. Stop only when max iterations reached, no promising hypotheses remain, or user interrupts. Then provide a summary with best kept result.`,
     '',
     'Hard guardrail:',
     hasAutoresearchSh
@@ -776,7 +917,10 @@ async function collectResumeContext(workDir: string): Promise<string> {
     const md = await readFile(mdPath, 'utf-8')
     const trimmed = md.trim()
     if (trimmed) {
-      chunks.push(`[${AUTORESEARCH_MD}]\n${trimmed.slice(-5000)}`)
+      const dense = trimmed.length <= 5000
+        ? trimmed
+        : `${trimmed.slice(0, 2500)}\n\n[...compacted...]\n\n${trimmed.slice(-2500)}`
+      chunks.push(`[${AUTORESEARCH_MD}]\n${dense}`)
     }
   }
 
@@ -792,6 +936,17 @@ async function collectResumeContext(workDir: string): Promise<string> {
     const summary = await parseSessionSummary(workDir)
     const statLine = `runs=${summary.totalRuns}, keep=${summary.keep}, discard=${summary.discard}, crash=${summary.crash}, checks_failed=${summary.checksFailed}`
     chunks.push(`[${AUTORESEARCH_JSONL} summary]\n${statLine}`)
+    const raw = await readFile(jsonlPath, 'utf-8')
+    const records = raw.split('\n').map(line => line.trim()).filter(Boolean)
+    const recent = records.slice(-16).join('\n').slice(-7000)
+    if (recent) chunks.push(`[${AUTORESEARCH_JSONL} recent evidence]\n${recent}`)
+  }
+
+  for (const name of [AUTORESEARCH_RULES, AUTORESEARCH_ARCHITECTURE]) {
+    const path = join(workDir, name)
+    if (!(await exists(path))) continue
+    const content = (await readFile(path, 'utf-8')).trim()
+    if (content) chunks.push(`[${name}]\n${content.slice(0, 4000)}`)
   }
 
   return chunks.join('\n\n')
@@ -813,6 +968,7 @@ async function handleInitExperiment(
   workDir: string,
   maxIterations: number,
 ): Promise<Output> {
+  await seedLoopEngineeringArtifacts(workDir)
   if (!input.name || !input.metric_name || !input.direction) {
     return {
       success: false,
@@ -827,6 +983,8 @@ async function handleInitExperiment(
   const existingSegment = current?.experiment?.currentSegment ?? 0
   const autoStopNonKeepStreak =
     input.auto_stop_non_keep_streak ?? DEFAULT_AUTO_STOP_NON_KEEP_STREAK
+  const verifierFingerprint = await fingerprintVerifier(workDir)
+  const hasAutoresearchSh = await exists(join(workDir, AUTORESEARCH_SH))
   const experimentState: RuntimeExperimentState = {
     name: input.name,
     metricName: input.metric_name,
@@ -837,6 +995,14 @@ async function handleInitExperiment(
     secondaryMetrics: [],
     currentSegment: existingSegment + 1,
     bestMetric: undefined,
+    targetValue: input.target_value,
+    minRepetitions: input.min_repetitions ?? 1,
+    minRelativeImprovement: input.min_relative_improvement ?? 0,
+    verifierFingerprint,
+    benchmarkCommand: hasAutoresearchSh
+      ? `bash ${AUTORESEARCH_SH}`
+      : input.command ?? input.verify,
+    guardCommand: input.guard,
     autoStopNonKeepStreak,
     currentNonKeepStreak: 0,
     stopReason: undefined,
@@ -853,6 +1019,12 @@ async function handleInitExperiment(
     direction: experimentState.direction,
     maxIterations: experimentState.maxIterations,
     autoStopNonKeepStreak: experimentState.autoStopNonKeepStreak,
+    targetValue: experimentState.targetValue,
+    minRepetitions: experimentState.minRepetitions,
+    minRelativeImprovement: experimentState.minRelativeImprovement,
+    verifierFingerprint: experimentState.verifierFingerprint,
+    benchmarkCommand: experimentState.benchmarkCommand,
+    guardCommand: experimentState.guardCommand,
   })
 
   await writeRuntime(cwd, {
@@ -867,7 +1039,7 @@ async function handleInitExperiment(
     success: true,
     mode: 'active',
     action: 'init_experiment',
-    message: `Initialized experiment "${experimentState.name}" (metric=${experimentState.metricName}, ${experimentState.direction} is better, auto-stop non-keep streak=${experimentState.autoStopNonKeepStreak}).`,
+    message: `Initialized experiment "${experimentState.name}" (metric=${experimentState.metricName}, ${experimentState.direction} is better, target=${experimentState.targetValue ?? 'unset'}, repetitions=${experimentState.minRepetitions}, min improvement=${(experimentState.minRelativeImprovement * 100).toFixed(3)}%, verifier=${verifierFingerprint ? 'locked' : 'locks on first run'}, auto-stop non-keep streak=${experimentState.autoStopNonKeepStreak}).`,
     session: await buildSessionSnapshot(cwd, workDir),
   }
 }
@@ -930,28 +1102,63 @@ async function handleRunExperiment(
     }
   }
 
+  const normalizedCommand = command.trim()
+  const verifierBefore = await fingerprintVerifier(workDir)
+  const lockError = evaluatorLockError({
+    lockedCommand: exp.benchmarkCommand,
+    currentCommand: normalizedCommand,
+    lockedFingerprint: exp.verifierFingerprint,
+    currentFingerprint: verifierBefore,
+  })
+  if (lockError) {
+    return {
+      success: false,
+      mode: runtime.mode,
+      action: 'run_experiment',
+      message: `Evaluator drift detected (${lockError}). Restore the locked benchmark/verifier or start a new segment; an optimizer may not rewrite its own evaluator.`,
+      session: await buildSessionSnapshot(cwd, workDir),
+    }
+  }
+  const lockedVerifierFingerprint = exp.verifierFingerprint ?? verifierBefore
+
   const t0 = Date.now()
   const benchmark = await runBashCommand(workDir, command, contextAbortSignal, 30 * 60 * 1000)
   const durationSeconds = (Date.now() - t0) / 1000
   const parsedMetrics = parseMetricLines(benchmark.combined)
-  const parsedPrimaryMetric = getPrimaryMetric(parsedMetrics, exp.metricName)
-  const benchmarkPassed = benchmark.code === 0 && !benchmark.interrupted
+  const parsedMetricSamples = parseMetricSamples(benchmark.combined)
+  const primarySummary = summarizeSamples(parsedMetricSamples[exp.metricName] ?? [])
+  const parsedPrimaryMetric = primarySummary?.median ?? getPrimaryMetric(parsedMetrics, exp.metricName)
+  const verifierAfter = await fingerprintVerifier(workDir)
+  let verifierStable = verifierAfter === lockedVerifierFingerprint
+  let benchmarkPassed = benchmark.code === 0 && !benchmark.interrupted && verifierStable
 
   let checksPass: boolean | null = null
   let checksTimedOut = false
   let checksOutputTail = ''
   const checksPath = join(workDir, AUTORESEARCH_CHECKS)
-  if (benchmarkPassed && (await exists(checksPath))) {
+  const checksCommand = (await exists(checksPath))
+    ? `bash ${AUTORESEARCH_CHECKS}`
+    : exp.guardCommand
+  if (benchmarkPassed && checksCommand) {
     const timeoutSec = input.checks_timeout_seconds ?? 300
     const checks = await runBashCommand(
       workDir,
-      `bash ${AUTORESEARCH_CHECKS}`,
+      checksCommand,
       contextAbortSignal,
       timeoutSec * 1000,
     )
     checksTimedOut = checks.interrupted
     checksPass = checks.code === 0 && !checks.interrupted
     checksOutputTail = tailLines(checks.combined, 80)
+  }
+  verifierStable = (await fingerprintVerifier(workDir)) === lockedVerifierFingerprint
+  if (!verifierStable) {
+    benchmarkPassed = false
+    checksPass = false
+    checksOutputTail = [
+      checksOutputTail,
+      'Verifier files changed during benchmark/check execution; result invalidated.',
+    ].filter(Boolean).join('\n')
   }
 
   const outputTail = tailLines(benchmark.combined, 120)
@@ -962,13 +1169,17 @@ async function handleRunExperiment(
     updatedAt: nowIso(),
     experiment: {
       ...exp,
+      benchmarkCommand: exp.benchmarkCommand ?? normalizedCommand,
+      verifierFingerprint: lockedVerifierFingerprint,
       lastRun: {
-        command,
+        command: normalizedCommand,
         benchmarkPassed,
         durationSeconds,
         outputTail,
         parsedPrimaryMetric,
         parsedMetrics,
+        parsedMetricSamples,
+        primarySummary,
         checksPass,
         checksTimedOut,
         checksOutputTail,
@@ -979,7 +1190,9 @@ async function handleRunExperiment(
 
   let message = `run_experiment finished in ${durationSeconds.toFixed(2)}s (exit=${benchmark.code}).`
   if (!benchmarkPassed) {
-    message += `\nBenchmark failed. Next: log_experiment with status="crash".`
+    message += verifierStable
+      ? `\nBenchmark failed. Next: log_experiment with status="crash".`
+      : `\nVerifier changed during execution. This run is invalid and cannot be kept.`
   } else if (checksPass === false || checksTimedOut) {
     message += `\nChecks failed or timed out. Next: log_experiment with status="checks_failed".`
   } else {
@@ -987,6 +1200,9 @@ async function handleRunExperiment(
   }
   if (typeof parsedPrimaryMetric === 'number') {
     message += `\nParsed primary metric (${exp.metricName}) = ${parsedPrimaryMetric}`
+    if (primarySummary) {
+      message += ` (median of ${primarySummary.count}, range=${primarySummary.min}..${primarySummary.max}, relative MAD=${(primarySummary.relativeMad * 100).toFixed(3)}%)`
+    }
   } else {
     message += `\nNo METRIC line found for ${exp.metricName}. Provide metric manually in log_experiment.`
   }
@@ -1007,10 +1223,6 @@ async function handleRunExperiment(
     message,
     session: await buildSessionSnapshot(cwd, workDir),
   }
-}
-
-function metricImproved(direction: MetricDirection, baseline: number, current: number): boolean {
-  return direction === 'lower' ? current < baseline : current > baseline
 }
 
 async function handleLogExperiment(
@@ -1060,6 +1272,38 @@ async function handleLogExperiment(
   }
 
   const status = input.status as ExperimentStatus
+  if (
+    typeof exp.bestMetric !== 'number' &&
+    status !== 'baseline' &&
+    status !== 'crash' &&
+    status !== 'checks_failed'
+  ) {
+    return {
+      success: false,
+      mode: runtime.mode,
+      action: 'log_experiment',
+      message: 'The first valid run in a segment must be logged as status="baseline". A candidate cannot prove improvement before the current champion is measured.',
+      session: await buildSessionSnapshot(cwd, workDir),
+    }
+  }
+  if (typeof exp.bestMetric === 'number' && status === 'baseline') {
+    return {
+      success: false,
+      mode: runtime.mode,
+      action: 'log_experiment',
+      message: `Baseline already locked at ${exp.bestMetric}. Start a new segment to replace it.`,
+      session: await buildSessionSnapshot(cwd, workDir),
+    }
+  }
+  if ((status === 'keep' || status === 'discard') && !input.hypothesis?.trim()) {
+    return {
+      success: false,
+      mode: runtime.mode,
+      action: 'log_experiment',
+      message: 'keep/discard requires a falsifiable hypothesis so negative results remain useful research memory.',
+      session: await buildSessionSnapshot(cwd, workDir),
+    }
+  }
   if (!lastRun.benchmarkPassed && status !== 'crash') {
     return {
       success: false,
@@ -1081,8 +1325,10 @@ async function handleLogExperiment(
 
   // The measured value wins over the caller's. See ./metricProvenance.ts — this
   // gate decides what gets committed, so it must not be assertable.
+  const metricRequired =
+    status === 'baseline' || status === 'keep' || status === 'discard'
   const resolved = resolveMetric(lastRun.parsedPrimaryMetric, input.metric_value, input.force)
-  if (!resolved.ok) {
+  if (!resolved.ok && metricRequired) {
     return {
       success: false,
       mode: runtime.mode,
@@ -1093,17 +1339,27 @@ async function handleLogExperiment(
       session: await buildSessionSnapshot(cwd, workDir),
     }
   }
-  const primaryMetric = resolved.value!
-  const metricSource = resolved.source!
+  const primaryMetric = resolved.value
+  const metricSource = resolved.source
 
-  if (status === 'keep') {
-    const keepable = canKeepOn(metricSource, input.force)
+  if (status === 'keep' || status === 'baseline') {
+    const keepable = canKeepOn(metricSource!, input.force)
     if (!keepable.ok) {
       return {
         success: false,
         mode: runtime.mode,
         action: 'log_experiment',
         message: keepable.error!,
+        session: await buildSessionSnapshot(cwd, workDir),
+      }
+    }
+    const sampleCount = lastRun.primarySummary?.count ?? 0
+    if (sampleCount < exp.minRepetitions) {
+      return {
+        success: false,
+        mode: runtime.mode,
+        action: 'log_experiment',
+        message: `${status} requires ${exp.minRepetitions} measured ${exp.metricName} observations; benchmark emitted ${sampleCount}. Repeat METRIC ${exp.metricName}=... in the stable benchmark output.`,
         session: await buildSessionSnapshot(cwd, workDir),
       }
     }
@@ -1116,7 +1372,7 @@ async function handleLogExperiment(
     ...(input.metrics ?? {}),
   }
   const knownSet = new Set(exp.secondaryMetrics)
-  if (knownSet.size > 0) {
+  if (metricRequired && knownSet.size > 0) {
     const missing = [...knownSet].filter(k => !(k in mergedSecondaryMetrics))
     if (missing.length > 0) {
       return {
@@ -1129,7 +1385,7 @@ async function handleLogExperiment(
     }
   }
   const newMetricNames = Object.keys(mergedSecondaryMetrics).filter(k => !knownSet.has(k))
-  if (newMetricNames.length > 0 && !input.force && knownSet.size > 0) {
+  if (metricRequired && newMetricNames.length > 0 && !input.force && knownSet.size > 0) {
     return {
       success: false,
       mode: runtime.mode,
@@ -1143,19 +1399,23 @@ async function handleLogExperiment(
   if (
     status === 'keep' &&
     typeof exp.bestMetric === 'number' &&
-    !metricImproved(exp.direction, exp.bestMetric, primaryMetric)
+    improvementFraction(exp.direction, exp.bestMetric, primaryMetric!) <
+      exp.minRelativeImprovement
   ) {
+    const observed = improvementFraction(exp.direction, exp.bestMetric, primaryMetric!)
     return {
       success: false,
       mode: runtime.mode,
       action: 'log_experiment',
-      message: `status=keep rejected: metric did not improve vs segment best (${exp.bestMetric}).`,
+      message: `status=keep rejected: relative improvement ${(observed * 100).toFixed(4)}% is below the configured ${(exp.minRelativeImprovement * 100).toFixed(4)}% threshold vs champion ${exp.bestMetric}.`,
       session: await buildSessionSnapshot(cwd, workDir),
     }
   }
 
   let gitNote = ''
-  if (status === 'keep') {
+  if (status === 'baseline') {
+    gitNote = 'baseline locked (no commit/revert)'
+  } else if (status === 'keep') {
     try {
       await runBashCommand(workDir, 'git add -A', contextAbortSignal, 10_000)
       const cachedDiff = await runBashCommand(
@@ -1169,7 +1429,7 @@ async function handleLogExperiment(
       } else {
         const commitPayload = JSON.stringify({
           status,
-          [exp.metricName]: primaryMetric,
+          [exp.metricName]: primaryMetric!,
           ...mergedSecondaryMetrics,
         })
         const commitMsg = `${input.description}\n\nResult: ${commitPayload}`
@@ -1192,6 +1452,9 @@ async function handleLogExperiment(
         AUTORESEARCH_IDEAS,
         AUTORESEARCH_SH,
         AUTORESEARCH_CHECKS,
+        AUTORESEARCH_RULES,
+        AUTORESEARCH_ARCHITECTURE,
+        AUTORESEARCH_SCOREBOARD,
       ]
       const restoreCmd =
         'git restore --worktree --staged -- . ' +
@@ -1219,14 +1482,27 @@ async function handleLogExperiment(
     metricName: exp.metricName,
     metrics: mergedSecondaryMetrics,
     description: input.description,
+    hypothesis: input.hypothesis,
+    phase: input.phase,
+    samples: lastRun.parsedMetricSamples[exp.metricName] ?? [],
+    sampleSummary: lastRun.primarySummary,
+    championBefore: exp.bestMetric,
+    relativeImprovement:
+      typeof exp.bestMetric === 'number' && typeof primaryMetric === 'number'
+        ? improvementFraction(exp.direction, exp.bestMetric, primaryMetric)
+        : undefined,
     durationSeconds: lastRun.durationSeconds,
     command: lastRun.command,
     checksPass: lastRun.checksPass,
     checksTimedOut: lastRun.checksTimedOut,
+    verifierFingerprint: exp.verifierFingerprint,
     asi: input.asi,
   })
 
-  const nextNonKeepStreak = status === 'keep' ? 0 : exp.currentNonKeepStreak + 1
+  const nextNonKeepStreak =
+    status === 'keep' || status === 'baseline'
+      ? 0
+      : exp.currentNonKeepStreak + 1
   const autoStoppedByNonKeep =
     nextNonKeepStreak >= exp.autoStopNonKeepStreak
   const stopReason = autoStoppedByNonKeep
@@ -1238,12 +1514,12 @@ async function handleLogExperiment(
     runCount: runNumber,
     secondaryMetrics: [...new Set([...exp.secondaryMetrics, ...Object.keys(mergedSecondaryMetrics)])],
     bestMetric:
-      status === 'keep'
+      status === 'keep' || status === 'baseline'
         ? typeof exp.bestMetric === 'number'
           ? exp.direction === 'lower'
-            ? Math.min(exp.bestMetric, primaryMetric)
-            : Math.max(exp.bestMetric, primaryMetric)
-          : primaryMetric
+            ? Math.min(exp.bestMetric, primaryMetric!)
+            : Math.max(exp.bestMetric, primaryMetric!)
+          : primaryMetric!
         : exp.bestMetric,
     currentNonKeepStreak: nextNonKeepStreak,
     stopReason,
@@ -1260,11 +1536,19 @@ async function handleLogExperiment(
   })
 
   const finishedByLimit = nextExperiment.runCount >= nextExperiment.maxIterations
+  const targetReached =
+    typeof nextExperiment.targetValue === 'number' &&
+    typeof nextExperiment.bestMetric === 'number' &&
+    reachesTarget(
+      nextExperiment.direction,
+      nextExperiment.bestMetric,
+      nextExperiment.targetValue,
+    )
   return {
     success: true,
     mode: finishedByLimit || autoStoppedByNonKeep ? 'inactive' : 'active',
     action: 'log_experiment',
-    message: `Logged run #${runNumber} as ${status}. Git: ${gitNote}. Non-keep streak=${nextNonKeepStreak}/${exp.autoStopNonKeepStreak}.${finishedByLimit ? ` Reached maxIterations=${nextExperiment.maxIterations}.` : ''}${autoStoppedByNonKeep ? ` ${stopReason}.` : ''}`,
+    message: `Logged run #${runNumber} as ${status}. Git: ${gitNote}. Non-keep streak=${nextNonKeepStreak}/${exp.autoStopNonKeepStreak}.${targetReached ? ` Nearby target ${nextExperiment.targetValue} reached; advance the target or start a new segment.` : ''}${finishedByLimit ? ` Reached maxIterations=${nextExperiment.maxIterations}.` : ''}${autoStoppedByNonKeep ? ` ${stopReason}.` : ''}`,
     session: await buildSessionSnapshot(cwd, workDir),
   }
 }
@@ -1685,6 +1969,8 @@ async function handleAuditAction(
     let runCount = 0
     const metricValues: number[] = []
     const uniqueMetricNames = new Set<string>()
+    const runRecords: Record<string, unknown>[] = []
+    const configsBySegment = new Map<number, Record<string, unknown>>()
 
     for (const line of lines) {
       try {
@@ -1692,8 +1978,10 @@ async function handleAuditAction(
         if (rec.type === 'config') {
           configCount++
           if (typeof rec.metricName === 'string') uniqueMetricNames.add(rec.metricName)
+          if (typeof rec.segment === 'number') configsBySegment.set(rec.segment, rec)
         } else if (rec.type === 'run') {
           runCount++
+          runRecords.push(rec)
           if (typeof rec.metric === 'number' && Number.isFinite(rec.metric)) {
             metricValues.push(rec.metric as number)
           }
@@ -1755,6 +2043,80 @@ async function handleAuditAction(
     checks.status_distribution = {
       status: keepRate >= 10 ? 'pass' : runCount > 0 ? 'warn' : 'fail',
       details: `Statuses: ${JSON.stringify(statusCounts)}. Keep rate: ${keepRate.toFixed(1)}%`,
+    }
+
+    // Check 5: a measured baseline must precede every keep in each segment.
+    const baselineSeen = new Set<number>()
+    const baselineViolations: string[] = []
+    for (const rec of runRecords) {
+      const segment = typeof rec.segment === 'number' ? rec.segment : 0
+      if (rec.status === 'baseline') {
+        if (rec.metricSource !== 'measured') {
+          baselineViolations.push(`segment ${segment} baseline is not measured`)
+        }
+        baselineSeen.add(segment)
+      }
+      if (rec.status === 'keep' && !baselineSeen.has(segment)) {
+        baselineViolations.push(`segment ${segment} kept run ${rec.run ?? '?'} before baseline`)
+      }
+    }
+    checks.baseline_chain = {
+      status: baselineViolations.length === 0 ? 'pass' : 'fail',
+      details:
+        baselineViolations.length === 0
+          ? `${baselineSeen.size} segment baseline(s); no keep precedes its baseline.`
+          : baselineViolations.join('; '),
+    }
+
+    // Check 6: evaluator command/fingerprint stay invariant within a segment.
+    const commandsBySegment = new Map<number, Set<string>>()
+    const evaluatorViolations: string[] = []
+    for (const rec of runRecords) {
+      const segment = typeof rec.segment === 'number' ? rec.segment : 0
+      const commands = commandsBySegment.get(segment) ?? new Set<string>()
+      if (typeof rec.command === 'string') commands.add(rec.command)
+      commandsBySegment.set(segment, commands)
+      const configured = configsBySegment.get(segment)?.verifierFingerprint
+      if (
+        typeof configured === 'string' &&
+        rec.verifierFingerprint !== configured
+      ) {
+        evaluatorViolations.push(`segment ${segment} verifier fingerprint mismatch at run ${rec.run ?? '?'}`)
+      }
+    }
+    for (const [segment, commands] of commandsBySegment) {
+      if (commands.size > 1) evaluatorViolations.push(`segment ${segment} used ${commands.size} benchmark commands`)
+    }
+    checks.evaluator_integrity = {
+      status: evaluatorViolations.length === 0 ? 'pass' : 'fail',
+      details: evaluatorViolations.length === 0
+        ? 'Benchmark command and recorded verifier fingerprint are stable per segment.'
+        : evaluatorViolations.join('; '),
+    }
+
+    // Check 7: kept candidates carry measured repeated evidence and research memory.
+    const evidenceWarnings: string[] = []
+    for (const rec of runRecords) {
+      if (rec.status !== 'keep' && rec.status !== 'discard') continue
+      if (typeof rec.hypothesis !== 'string' || !rec.hypothesis.trim()) {
+        evidenceWarnings.push(`run ${rec.run ?? '?'} has no hypothesis`)
+      }
+      if (typeof rec.phase !== 'string') evidenceWarnings.push(`run ${rec.run ?? '?'} has no phase`)
+      if (rec.status === 'keep') {
+        if (rec.metricSource !== 'measured') evidenceWarnings.push(`kept run ${rec.run ?? '?'} is not measured`)
+        const samples = Array.isArray(rec.samples) ? rec.samples.length : 0
+        const segment = typeof rec.segment === 'number' ? rec.segment : 0
+        const configuredMin = configsBySegment.get(segment)?.minRepetitions
+        if (typeof configuredMin === 'number' && samples < configuredMin) {
+          evidenceWarnings.push(`kept run ${rec.run ?? '?'} has ${samples}/${configuredMin} samples`)
+        }
+      }
+    }
+    checks.research_memory = {
+      status: evidenceWarnings.length === 0 ? 'pass' : 'warn',
+      details: evidenceWarnings.length === 0
+        ? 'Candidate runs retain hypothesis, phase, provenance, and configured samples.'
+        : evidenceWarnings.join('; '),
     }
   } catch (err) {
     checks.jsonl_integrity = {
@@ -1938,10 +2300,10 @@ export const AutoresearchTool = buildTool({
   maxResultSizeChars: 100_000,
   userFacingName,
   async description() {
-    return 'Run a session-based autonomous optimization loop with a strong state machine: init_experiment -> run_experiment -> log_experiment. Also supports queue (multi-job batch), audit (experiment integrity), and analyze (cross-experiment statistics).'
+    return 'Run a verifier-locked autonomous optimization loop: establish a measured baseline, test explicit hypotheses with repeated observations, and keep only correctness-preserving improvements over the current champion. Uses nearby targets, compact research memory, phase-separated exploration/review/implementation/tuning, and immutable evaluator fingerprints. Also supports queue, audit, and analyze.'
   },
   async prompt() {
-    return 'Autoresearch tool: supports action=start|status|off|clear|init_experiment|run_experiment|log_experiment|queue|queue_status|queue_stop|audit|analyze. Preferred protocol is strict: init_experiment once, run_experiment, then log_experiment every time. checks_failed cannot be kept; discard/crash/checks_failed auto-revert non-autoresearch changes. queue runs multi-job manifests with dependency tracking. audit checks experiment integrity. analyze computes cross-experiment statistics from JSONL.'
+    return 'Autoresearch tool for loop engineering. Strict protocol: init_experiment locks the benchmark/verifier and a nearby numerical target; the first measured run must be logged as baseline. Every candidate carries a falsifiable hypothesis and phase (explore|review|implement|tune), then run_experiment collects repeated METRIC observations and log_experiment keeps only a measured improvement above the configured threshold with checks passing. Verifier or benchmark-command drift is rejected. Negative results remain in compact JSONL research memory; architecture, rules, ideas, and external scoreboard artifacts survive reverts. queue supports independent searches; audit and analyze check accumulated evidence.'
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -2154,20 +2516,26 @@ export const AutoresearchTool = buildTool({
       `- Auto-stop non-keep streak: ${runtimeBeforeStart?.experiment?.autoStopNonKeepStreak ?? input.auto_stop_non_keep_streak ?? DEFAULT_AUTO_STOP_NON_KEEP_STREAK}`,
       `- Primary metric: ${effectiveMetricName}`,
       `- Direction: ${effectiveDirection}`,
+      `- Nearby target: ${input.target_value ?? runtimeBeforeStart?.experiment?.targetValue ?? '(set one after measuring baseline)'}`,
+      `- Minimum repetitions: ${input.min_repetitions ?? runtimeBeforeStart?.experiment?.minRepetitions ?? 1}`,
+      `- Minimum relative improvement: ${input.min_relative_improvement ?? runtimeBeforeStart?.experiment?.minRelativeImprovement ?? 0}`,
       `- Scope: ${input.scope ?? '(not constrained)'}`,
       `- Benchmark command: ${input.command ?? input.verify ?? (hasAutoresearchSh ? `bash ${AUTORESEARCH_SH}` : '(provide command in run_experiment)')}`,
       `- Guard command: ${input.guard ?? (hasChecks ? `bash ${AUTORESEARCH_CHECKS}` : '(none)')}`,
       '',
       'For each iteration:',
-      '1) Make one small code change hypothesis.',
+      '0) Before any code change, run and log a measured baseline with status="baseline".',
+      '1) State one falsifiable hypothesis and a phase: explore, review, implement, or tune. Use independent paths for exploration and cross-review promising ideas before exploitation.',
       '2) Call autoresearch with action="run_experiment".',
-      '3) Immediately call autoresearch with action="log_experiment".',
+      '3) Immediately call autoresearch with action="log_experiment", including hypothesis and phase. Repeated METRIC lines are summarized by median and MAD.',
       '4) Status policy:',
       '- benchmark failed => crash',
       '- checks failed/timed out => checks_failed (never keep)',
       '- benchmark passed + improved primary metric => keep',
       '- otherwise => discard',
       '',
+      `Read ${AUTORESEARCH_RULES}, ${AUTORESEARCH_ARCHITECTURE}, and recent ${AUTORESEARCH_JSONL} evidence. Preserve useful negative results, but do not carry scratch candidates once their finding is distilled.`,
+      'The benchmark command and verifier files are locked within a segment. Never optimize by caching outputs, reusing stale results, batching hidden cases, or rewriting the evaluator.',
       'Do not manually run git commit/revert; log_experiment enforces it.',
       'Stop when max iterations reached or no promising hypotheses remain.',
       `Hard stop: if consecutive non-keep results reaches configured limit, the tool will auto-stop and reject further runs until init_experiment is called again.`,
