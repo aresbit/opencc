@@ -94,8 +94,33 @@ export function getInitializationStatus():
 }
 
 /**
+ * Whether LSP is in play for this session at all.
+ *
+ * This, and not `isLspConnected()`, is what decides whether LSPTool is declared
+ * to the model. The distinction matters for the KV cache: tool definitions are
+ * part of the cached prefix, so a tool that appears or disappears mid-session
+ * invalidates every cached token after the tools block.
+ *
+ * `isLspConnected()` is live state — false at startup while servers initialize
+ * asynchronously, true once they come up, false again if they all error. Wiring
+ * it to `isEnabled()` meant a normal session broke its own cache a few seconds
+ * in, and again on any server fault. Whether LSP is *possible* here is decided
+ * by the launch mode and never changes, so that is what the tool set keys on;
+ * whether a server is actually reachable is settled at call time, where
+ * LSPTool already returns a plain "not initialized" result instead of throwing.
+ */
+export function isLspAvailableForSession(): boolean {
+  // --bare / CLAUDE_CODE_SIMPLE never initializes LSP (see
+  // initializeLspServerManager), so the tool would be dead weight.
+  return !isBareMode()
+}
+
+/**
  * Check whether at least one language server is connected and healthy.
- * Backs LSPTool.isEnabled().
+ *
+ * Live state — do not use this to decide tool availability (see
+ * `isLspAvailableForSession`). Callers that need to know whether a request can
+ * succeed right now should use it; callers shaping the prompt should not.
  */
 export function isLspConnected(): boolean {
   if (initializationState === 'failed') return false

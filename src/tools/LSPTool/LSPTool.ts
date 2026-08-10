@@ -15,6 +15,7 @@ import { z } from 'zod/v4'
 import {
   getInitializationStatus,
   getLspServerManager,
+  isLspAvailableForSession,
   isLspConnected,
   waitForInitialization,
 } from '../../services/lsp/manager.js'
@@ -135,7 +136,12 @@ export const LSPTool = buildTool({
   userFacingName,
   shouldDefer: true,
   isEnabled() {
-    return isLspConnected()
+    // Session-stable on purpose. Keying this on live connection state made the
+    // tool appear once servers finished initializing and vanish if they all
+    // errored, and each flip rewrote the tool definitions — invalidating the
+    // cached prefix for the rest of the session. Reachability is settled in
+    // call(), which returns a plain result when no manager is up.
+    return isLspAvailableForSession()
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -248,6 +254,21 @@ export const LSPTool = buildTool({
       }
       return {
         data: output,
+      }
+    }
+
+    // The tool is declared for the whole session so the tool definitions stay
+    // cacheable, which means reachability has to be answered here. A manager
+    // with no healthy server would otherwise fail further in with a much less
+    // legible error.
+    if (!isLspConnected()) {
+      return {
+        data: {
+          operation: input.operation,
+          result:
+            'No language server is currently available for this project. Use Grep/Read to inspect the code instead.',
+          filePath: input.filePath,
+        } satisfies Output,
       }
     }
 

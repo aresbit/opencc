@@ -20,13 +20,51 @@
 | Manus 机制 | opencc 状态 | 依据 |
 |---|---|---|
 | **1. 围绕 KV-cache 设计** —— 稳定前缀、append-only、确定性序列化、系统提示无每轮时间戳 | **已有** | `services/api/promptCacheBreakDetection.ts` 对 system blocks 连同 `cache_control` 做哈希、检测 TTL/scope 翻转；`deepseekOptimizer.ts` 走自动前缀缓存；系统提示用会话级稳定的 `getSessionStartDate()` |
-| **2. mask, don't remove** —— 工具定义不变，用 logits 掩码控制可用性 | **有差距，短期不可直接补** | `src/tools.ts` 按 `isEnabled()` 与 deny 规则真的 `filter` 掉工具定义。Manus 能掩码是因为自控推理栈；Anthropic API 不暴露 logit bias。折中方向：会话内保持工具集合稳定，把拒绝下沉到 permission 层 |
+| **2. mask, don't remove** —— 工具定义不变，用 logits 掩码控制可用性 | **部分已有 + 本轮修掉一处实例** | 逐条见下 |
 | **3. 文件系统即上下文，压缩必须可还原** | **已补**（本轮） | 见下 |
 | **4. 通过复述操纵注意力** | **已补**（本轮） | 见下 |
 | **5. 保留错误现场** | **已满足** | `is_error` 原样进入上下文；`utils/messages.ts` 里唯一的 sanitize 是剥离 error 结果中的非 text 块，属 API 协议要求（"all content must be type text if is_error is true"），不是隐藏错误 |
 | **6. 别把自己 few-shot 进沟里** | 未核实 | — |
 | **Wide Research** —— 完整实例子 agent、独立 VM、全新上下文、彼此不通信 | **部分具备** | AgentTool 已支持一条消息内并行 fan-out，fork 还能共享缓存；缺的是每个子 agent 独立沙箱（现共享宿主文件系统）与"对 N 个同类条目扇出"的编排原语 |
 | **Agent Skills 渐进披露** | 未核实 | SkillTool 解析 frontmatter、按需加载 body，看起来至少有两级 |
+
+---
+
+## 第 2 条的实际情况（比最初判断的窄）
+
+最初我以为这条差距很大，查完代码后是三件事：
+
+1. **deny 规则的执行不依赖删定义。** `utils/permissions/permissions.ts:1085` 与 `:1183`
+   在调用时独立跑 `getDenyRuleForTool` 并返回 `behavior: 'deny'`。`tools.ts` 里的
+   `filterToolsByDenyRules` 是纵深防御 + 提示词卫生，不是唯一执行手段 —— 所以"保留定义"
+   本身不构成安全回退。
+2. **工具集合的变动已经被检测。** `promptCacheBreakDetection.ts` 有 `toolsHash`、逐工具
+   哈希、`addedTools`/`removedTools`、`toolSchemasChanged`，churn 已可观测可归因。
+3. **真正的 logits 掩码做不了** —— Manus 能做是因为自控推理栈，Anthropic API 不暴露
+   logit bias。
+
+所以剩下的可做项不是"改架构"，而是**消除无谓的 churn**：`isEnabled()` 应当回答
+"这个工具在本会话中是否在场"，而不是"它此刻能不能用"。
+
+### 修掉的实例：LSPTool
+
+`LSPTool.isEnabled()` 原本返回 `isLspConnected()`，而后者读的是活状态：
+
+- 会话开始 → manager 还没建 / servers 为空 → false → **LSPTool 不在工具定义里**
+- 几秒后异步初始化完成 → true → **LSPTool 出现 → tools block 改变 → 缓存从此失效**
+- 之后任何一次服务器全部 error → 再翻一次
+
+即每个正常会话都会白白打断一次自己的缓存，服务器出故障再打断一次。
+
+改为 `isLspAvailableForSession()`（即 `!isBareMode()`，由启动参数决定、会话内永不改变）。
+可达性下沉到 `call()`：manager 缺失时原本就返回普通结果而非抛错，现在再加一条
+`isLspConnected()` 检查，无健康服务器时直接给出"没有可用语言服务器，改用 Grep/Read"
+的明确回复，而不是在更深处失败。
+
+**这项没有配测试**：`manager.ts → envUtils.ts → lodash-es`，本机没装依赖必须 mock，
+而 bun 的 `mock.module` 是进程级的，mock `envUtils` 会打断同样 mock 它的 Goal /
+Paper2Code 套件；不 mock 则单跑失败。写出来的测试只有在特定文件加载顺序下才绿 ——
+那正是本仓库这一系列改动一直在消灭的假绿，所以删掉了。装上 node_modules 后可以补。
 
 ---
 
