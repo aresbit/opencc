@@ -39,6 +39,9 @@
 | 审计日志 | 每次真实晋升追加 `.self_improving_promotions.log`：内容 SHA、memoryType、git HEAD |
 | 可逆 | `demote_memory entryId=…` 删除该条目晋升出的全部记忆文件 |
 
+准入闸是不可配置的安全性质。旧调用中的 `onlyVerified: true` 仍可使用，但
+`onlyVerified: false` 会在 schema 层被拒绝，执行路径也会无条件检查证据。
+
 默认 `memoryType` 是 `project` 而非 `feedback`——`feedback` 对未来行为影响最强，晋升进去
 必须刻意。去重按内容 SHA-256，改标题重复晋升拦得住。
 

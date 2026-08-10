@@ -144,6 +144,7 @@ ChatWise SQLite DB (~/.config/app.chatwise/app.db)
 | 维度 | 默认 | 含义 |
 |------|------|------|
 | `promote_memory` 是否真写 | 写盘 | 默认直接晋升；准入闸是 `**Verified-By**` 证据，无真实证据的条目一律跳过。`dryRun: true` 可先预览 |
+| `onlyVerified` | 固定为 `true` | 仅为兼容旧调用保留；传 `false` 会被 schema 拒绝，准入闸不可关闭 |
 | 写入哪种 memory type | `project` | `feedback` 类型对未来会话的行为影响最大，需要显式指定 |
 | 「已验证」判定 | 严格 | 条目正文必须包含显式字段 `**Verified-By**: <evidence>`；`learn` 自动打上的占位符与各种否定写法一律拒绝 |
 | `ingest_memory` 的 `topic` 参数 | 必填 | 不传会报错 |

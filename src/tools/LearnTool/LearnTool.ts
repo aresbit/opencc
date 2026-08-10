@@ -71,10 +71,10 @@ const inputSchema = lazySchema(() =>
         'Used by action=promote_memory: source markdown path (default: .learnings/LEARNINGS.md).',
       ),
     onlyVerified: z
-      .boolean()
+      .literal(true)
       .optional()
       .describe(
-        'Used by action=promote_memory: only promote entries that carry an explicit **Verified-By**: <evidence> block in their body (default: true).',
+        'Deprecated compatibility field for action=promote_memory. If supplied it must be true; the Verified-By admission gate cannot be disabled.',
       ),
     maxEntries: z
       .number()
@@ -620,14 +620,12 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
     }
   }
 
-  const onlyVerified = input.onlyVerified ?? true
   const maxEntries = input.maxEntries ?? 30
-  // RSI-safety default: never persist unless caller is explicit. Mirrors
-  // Anthropic's "humans shift to oversight/verification" principle — the
   // Promotion writes by default; the admission control is `isVerifiedEffective`,
   // which requires a human to have written real **Verified-By** evidence into
-  // the entry. An unverified entry is skipped whatever this flag says, so the
-  // human act is supplying evidence rather than repeating a confirmation.
+  // the entry. This check is unconditional: the former `onlyVerified: false`
+  // escape hatch let callers bypass the only RSI admission gate while the
+  // prompt and docs promised that unverified entries were always skipped.
   //
   // This default is only defensible because that gate actually works. Until
   // 2026-08-01 the placeholder `learn` auto-stamps passed the anchored
@@ -649,7 +647,7 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
 
   for (const entry of entries) {
     if (promotedCount >= maxEntries) break
-    if (onlyVerified && !isVerifiedEffective(entry)) {
+    if (!isVerifiedEffective(entry)) {
       skippedCount += 1
       continue
     }

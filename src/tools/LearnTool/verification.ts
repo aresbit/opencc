@@ -3,10 +3,9 @@
  *
  * Promotion is a generational boundary: a promoted memory shapes every later
  * session, so the model that wrote the entry must not also be the thing that
- * certifies it. `promote_memory` defaults to `dryRun: true` and the human
- * supplies `dryRun: false` — that is the real authority. This gate is the
- * secondary filter that stops obviously-uncertified entries from reaching the
- * human's review queue at all.
+ * certifies it. `promote_memory` persists verified entries by default; this
+ * gate is therefore mandatory and cannot be disabled by a tool-call option.
+ * `dryRun: true` remains available for previewing the eligible set.
  *
  * It was not doing that. `learn` auto-stamps a placeholder reading
  *
