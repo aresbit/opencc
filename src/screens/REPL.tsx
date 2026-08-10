@@ -195,6 +195,7 @@ import { isBgSession, updateSessionName, updateSessionActivity } from '../utils/
 import { isInProcessTeammateTask, type InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js';
 import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { useInboxPoller } from '../hooks/useInboxPoller.js';
+import { useActorInboxPoller } from '../hooks/useActorInboxPoller.js';
 // Dead code elimination: conditional import for loop mode
 /* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
@@ -4126,6 +4127,12 @@ export function REPL({
     interimRange: null
   };
   useInboxPoller({
+    enabled: isAgentSwarmsEnabled(),
+    isLoading,
+    focusedInputDialog,
+    onSubmitMessage: handleIncomingPrompt
+  });
+  useActorInboxPoller({
     enabled: isAgentSwarmsEnabled(),
     isLoading,
     focusedInputDialog,

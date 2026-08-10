@@ -143,6 +143,39 @@ export class LocalActorMailbox {
     }
   }
 
+  /**
+   * Marks exactly the listed envelopes as delivered.
+   *
+   * `receive` reads and claims in one locked step, which forces a caller that
+   * wants to deliver before claiming to choose between losing messages and
+   * claiming ones it never saw: anything that arrived between its read and its
+   * claim would be marked delivered without being handled. Splitting the claim
+   * out lets a poller peek without a lock, hand off what it actually saw, and
+   * then retire those ids and nothing else.
+   */
+  async claim(addressValue: string, ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return
+    const address = parseActorAddress(addressValue)
+    if (address.transport !== 'local') {
+      throw new Error('LocalActorMailbox only accepts actor:// addresses')
+    }
+    const wanted = new Set(ids)
+    const path = await this.ensure(address)
+    const release = await lockfile.lock(path, LOCK_OPTIONS)
+    try {
+      const records = await this.read(path)
+      const now = new Date().toISOString()
+      const updated = records.map(record =>
+        !record.receivedAt && wanted.has(record.envelope.id)
+          ? { ...record, receivedAt: now }
+          : record,
+      )
+      await writeFile(path, jsonStringify(updated, null, 2), 'utf8')
+    } finally {
+      await release()
+    }
+  }
+
   async peek(addressValue: string): Promise<ActorEnvelope[]> {
     const address = parseActorAddress(addressValue)
     const path = this.pathFor(address)

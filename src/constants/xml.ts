@@ -50,6 +50,8 @@ export const REMOTE_REVIEW_PROGRESS_TAG = 'remote-review-progress'
 
 // XML tag name for teammate messages (swarm inter-agent communication)
 export const TEAMMATE_MESSAGE_TAG = 'teammate-message'
+/** Envelope delivered to this session's actor address by another actor. */
+export const ACTOR_MESSAGE_TAG = 'actor-message'
 
 // XML tag name for external channel messages
 export const CHANNEL_MESSAGE_TAG = 'channel-message'
