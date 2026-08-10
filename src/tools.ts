@@ -19,6 +19,7 @@ import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
 import { SoftwareAnalysisTool } from './tools/SoftwareAnalysisTool/SoftwareAnalysisTool.js'
 import { ManuscriptCheckTool } from './tools/ManuscriptCheckTool/ManuscriptCheckTool.js'
 import { WideResearchTool } from './tools/WideResearchTool/WideResearchTool.js'
+import { SelfImproveTool } from './tools/SelfImproveTool/SelfImproveTool.js'
 import { WikiTool } from './tools/WikiTool/WikiTool.js'
 import { KimiTool } from './tools/KimiTool/KimiTool.js'
 import { KimiWebBridgeTool } from './tools/KimiWebBridgeTool/KimiWebBridgeTool.js'
@@ -249,6 +250,7 @@ export function getAllBaseTools(): Tools {
     SoftwareAnalysisTool,
     ManuscriptCheckTool,
     WideResearchTool,
+    SelfImproveTool,
     WikiTool,
     KimiTool,
     KimiWebBridgeTool,
