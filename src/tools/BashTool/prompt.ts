@@ -16,6 +16,7 @@ import {
   isUndercover,
 } from '../../utils/undercover.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
+import { CODE_ACT_TOOL_NAME } from '../CodeActTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'
@@ -288,6 +289,10 @@ export function getSimplePrompt(): string {
     `Edit files: Use ${FILE_EDIT_TOOL_NAME} (NOT sed/awk)`,
     `Write files: Use ${FILE_WRITE_TOOL_NAME} (NOT echo >/cat <<EOF)`,
     'Communication: Output text directly (NOT echo/printf)',
+    // Without this the routing only exists in one direction: CodeAct's prompt
+    // mentions Bash, nothing here mentions CodeAct, and a shell script is
+    // written here by default because this is the tool already in hand.
+    `Shell scripts: a loop over lines, a \`while read\` accumulator, a multi-stage awk/sed/jq chain, or anything that must abort on the first failure belongs in ${CODE_ACT_TOOL_NAME} with \`language: "bash"\` — it runs under \`set -euo pipefail\` with map_lines/filter_lines/fold_lines/pipe_functions/run_cmd already sourced. Use ${BASH_TOOL_NAME} for one command, or a few chained with '&&'.`,
   ]
 
   const avoidCommands = embedded

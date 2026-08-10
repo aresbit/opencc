@@ -19,8 +19,13 @@ function bashScript(): string {
 # Source this file in your CodeAct bash script:
 #   source ./builtins_bash/bash.sh
 #   # or: . ./builtins_bash/bash.sh
-
-set -euo pipefail
+#
+# Deliberately sets no shell options. A library that flips errexit/nounset as a
+# side effect of being sourced cannot be sourced anywhere it was not designed
+# for -- notably the Bash tool's persistent session, where the options would
+# outlive the call and turn a grep that matches nothing into a dead shell. The
+# CodeAct bash preamble sets \`set -euo pipefail\` itself, immediately before
+# sourcing this, so nothing changes for CodeAct.
 
 # ── Filesystem ────────────────────────────────────────────────
 
@@ -290,7 +295,7 @@ tmpdir() {
 // this, `if (!existsSync)` meant a fix to the builtins (e.g. removing the
 // "builtins loaded." echo that was polluting every script's stdout) never
 // reached a machine that already had the old file cached.
-const BUILTINS_BASH_VERSION = '4'
+const BUILTINS_BASH_VERSION = '5'
 
 // ── Bootstrap ──────────────────────────────────────────────────────
 

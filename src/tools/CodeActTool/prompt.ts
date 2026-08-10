@@ -40,7 +40,7 @@ available language or explain which toolchain is required.
 |----------|---------|----------|
 | **typescript** (default) | bun | General-purpose, filesystem ops, API calls, JSON processing |
 | **python** | python3 | Data analysis, quant trading, ML/NumPy, statistics, scientific computing |
-| **bash** | bash | Simple automation, shell pipelines, system commands |
+| **bash** | bash | Composed stream processing: map/filter/fold over lines, fail-fast scripts, array-safe command construction |
 | **c** | gcc → binary | Performance-critical computation, FFI, numerical kernels |
 | **cpp** | g++/clang++ → C++23 binary | Zero-cost ranges, variant/expected state machines, simulation |
 | **rust** | rustc (edition 2024) | Safe systems code, Result, iterators, explicit state machines |
@@ -67,6 +67,25 @@ Prefer dedicated tools (Bash, Read, Edit, etc.) when:
 - The task is a single, simple operation
 - You need user-facing UI (Edit diffs, Read with line numbers)
 - The operation needs permission-gating specific to a tool type
+
+### Bash tool or CodeAct bash?
+
+Both run shell. They are not interchangeable, and the split is about the script,
+not the subject matter:
+
+- **Bash tool** — one command, or a few chained with \`&&\`. No preamble, runs in
+  the persistent session, keeps your \`cd\` and exported variables.
+- **CodeAct with \`language: "bash"\`** — a *script*. It runs under
+  \`set -euo pipefail\` with \`builtins_bash/bash.sh\` already sourced, so
+  \`map_lines\`, \`filter_lines\`, \`fold_lines\`, \`scan_lines\`, \`pipe_functions\`,
+  \`run_cmd\` and \`with_tempdir\` are defined. Nothing sources those for you in the
+  Bash tool, and a plain Bash call does not stop at the first failure.
+
+Reach for CodeAct bash the moment you are about to write a loop over lines, a
+\`while read\` accumulator, a multi-stage \`awk\`/\`sed\`/\`jq\` chain, or a script
+whose steps must abort on the first error. Those are exactly the shapes the
+combinators exist for, and writing them by hand in a Bash call is how a
+one-liner becomes an unreviewable pipeline.
 
 ### Available built-in utilities
 

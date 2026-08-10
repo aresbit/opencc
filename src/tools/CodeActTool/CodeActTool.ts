@@ -8,7 +8,8 @@ import {
 } from '../../utils/codeActLanguageAdapters.js'
 import { getCodeActPrompt } from './prompt.js'
 
-const CODE_ACT_TOOL_NAME = 'CodeAct'
+import { CODE_ACT_TOOL_NAME } from './toolName.js'
+export { CODE_ACT_TOOL_NAME }
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
