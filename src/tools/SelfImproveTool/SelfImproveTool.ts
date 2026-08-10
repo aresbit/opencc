@@ -4,6 +4,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { getCwd } from '../../utils/cwd.js'
 import { chooseStrategy } from '../../services/rsi/allocation.js'
 import { attributeFailure } from '../../services/rsi/credit.js'
+import { localizeFailure } from '../../services/rsi/prm.js'
 import { compareRuns } from '../../services/rsi/estimators.js'
 import {
   DEFAULT_TRIALS,
@@ -20,6 +21,7 @@ import {
   renderAllocation,
   renderAttribution,
   renderComparison,
+  renderLocalization,
   renderMeasurement,
   renderSelection,
 } from './report.js'
@@ -34,7 +36,14 @@ const MAX_RESULT_CHARS = 30_000
 const inputSchema = lazySchema(() =>
   z.strictObject({
     action: z
-      .enum(['measure', 'compare', 'allocate', 'attribute', 'select'])
+      .enum([
+        'measure',
+        'compare',
+        'allocate',
+        'attribute',
+        'localize',
+        'select',
+      ])
       .describe('What to do. See the tool description.'),
 
     command: z
@@ -119,6 +128,27 @@ const inputSchema = lazySchema(() =>
       .optional()
       .describe('Per-step pass counts along the pipeline. For attribute.'),
 
+    prefixes: z
+      .array(
+        z.object({
+          name: z
+            .string()
+            .describe('The step whose prefix was completed from.'),
+          completions: z
+            .number()
+            .int()
+            .nonnegative()
+            .describe('Completions sampled from this prefix.'),
+          passed: z
+            .number()
+            .int()
+            .nonnegative()
+            .describe('How many reached a passing end state.'),
+        }),
+      )
+      .optional()
+      .describe('Rollout outcomes per prefix, in trajectory order. For localize.'),
+
     candidates: z
       .array(
         z.object({
@@ -161,6 +191,8 @@ const outputSchema = lazySchema(() =>
     significant: z.boolean().optional(),
     strategy: z.string().optional(),
     dominant_step: z.string().optional(),
+    located_step: z.string().optional(),
+    outcome: z.string().optional(),
     selected: z.string().optional(),
     error: z.string().optional(),
   }),
@@ -348,6 +380,28 @@ export const SelfImproveTool = buildTool({
           }
         } catch (error) {
           return fail('attribute', errorText(error))
+        }
+      }
+
+      case 'localize': {
+        if (!input.prefixes || input.prefixes.length === 0) {
+          return fail('localize', 'prefixes is required and must not be empty')
+        }
+        try {
+          const result = localizeFailure(input.prefixes)
+          return {
+            data: {
+              action: 'localize',
+              ok: true,
+              report: renderLocalization(result),
+              outcome: result.outcome.kind,
+              ...(result.outcome.kind === 'located'
+                ? { located_step: result.outcome.step.name }
+                : {}),
+            },
+          }
+        } catch (error) {
+          return fail('localize', errorText(error))
         }
       }
 

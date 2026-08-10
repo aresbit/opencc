@@ -224,6 +224,63 @@ describe('rsi attribute', () => {
   })
 })
 
+describe('rsi localize', () => {
+  test('names the step where the prefix value falls', async () => {
+    const out = await call({
+      action: 'localize',
+      prefixes: [
+        { name: 'refactor', completions: 30, passed: 30 },
+        { name: 'add-feature', completions: 30, passed: 29 },
+        { name: 'wire-up', completions: 30, passed: 3 },
+      ],
+    })
+    expect(out.outcome).toBe('located')
+    expect(out.located_step).toBe('wire-up')
+    expect(out.report).toContain('FOUND THE STEP')
+    expect(out.report).toContain('←')
+  })
+
+  test('refuses to blame anything when no rollout passed anywhere', async () => {
+    const out = await call({
+      action: 'localize',
+      prefixes: [
+        { name: 'a', completions: 4, passed: 0 },
+        { name: 'b', completions: 4, passed: 0 },
+      ],
+    })
+    expect(out.outcome).toBe('no_signal')
+    expect(out.report).toContain('budget is too small')
+    expect(out.located_step).toBeUndefined()
+  })
+
+  test('distinguishes "no bad step" from "budget too small to see one"', async () => {
+    const out = await call({
+      action: 'localize',
+      prefixes: [
+        { name: 'a', completions: 4, passed: 4 },
+        { name: 'b', completions: 4, passed: 3 },
+      ],
+    })
+    expect(out.outcome).toBe('no_drop')
+    expect(out.report).toMatch(/not the same/)
+  })
+
+  test('requires prefixes', async () => {
+    const out = await call({ action: 'localize', prefixes: [] })
+    expect(out.ok).toBe(false)
+    expect(out.report).toMatch(/prefixes is required/)
+  })
+
+  test('rejects impossible rollout counts', async () => {
+    const out = await call({
+      action: 'localize',
+      prefixes: [{ name: 'a', completions: 2, passed: 5 }],
+    })
+    expect(out.ok).toBe(false)
+    expect(out.report).toMatch(/invalid rollout counts/)
+  })
+})
+
 describe('rsi select', () => {
   test('gives an untried candidate its first look', async () => {
     const out = await call({

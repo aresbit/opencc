@@ -10,6 +10,7 @@
 import type { Comparison, EvidenceReading } from '../../services/rsi/estimators.js'
 import type { Attribution } from '../../services/rsi/credit.js'
 import type { StrategyChoice } from '../../services/rsi/allocation.js'
+import type { Localization } from '../../services/rsi/prm.js'
 import type { ScoredCandidate } from '../../services/rsi/uct.js'
 import type { TrialRun } from '../../services/rsi/trials.js'
 
@@ -137,6 +138,40 @@ export function renderAttribution(attribution: Attribution): string {
     )
   }
 
+  return lines.join('\n')
+}
+
+export function renderLocalization(result: Localization): string {
+  const HEADLINE: Record<Localization['outcome']['kind'], string> = {
+    located: 'FOUND THE STEP',
+    no_signal: 'NO SIGNAL — the budget is too small to say anything',
+    no_drop: 'NO DROP FOUND',
+  }
+
+  const lines: string[] = [HEADLINE[result.outcome.kind], '', result.summary]
+
+  if (result.labels.length > 0) {
+    lines.push('', 'Prefix values:')
+    for (const label of result.labels) {
+      const marker =
+        result.outcome.kind === 'located' &&
+        result.outcome.step.index === label.index
+          ? ' ←'
+          : ''
+      lines.push(
+        `  ${label.name}: ${label.passed}/${label.completions} (${pct(label.soft)}), CI [${pct(label.interval.low)}, ${pct(label.interval.high)}]${marker}`,
+      )
+    }
+  }
+
+  if (result.outcome.kind === 'no_drop') {
+    lines.push(
+      '',
+      'Two readings, and they are not the same: the trajectory may have no single bad step, or the regression may be real and smaller than this many rollouts can resolve. Raise the completions per prefix before concluding the first.',
+    )
+  }
+
+  lines.push('', `Rollouts consumed: ${result.totalRollouts}.`)
   return lines.join('\n')
 }
 
