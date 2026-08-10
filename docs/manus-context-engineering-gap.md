@@ -95,6 +95,13 @@ input，但要靠 `tool_use_id` 回溯关联才能取回地址，代价低的做
 工具名内联而非 import —— import 会把整个 tool 图和 lodash 拖进 compact 层，这正是该目录
 为清理消息常量已经绕过的循环依赖。配了从磁盘读真常量的漂移测试兜底。
 
+**全量压缩侧**：`compact.ts` 的摘要模板本来就有"Files and Code Sections: Enumerate
+specific files..."，文件引用是保住的。但九个 section 全是代码/文件中心的，**没有任何
+位置留给外部来源** —— 一次全量压缩之后，会话里抓过的每个 URL、跑过的每个检索都消失，
+只剩结论。对纯编码会话无所谓，对研究型任务（paper / quant agent、Wide Research 方向）
+这正是不可逆压缩。三份模板各加了一节 `10. External Sources`（指令表 + 示例块共 6 处），
+要求列出每个 URL / 检索词及其确立了什么。
+
 ### 第 4 条：复述（`utils/todoRecitation.ts`）
 
 opencc 只有"写"没有"读"：`TodoWrite` 把清单推进 `AppStateStore`，REPL 渲染出来，
