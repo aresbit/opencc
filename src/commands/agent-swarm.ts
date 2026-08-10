@@ -1,8 +1,10 @@
 import { LocalActorMailbox } from '../actor/LocalActorMailbox.js'
-import { getCurrentActorAddress } from '../actor/currentActor.js'
+import {
+  getCurrentActorAddress,
+  isActorNetworkingEnabled,
+} from '../actor/currentActor.js'
 import { parseActorAddress } from '../actor/types.js'
 import type { Command } from '../commands.js'
-import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js'
 
 /**
  * Addresses idle for longer than this are omitted. A session that exits leaves
@@ -34,6 +36,23 @@ function describeAge(lastSeenAt: string | undefined, now: number): string {
 }
 
 async function call(): Promise<string> {
+  // Deliberately reachable even when networking is off. "Unknown command"
+  // tells a user nothing; the fix is one environment variable, and this is
+  // where they will come looking for it.
+  if (!isActorNetworkingEnabled()) {
+    return [
+      'Actor networking is off for this session, so it neither announces',
+      'itself nor receives messages automatically.',
+      '',
+      'Turn it on by giving the session an address:',
+      '  MATEBOT_ACTOR_ADDRESS=actor://local/<name> opencc',
+      '',
+      'Use a name unique per directory — two sessions sharing an address',
+      "share one mailbox and claim each other's envelopes, since delivery is",
+      'at-most-once. Swarm modes (--matebot, --agent-teams) enable it too.',
+    ].join('\n')
+  }
+
   const self = getCurrentActorAddress()
   const mailbox = new LocalActorMailbox()
 
@@ -88,7 +107,7 @@ const agentSwarm = {
   name: 'agent-swarm',
   description:
     'List actor addresses reachable from this machine, so sessions can message each other',
-  isEnabled: () => isAgentSwarmsEnabled(),
+  isEnabled: () => true,
   supportsNonInteractive: true,
   load: () =>
     Promise.resolve({
