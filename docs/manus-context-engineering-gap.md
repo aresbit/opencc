@@ -291,8 +291,11 @@ Manus 第 5 条的实现，但打的是另一个面 —— 它把 `REHEARSAL.md`
    `"remote"`，扇出可以直接走 MateBot 远程传输
 4. ~~补核实第 6 条与 Skills 渐进披露的实现状态~~ —— 第 6 条已补齐，
    Skills 三层渐进披露核实为已实现
-5. 装上 node_modules 后补 LSPTool 那项的测试（见上文说明）。本容器里
-   `bun install` 走不通：`.npmrc` 把 registry 钉在 `registry.npmmirror.com`，
-   而此处的出站代理连不上该域名（npmjs 可达），因此依赖树只装了一小部分，
-   凡是 import 到 `lodash-es` 的既有测试都会报 `Cannot find module` —— 这是环境问题，
-   在主干上同样复现
+5. ~~装上 node_modules 后补 LSPTool 那项的测试~~ —— 已补：
+   `src/services/lsp/__tests__/availability.test.ts`。测的不是"返回 true"而是
+   **会话内不动**：只读启动模式，所以既不需要 `mock.module`（bun 里它是进程级的，
+   会串味到别的 suite），也不受实时连接状态影响
+
+   附环境说明：`.npmrc` 把 registry 钉在 `registry.npmmirror.com`，而某些沙箱的出站
+   代理连不上该域名（npmjs 可达），`bun install` 会卡在 Resolving。绕法是临时把
+   `bun.lock` 里的 URL 换成 npmjs 装完再还原，不要提交这个改动
