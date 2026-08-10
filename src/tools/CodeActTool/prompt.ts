@@ -112,12 +112,22 @@ the transcript. And when you write files, name them for what they are —
 A tool call cannot sit blocked for forty minutes, which is why the default
 budget is five. That is a limit on *waiting*, not on the work: pass
 \`run_in_background: true\` and you get a run id immediately, with the timeout
-raised to an hour (six maximum). Do something else, then \`poll_run_id\` for the
-output and artifacts; \`stop_run_id\` ends it early.
+raised to an hour (six maximum). Do something else, then \`poll_run_id\` for
+progress; \`stop_run_id\` ends it early.
 
 Use it for training runs, parameter sweeps, long simulations, big builds —
 anything where the honest estimate is "minutes, not seconds". Pair it with
 \`persistKey\` so the run has somewhere to leave checkpoints.
+
+**Polling returns what is new, not the whole history.** So print progress as
+you go — a line per epoch, per trial, per batch — and each poll shows how far
+it has got. That is what makes a long run steerable: you can see the loss
+diverging at epoch 3 and stop it, instead of paying an hour to find out. A run
+that prints only at the end is one you cannot supervise.
+
+If a run prints faster than you poll, the oldest output scrolls out of the live
+buffer and the poll says how much was lost. Have long runs write their full log
+to a file as well — it comes back as an artifact, complete.
 
 ### Prefer Rust for anything compute-heavy
 

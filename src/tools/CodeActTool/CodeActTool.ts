@@ -65,8 +65,9 @@ const inputSchema = lazySchema(() =>
       'Default timeout rises to 1 hour (max 6). Poll with poll_run_id.',
     ),
     poll_run_id: z.string().optional().describe(
-      'Report the status and, once finished, the output and artifacts of a ' +
-      'background run. Ignores `code`.',
+      'Report a background run: its status and any output since the previous ' +
+      'poll, plus artifacts once it finishes. Poll repeatedly to follow ' +
+      'progress. Ignores `code`.',
     ),
     stop_run_id: z.string().optional().describe(
       'Stop a background run. Ignores `code`.',

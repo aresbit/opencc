@@ -43,6 +43,14 @@ export interface CodeActOptions {
   persistKey?: string
   /** Additional environment for trusted internal callers such as ActionTool. */
   environment?: Record<string, string>
+  /**
+   * Called as output arrives, rather than only at exit.
+   *
+   * Needed for anything long: a training loop that prints a loss per epoch is
+   * reporting progress, and delivering that only once the process is over
+   * turns an hour of visible work into an hour of silence.
+   */
+  onOutput?: (chunk: { stream: 'stdout' | 'stderr'; text: string }) => void
 }
 
 export interface CodeActResult {
@@ -202,6 +210,19 @@ export async function executeCodeActCode(
       options?.signal,
       options?.cwd,
       options?.environment,
+      // Remap at stream time rather than only on the final stderr. A caller
+      // watching a long run should see `code:12`, not a sandbox path that will
+      // not exist by the time it reads the message — and remapping here means
+      // the streamed text is authoritative, with no second, differently-worded
+      // copy to reconcile at the end.
+      options?.onOutput
+        ? chunk =>
+            options.onOutput!(
+              chunk.stream === 'stderr'
+                ? { stream: 'stderr', text: remap(chunk.text) }
+                : chunk,
+            )
+        : undefined,
     )
     // Rewrite sandbox line numbers / paths in stderr back to user coordinates.
     const stderr = [compileStderr, result.stderr].filter(Boolean).join('\n')
@@ -251,6 +272,7 @@ function spawnWithTimeout(
   signal?: AbortSignal,
   workDir?: string,
   environment?: Record<string, string>,
+  onOutput?: CodeActOptions['onOutput'],
 ): Promise<CodeActResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -328,8 +350,10 @@ function spawnWithTimeout(
       const remaining = MAX_CAPTURE_BYTES_PER_STREAM - stdoutBytes
       if (remaining <= 0) return outputLimit('stdout')
       const accepted = chunk.subarray(0, remaining)
-      stdout += outDecoder.write(accepted)
+      const text = outDecoder.write(accepted)
+      stdout += text
       stdoutBytes += accepted.length
+      if (text) onOutput?.({ stream: 'stdout', text })
       if (accepted.length < chunk.length) outputLimit('stdout')
     })
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -337,8 +361,10 @@ function spawnWithTimeout(
       const remaining = MAX_CAPTURE_BYTES_PER_STREAM - stderrBytes
       if (remaining <= 0) return outputLimit('stderr')
       const accepted = chunk.subarray(0, remaining)
-      stderr += errDecoder.write(accepted)
+      const text = errDecoder.write(accepted)
+      stderr += text
       stderrBytes += accepted.length
+      if (text) onOutput?.({ stream: 'stderr', text })
       if (accepted.length < chunk.length) outputLimit('stderr')
     })
 

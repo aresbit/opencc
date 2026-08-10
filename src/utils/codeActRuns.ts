@@ -42,7 +42,26 @@ export interface RunRecord {
   /** Set when the run was stopped or failed to start. */
   error?: string
   controller: AbortController
+  /** Output accumulated so far, so a poll mid-run has something to show. */
+  stdoutSoFar: string
+  stderrSoFar: string
+  /** How much of each has already been handed to a poll. */
+  deliveredStdout: number
+  deliveredStderr: number
+  /** Bytes dropped from the head once the live buffer hit its cap. */
+  droppedStdout: number
+  droppedStderr: number
 }
+
+/**
+ * Live buffer cap per stream.
+ *
+ * Smaller than the sandbox's own capture limit on purpose: this exists so a
+ * poll can show recent progress, and a script printing a line per iteration for
+ * an hour should cost bounded memory. The authoritative full output still
+ * arrives with the result.
+ */
+const MAX_LIVE_BUFFER = 256 * 1024
 
 /** A long run is the point; an unbounded one is a leak. */
 export const MAX_BACKGROUND_TIMEOUT_MS = 6 * 60 * 60 * 1000
@@ -90,6 +109,12 @@ export function startBackgroundRun(
     language: options.language ?? 'typescript',
     startedAt: Date.now(),
     controller,
+    stdoutSoFar: '',
+    stderrSoFar: '',
+    deliveredStdout: 0,
+    deliveredStderr: 0,
+    droppedStdout: 0,
+    droppedStderr: 0,
   }
   runs.set(runId, record)
   evictFinished()
@@ -103,6 +128,28 @@ export function startBackgroundRun(
     ...options,
     timeoutMs,
     signal: controller.signal,
+    onOutput: ({ stream, text }) => {
+      const current = runs.get(runId)
+      if (!current) return
+      if (stream === 'stdout') {
+        current.stdoutSoFar += text
+        const excess = current.stdoutSoFar.length - MAX_LIVE_BUFFER
+        if (excess > 0) {
+          current.stdoutSoFar = current.stdoutSoFar.slice(excess)
+          current.droppedStdout += excess
+          // Delivery offsets index into the buffer, so they move with it.
+          current.deliveredStdout = Math.max(0, current.deliveredStdout - excess)
+        }
+      } else {
+        current.stderrSoFar += text
+        const excess = current.stderrSoFar.length - MAX_LIVE_BUFFER
+        if (excess > 0) {
+          current.stderrSoFar = current.stderrSoFar.slice(excess)
+          current.droppedStderr += excess
+          current.deliveredStderr = Math.max(0, current.deliveredStderr - excess)
+        }
+      }
+    },
   })
     .then(result => {
       const current = runs.get(runId)
@@ -160,21 +207,54 @@ export interface RunView {
   status: RunStatus
   language: string
   elapsedMs: number
+  /** Output since the previous poll, or all of it on the first. */
   stdout?: string
   stderr?: string
+  /** Bytes discarded from the head of the live buffer, if any. */
+  droppedStdout: number
+  droppedStderr: number
+  /** True when this view consumed the delta and a repeat poll would be empty. */
+  consumed: boolean
   exitCode?: number
   artifacts?: Artifact[]
   error?: string
 }
 
-export function viewRun(record: RunRecord): RunView {
+/**
+ * Read a run, taking only what has not been reported yet.
+ *
+ * Deltas rather than the whole buffer each time: polling a run that has printed
+ * ten thousand progress lines should not re-deliver ten thousand lines, and a
+ * caller checking every thirty seconds would otherwise pay for the entire
+ * history on every check.
+ *
+ * `consume` defaults to true because every real caller is reporting what it
+ * read; pass false to look without advancing, which the tests use to assert on
+ * a view twice.
+ */
+export function viewRun(record: RunRecord, consume = true): RunView {
+  const stdout = record.stdoutSoFar.slice(record.deliveredStdout)
+  const stderr = record.stderrSoFar.slice(record.deliveredStderr)
+  const droppedStdout = record.droppedStdout
+  const droppedStderr = record.droppedStderr
+
+  if (consume) {
+    record.deliveredStdout = record.stdoutSoFar.length
+    record.deliveredStderr = record.stderrSoFar.length
+    record.droppedStdout = 0
+    record.droppedStderr = 0
+  }
+
   return {
     runId: record.runId,
     status: record.status,
     language: record.language,
     elapsedMs: (record.endedAt ?? Date.now()) - record.startedAt,
-    stdout: record.result?.stdout,
-    stderr: record.result?.stderr,
+    stdout: stdout || undefined,
+    stderr: stderr || undefined,
+    droppedStdout,
+    droppedStderr,
+    consumed: consume,
     exitCode: record.result?.exitCode,
     artifacts: record.result?.artifacts,
     error: record.error,
@@ -194,24 +274,34 @@ export function renderRunView(view: RunView): string {
     `Run ${view.runId} — ${view.status.toUpperCase()} after ${formatElapsed(view.elapsedMs)} (${view.language})`,
   ]
 
-  if (view.status === 'running') {
-    // Output is captured by the child and handed over whole when it exits, so
-    // there is nothing partial to show. Saying so beats an empty section the
-    // reader interprets as "it printed nothing".
+  if (view.droppedStdout > 0 || view.droppedStderr > 0) {
     lines.push(
       '',
-      'Still running. Output is delivered when it finishes — poll again with this run id, or stop it if it has run long enough.',
+      `Note: ${view.droppedStdout + view.droppedStderr} bytes of earlier output scrolled out of the live buffer. Poll more often, or have the script write its full log to a file — that comes back as an artifact.`,
     )
-    return lines.join('\n')
   }
 
   if (view.error) lines.push('', view.error)
   if (view.stdout) lines.push('', view.stdout)
   if (view.stderr) {
-    lines.push('', `<!-- stderr (exit ${view.exitCode}): -->`, view.stderr)
+    lines.push('', `<!-- stderr: -->`, view.stderr)
   }
+
+  if (view.status === 'running') {
+    lines.push(
+      '',
+      !view.stdout && !view.stderr
+        ? 'No new output since the last check. Poll again, or stop it if it has run long enough.'
+        : '(output since the last check; poll again for more)',
+    )
+    return lines.join('\n')
+  }
+
   if (!view.stdout && !view.stderr && !view.error) {
-    lines.push('', `Exited ${view.exitCode} with no output.`)
+    lines.push(
+      '',
+      `Exited ${view.exitCode} with no new output since the last check.`,
+    )
   }
   return lines.join('\n')
 }
