@@ -7,6 +7,10 @@ import {
   getCodeActRuntimeStatuses,
 } from '../../utils/codeActLanguageAdapters.js'
 import { getCodeActPrompt } from './prompt.js'
+import {
+  buildImageToolResult,
+  isImageOutput,
+} from '../BashTool/utils.js'
 
 import { CODE_ACT_TOOL_NAME } from './toolName.js'
 export { CODE_ACT_TOOL_NAME }
@@ -20,7 +24,9 @@ const inputSchema = lazySchema(() =>
       './builtins_bash/bash.sh. For C/C++, #include "builtins_c/fs.h". ' +
       'Rust, OCaml, and Scheme receive language-specific CodeAct helper modules. ' +
       'Use console.log() / print() / printf() to output results. Only stdout ' +
-      'output reaches the model.',
+      'reaches the model — except that a stdout consisting solely of a ' +
+      'data:image/...;base64,... URI is returned as an image, which is how to ' +
+      'deliver a plot or any rendered output.',
     ),
     language: z.enum(CODEACT_LANGUAGES)
       .optional()
@@ -42,8 +48,10 @@ const inputSchema = lazySchema(() =>
     ),
     persistKey: z.string().optional().describe(
       'When provided, the sandbox is kept at ~/.claude/codeact/sandbox/persist_<key> ' +
-      'for reuse across CodeAct calls. Reusable scripts should be promoted to ' +
-      'Actions (~/.claude/action/).',
+      'for reuse across CodeAct calls. Use it to build a program up over several ' +
+      'calls instead of retyping it, and to keep data, checkpoints and generated ' +
+      'modules between runs. Once a script is stable and reusable, promote it to ' +
+      'an Action (~/.claude/action/).',
     ),
   }),
 )
@@ -66,9 +74,10 @@ export const CodeActTool = buildTool({
     return (
       'Write and execute code (TypeScript, Python, Bash, C, C++, Rust, OCaml, Scheme) to solve ' +
       'problems programmatically. The sandbox provides built-in filesystem, shell, ' +
-      'network, path, and OS utilities. Only stdout output reaches the model. ' +
-      'Use this for complex multi-step logic, data processing, quantitative ' +
-      'analysis, or when fixed-schema tools are insufficient.'
+      'network, path, and OS utilities, a persistent workspace, and pip. Write ' +
+      'real programs here, not just glue: models and training loops, autodiff, ' +
+      'simulations, parameter sweeps, plots. Only stdout reaches the model, ' +
+      'except a lone data:image/...;base64 URI, which returns as an image.'
     )
   },
 
@@ -112,6 +121,16 @@ export const CodeActTool = buildTool({
       stderr: string
       exitCode: number
     }
+    // A plot, a rendered frame, a confusion matrix: without this the image is
+    // a wall of base64 the model cannot see and the user never receives. Same
+    // data-URI convention Bash and PowerShell already use, so a script that
+    // prints one works identically whichever tool ran it — and "write me a
+    // chart" stops being a task CodeAct can compute but not deliver.
+    if (isImageOutput(out.stdout ?? '')) {
+      const block = buildImageToolResult(out.stdout, toolUseID)
+      if (block) return block
+    }
+
     const parts: string[] = []
     if (out.stdout) parts.push(out.stdout)
     // stderr is surfaced on failure AND on success-with-warnings. Previously a

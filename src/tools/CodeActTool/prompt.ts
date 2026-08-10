@@ -60,8 +60,61 @@ Prefer CodeAct when:
 - You need to process/transform data across multiple steps
 - You're implementing a multi-step workflow (check → decide → act → verify)
 - Bash would require complex chaining with awk/sed/jq
-- You need Python's data science ecosystem (NumPy, pandas, etc.)
+- The answer needs real computation — numerics, simulation, search, fitting
 - Fixed-schema tools are too rigid for the task
+
+### Build the thing; do not just glue tools together
+
+The list above describes the floor, not the ceiling, and reading it as the
+whole story is the common failure: CodeAct gets used as a slightly better shell
+script and never as a place to write a real program. It is a general-purpose
+runtime with a filesystem, a network, a five-minute default budget you can
+raise, and a persistent workspace. Programs of a few hundred lines are an
+entirely normal thing to write here.
+
+So when a question actually calls for a program, write the program:
+
+- **Classify or predict something?** Write the model. A small MLP with
+  hand-derived backprop in NumPy is a hundred lines and runs in seconds; you do
+  not need a framework to fit a classifier and report held-out accuracy.
+- **Need gradients?** Write forward-mode dual numbers or a small reverse-mode
+  tape. Both are short, exact, and beat finite differences — and they are
+  ordinary code, not research.
+- **Need to see the shape of data?** Plot it. Render to PNG and print it as a
+  \`data:image/png;base64,...\` URI as the *only* thing on stdout; it comes back
+  as an image. That is the delivery path for anything visual — a chart, a
+  confusion matrix, a rendered frame.
+- **Comparing approaches, tuning a parameter, checking a scaling law?** Sweep
+  it in a loop and report the table. Guessing costs more than measuring.
+- **Reasoning about an algorithm's behaviour?** Implement it and run it against
+  cases rather than arguing about it in prose.
+
+Two habits that make the difference: state the result numerically (accuracy,
+error, timing, a table) rather than "it worked", and when a script grows past a
+single throwaway, give it a \`persistKey\` and build it up across calls instead
+of retyping it.
+
+### Python packages
+
+The sandbox starts with the **standard library only** — no NumPy, pandas,
+matplotlib, scikit-learn or torch preinstalled. Do not assume they are there.
+
+\`pip install\` works and the network is reachable, so install what you need:
+
+\`\`\`python
+import subprocess, sys
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'numpy', 'matplotlib'], check=True)
+import numpy as np
+\`\`\`
+
+Installs go into the interpreter, so they persist for later CodeAct calls in
+this session — install once, then import directly. Guard with a try/except
+ImportError so a rerun does not pay for it twice.
+
+The standard library is further than it looks, though. \`random\`, \`math\`,
+\`statistics\`, \`itertools\`, \`array\`, \`fractions\` and \`decimal\` cover a great deal
+of numerics, and a pure-Python MLP or autodiff tape needs none of the above.
+Prefer reaching for a dependency because the task needs it, not reflexively.
 
 Prefer dedicated tools (Bash, Read, Edit, etc.) when:
 - The task is a single, simple operation
