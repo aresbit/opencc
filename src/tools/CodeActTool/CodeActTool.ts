@@ -2,6 +2,10 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { executeCodeActCode, type CodeActLanguage } from '../../utils/codeActSandbox.js'
+import {
+  CODEACT_LANGUAGES,
+  getCodeActRuntimeStatuses,
+} from '../../utils/codeActLanguageAdapters.js'
 import { getCodeActPrompt } from './prompt.js'
 
 const CODE_ACT_TOOL_NAME = 'CodeAct'
@@ -13,16 +17,20 @@ const inputSchema = lazySchema(() =>
       'utilities from ./builtins/fs.js, ./builtins/shell.js, etc. For Python, ' +
       'import from builtins_py.fs, builtins_py.shell, etc. For Bash, source ' +
       './builtins_bash/bash.sh. For C/C++, #include "builtins_c/fs.h". ' +
+      'Rust, OCaml, and Scheme receive language-specific CodeAct helper modules. ' +
       'Use console.log() / print() / printf() to output results. Only stdout ' +
       'output reaches the model.',
     ),
-    language: z.enum(['typescript', 'python', 'bash', 'c', 'cpp'])
+    language: z.enum(CODEACT_LANGUAGES)
       .optional()
       .default('typescript')
       .describe(
         'Programming language. Default: typescript. ' +
         'Use python for data analysis/quant trading/ML tasks. ' +
         'Use bash for simple shell automation. ' +
+        'Use rust for safe systems code and explicit state machines. ' +
+        'Use ocaml for algebraic data types, modules, and effect handlers. ' +
+        'Use scheme for macros, continuations, and symbolic computation. ' +
         'Use c/cpp for performance-critical compiled code.',
       ),
     timeoutMs: z.number().optional().default(300_000).describe(
@@ -55,7 +63,7 @@ export const CodeActTool = buildTool({
 
   async description() {
     return (
-      'Write and execute code (TypeScript, Python, Bash, C, C++) to solve ' +
+      'Write and execute code (TypeScript, Python, Bash, C, C++, Rust, OCaml, Scheme) to solve ' +
       'problems programmatically. The sandbox provides built-in filesystem, shell, ' +
       'network, path, and OS utilities. Only stdout output reaches the model. ' +
       'Use this for complex multi-step logic, data processing, quantitative ' +
@@ -64,7 +72,7 @@ export const CodeActTool = buildTool({
   },
 
   async prompt() {
-    return getCodeActPrompt()
+    return getCodeActPrompt(getCodeActRuntimeStatuses())
   },
 
   get inputSchema() { return inputSchema() },

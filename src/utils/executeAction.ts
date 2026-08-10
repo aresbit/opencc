@@ -88,6 +88,7 @@ export async function executeActionDef(
     timeoutMs: options?.timeoutMs ?? 300_000,
     signal: options?.signal,
     cwd: options?.cwd,
+    environment: args ? { ACTION_ARGS: JSON.stringify(args) } : undefined,
   })
 
   return {
@@ -118,8 +119,6 @@ function injectArgs(
 ): string {
   if (!args || Object.keys(args).length === 0) return code
 
-  const argsJson = JSON.stringify(args)
-
   switch (lang) {
     case 'python':
       return `import os, json as _json
@@ -132,6 +131,18 @@ ${code}`
 
     case 'bash':
       return `# ACTION_ARGS is available as JSON in $ACTION_ARGS
+${code}`
+
+    case 'rust':
+      return `// ACTION_ARGS is available as JSON in the ACTION_ARGS environment variable.
+${code}`
+
+    case 'ocaml':
+      return `(* ACTION_ARGS is available as JSON in the ACTION_ARGS environment variable. *)
+${code}`
+
+    case 'scheme':
+      return `;; ACTION_ARGS is available as JSON in the ACTION_ARGS environment variable.
 ${code}`
 
     default:

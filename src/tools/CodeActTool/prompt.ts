@@ -6,13 +6,32 @@
  * and describes the Script → Persist → Action promotion path.
  */
 
-export function getCodeActPrompt(): string {
+import type { RuntimeStatus } from '../../utils/codeActLanguageAdapters.js'
+import {
+  ADVANCED_LANGUAGE_GUIDES,
+  BASH_CONTROL_GUIDE,
+  CONTROL_STRUCTURE_GUIDE,
+} from './controlStructures.js'
+
+export function getCodeActPrompt(statuses: RuntimeStatus[] = []): string {
+  const runtimeSummary = statuses.length === 0
+    ? 'Runtime availability has not been probed.'
+    : statuses.map(status =>
+        `- ${status.language}: ${status.available ? `available (${status.command})` : `unavailable — ${status.installHint}`}`,
+      ).join('\n')
+
   return `## CodeAct — Solve problems by writing code
 
 The CodeAct tool lets you write and execute code in TypeScript, Python, Bash,
-C, or C++. Instead of calling many individual tools in sequence, write a single
-script that orchestrates the work — loops, conditionals, error handling, and
-data processing all happen inside one execution.
+C, C++, Rust, OCaml, or Scheme. Choose a language for its control and data
+model, not merely because its runtime exists.
+
+### Runtime availability in this session
+
+${runtimeSummary}
+
+Never repeatedly retry a language whose runtime is unavailable. Use another
+available language or explain which toolchain is required.
 
 ### Language selection
 
@@ -23,6 +42,15 @@ data processing all happen inside one execution.
 | **bash** | bash | Simple automation, shell pipelines, system commands |
 | **c** | gcc → binary | Performance-critical computation, FFI, numerical kernels |
 | **cpp** | g++ → binary | Performance-critical with STL, backtesting engines, simulation |
+| **rust** | rustc (edition 2024) | Safe systems code, Result, iterators, explicit state machines |
+| **ocaml** | ocamlopt/ocamlc | Algebraic data types, exhaustive matching, modules, OCaml 5 effects |
+| **scheme** | Guile 3 | Symbolic code, proper tail calls, hygienic macros, continuations |
+
+Rust CodeAct is std-only: do not import external crates. Scheme targets a
+portable core plus Guile control operators. OCaml effect-handler code requires
+an installed OCaml 5 compiler.
+
+${CONTROL_STRUCTURE_GUIDE}
 
 ### When to use CodeAct
 
@@ -59,17 +87,15 @@ from builtins_py.path import join, dirname, basename, splitext, abspath, Path
 from builtins_py.os_info import homedir, tmpdir, platform_name, cwd, chdir, env
 \`\`\`
 
-**Bash:**
-\`\`\`bash
-source ./builtins_bash/bash.sh
-# Functions: read_file, write_file, mkdir_p, rm_rf, exists, readdir, copy_file, append_file, exec_cmd, fetch
-\`\`\`
+${BASH_CONTROL_GUIDE}
 
 **C/C++:**
 \`\`\`c
 #include "builtins_c/fs.h"    // read_file(), write_file(), file_exists(), mkdir_p()
 #include "builtins_c/shell.h"  // shell_exec()
 \`\`\`
+
+${ADVANCED_LANGUAGE_GUIDES}
 
 ### User Actions
 
@@ -98,7 +124,7 @@ import { download } from './actions/ytdlp.js'
 2. **Persist**: Set persistKey to keep the sandbox for reuse across calls
 3. **Action**: When a script is stable and reusable, promote it:
    - Move the agent script to ~/.claude/action/<name>.<ext>
-   - Add YAML frontmatter describing inputs/outputs
+   - Add YAML frontmatter describing inputs/outputs; .rs, .ml, and .scm are supported
    - It becomes callable via the Action tool
 
 ### Skills vs Actions
@@ -107,7 +133,7 @@ import { download } from './actions/ytdlp.js'
 with domain knowledge, decision frameworks, and review standards. You read them
 and execute their instructions step-by-step via tool calls.
 
-**Actions** (~/.claude/action/*.py/ts/sh) DO something directly — they are
+**Actions** (~/.claude/action scripts, including .rs/.ml/.scm) DO something directly — they are
 executable scripts that run in one call. For deterministic, procedural tasks
 (like "download with yt-dlp"), write an Action, not a Skill.`
 }

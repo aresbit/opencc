@@ -10,9 +10,10 @@
  */
 
 import { spawn } from 'child_process'
-import { join } from 'path'
-import { mkdir, writeFile, rm as rmDir } from 'fs/promises'
+import { StringDecoder } from 'string_decoder'
+import { basename, dirname, join } from 'path'
 import { ensureCodeActBuiltinsCSync } from './codeActBuiltins_c.js'
+import { firstAvailableCommand } from './codeActRuntime.js'
 
 export interface CompileResult {
   success: boolean
@@ -43,6 +44,49 @@ export async function compileCpp(
   return compile(srcPath, outPath, 'g++', ['-Wall', '-O2', '-std=c++17'], signal)
 }
 
+/** Compile one self-contained Rust source file without fetching crates. */
+export async function compileRust(
+  srcPath: string,
+  outPath: string,
+  signal?: AbortSignal,
+): Promise<CompileResult> {
+  const rustc = firstAvailableCommand(['rustc'])
+  if (!rustc) return missingCompiler('rustc')
+  return runCompiler(
+    rustc.path,
+    [srcPath, '--edition=2024', '-C', 'opt-level=2', '-o', outPath],
+    dirname(srcPath),
+    outPath,
+    signal,
+  )
+}
+
+/** Compile an OCaml program and its CodeAct helper module. */
+export async function compileOcaml(
+  srcPath: string,
+  outPath: string,
+  signal?: AbortSignal,
+): Promise<CompileResult> {
+  const compiler = firstAvailableCommand(['ocamlopt', 'ocamlc'])
+  if (!compiler) return missingCompiler('ocamlopt or ocamlc')
+
+  const cwd = dirname(srcPath)
+  const stdlib = compiler.name === 'ocamlopt' ? 'unix.cmxa' : 'unix.cma'
+  return runCompiler(
+    compiler.path,
+    [
+      stdlib,
+      '-I', 'builtins_ocaml',
+      join('builtins_ocaml', 'codeact.ml'),
+      basename(srcPath),
+      '-o', outPath,
+    ],
+    cwd,
+    outPath,
+    signal,
+  )
+}
+
 async function compile(
   srcPath: string,
   outPath: string,
@@ -56,47 +100,87 @@ async function compile(
   const includeDir = join(ensureCodeActBuiltinsCSync(), '..')
   const args = [...extraArgs, '-I', includeDir, '-o', outPath, srcPath]
 
+  return runCompiler(compiler, args, dirname(srcPath), outPath, signal)
+}
+
+function missingCompiler(name: string): CompileResult {
+  return {
+    success: false,
+    stderr: `Required compiler is unavailable: ${name}`,
+    exitCode: 127,
+  }
+}
+
+async function runCompiler(
+  compiler: string,
+  args: string[],
+  cwd: string,
+  outPath: string,
+  signal?: AbortSignal,
+): Promise<CompileResult> {
   return new Promise((resolve) => {
     const child = spawn(compiler, args, {
+      cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
     let stderr = ''
     let settled = false
+    const stderrDecoder = new StringDecoder('utf8')
 
     const timer = setTimeout(() => {
       if (!settled) { settled = true; child.kill('SIGTERM') }
-      resolve({ success: false, stderr: stderr + '\n[COMPILE TIMEOUT]', exitCode: -1 })
+      resolve({
+        success: false,
+        stderr: stderr + stderrDecoder.end() + '\n[COMPILE TIMEOUT]',
+        exitCode: -1,
+      })
     }, 60_000) // 60s compile timeout
 
     if (signal) {
       if (signal.aborted) {
+        settled = true
         clearTimeout(timer)
-        resolve({ success: false, stderr: '[ABORTED]', exitCode: -1 })
+        child.kill('SIGTERM')
+        resolve({ success: false, stderr: stderrDecoder.end() + '[ABORTED]', exitCode: -1 })
         return
       }
       signal.addEventListener('abort', () => {
-        if (!settled) { settled = true; clearTimeout(timer); child.kill('SIGTERM') }
-        resolve({ success: false, stderr: stderr + '\n[ABORTED]', exitCode: -1 })
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        child.kill('SIGTERM')
+        resolve({
+          success: false,
+          stderr: stderr + stderrDecoder.end() + '\n[ABORTED]',
+          exitCode: -1,
+        })
       })
     }
 
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (!settled) stderr += stderrDecoder.write(chunk)
+    })
 
     child.on('error', (err) => {
       if (!settled) {
         settled = true; clearTimeout(timer)
-        resolve({ success: false, stderr: err.message, exitCode: -1 })
+        resolve({
+          success: false,
+          stderr: stderr + stderrDecoder.end() + err.message,
+          exitCode: -1,
+        })
       }
     })
 
     child.on('close', (code) => {
       if (!settled) {
         settled = true; clearTimeout(timer)
+        const completeStderr = (stderr + stderrDecoder.end()).trim()
         if (code === 0) {
-          resolve({ success: true, binaryPath: outPath, stderr: stderr.trim(), exitCode: 0 })
+          resolve({ success: true, binaryPath: outPath, stderr: completeStderr, exitCode: 0 })
         } else {
-          resolve({ success: false, stderr: stderr.trim(), exitCode: code ?? -1 })
+          resolve({ success: false, stderr: completeStderr, exitCode: code ?? -1 })
         }
       }
     })

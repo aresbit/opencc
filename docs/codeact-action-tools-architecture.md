@@ -1,6 +1,6 @@
 # CodeActTool & ActionTool 架构分析
 
-> 基于源代码逆向分析 | 2026-06-05
+> 基于源代码逆向分析 | 初版 2026-06-05，2026-08-10 扩展高级语言与控制结构
 
 ---
 
@@ -8,21 +8,21 @@
 
 ### 1.1 目的
 
-CodeAct 是一个**通用代码执行工具**，允许模型编写并执行 TypeScript、Python、Bash、C 或 C++ 代码。核心理念是：**用一次脚本执行替代多次工具链式调用**——循环、条件判断、错误处理、数据处理全部在一次执行中完成。
+CodeAct 是一个**通用代码执行工具**，允许模型编写并执行 TypeScript、Python、Bash、C、C++、Rust、OCaml 或 Scheme 代码。核心理念是：**用一次脚本执行替代多次工具链式调用**——循环、条件判断、错误处理、数据处理全部在一次执行中完成。
 
 ### 1.2 输入/输出
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `code` | string | (必填) | 要执行的代码 |
-| `language` | `typescript`/`python`/`bash`/`c`/`cpp` | `typescript` | 编程语言 |
+| `language` | `typescript`/`python`/`bash`/`c`/`cpp`/`rust`/`ocaml`/`scheme` | `typescript` | 编程语言 |
 | `timeoutMs` | number | 300000 (5分钟) | 执行超时 |
 | `cwd` | string? | 项目根目录 | 工作目录覆盖 |
 | `persistKey` | string? | (无) | 持久化沙箱 key |
 
 输出：`{ success, stdout, stderr, exitCode }`
 
-### 1.3 五种语言的内置库
+### 1.3 八种语言的内置库
 
 每种语言各有独立的内置工具库，提供统一的 API 表面（文件系统、Shell、网络、路径、OS）：
 
@@ -30,8 +30,15 @@ CodeAct 是一个**通用代码执行工具**，允许模型编写并执行 Type
 |------|--------|--------|
 | TypeScript | bun run | `fs.ts` (readFile/writeFile/mkdir/rm/exists/readdir), `shell.ts` (exec/$), `fetch.ts` (fetch/fetchJSON), `path.ts`, `os.ts` |
 | Python | python3 | `fs.py`, `shell.py`, `fetch.py`, `path.py`, `os_info.py` |
-| Bash | bash | `bash.sh` (read_file/write_file/mkdir_p/rm_rf/exists/readdir/exec_cmd/fetch) |
+| Bash | bash | `bash.sh`（文件、argv 命令、函数式流、资源作用域、trampoline） |
 | C/C++ | gcc/g++ | `fs.h`, `shell.h` 头文件形式 |
+| Rust | rustc, edition 2024 | `codeact.rs`（workspace、文件、argv 子进程） |
+| OCaml | ocamlopt/ocamlc | `Codeact` 模块（资源保护、文件、Unix 子进程） |
+| Scheme | Guile 3 | `codeact.scm`（文件、fold、trampoline） |
+
+运行前由 `codeActLanguageAdapters.ts` 无 shell 地探测工具链。语言已注册但运行时缺失时返回
+exit 127 和安装提示，不会让模型对同一不可用命令反复试错。Rust 当前为 std-only；OCaml
+代数效应需要 OCaml 5；Scheme 的可移植核心按 R7RS 风格编写，高级控制运行时固定为 Guile。
 
 ### 1.4 沙箱执行流程
 
@@ -43,7 +50,7 @@ CodeAct 是一个**通用代码执行工具**，允许模型编写并执行 Type
 2. 复制内置库 → sandbox/
 3. 复制 ~/.claude/action/ → sandbox/actions/ (Action 可直接 import)
 4. 注入 import 提示头 + 用户代码 → agent.<ext>
-5. 编译 (C/C++ only): gcc/g++ -Wall -O2
+5. 编译（C/C++/Rust/OCaml）：对应 adapter 生成二进制
 6. spawn 执行，超时 SIGTERM → SIGKILL
 7. 清理 (非持久化沙箱): rm -rf
 ```
@@ -57,6 +64,24 @@ CodeAct 是一个**通用代码执行工具**，允许模型编写并执行 Type
 | **bash** | 简单自动化、shell 管道 |
 | **c** | 性能关键计算、FFI、数值内核 |
 | **cpp** | 性能关键 + STL、回测引擎、仿真 |
+| **rust** | 所有权安全、Result/Iterator、显式状态机、Future |
+| **ocaml** | 代数数据类型、模块、尾递归、OCaml 5 效应处理器 |
+| **scheme** | 符号计算、卫生宏、proper tail calls、call/cc |
+
+### 1.6 高级控制结构映射
+
+| 控制问题 | Rust | OCaml | Scheme | Bash |
+|---|---|---|---|---|
+| 可恢复失败 | `Result` / `?` | `result` / `option` | tagged value | exit status + stderr |
+| 惰性变换 | `Iterator` | `Seq` | delayed stream | pipeline |
+| 资源作用域 | RAII / `Drop` | `protect` / handler | `dynamic-wind` | `with_*` / `trap` |
+| 暂停恢复 | Future / enum 状态机 | Effect continuation | `call/cc` / prompt | stream / trampoline |
+| 回溯 | 显式搜索栈 | 成功/失败 CPS | continuation | 显式状态机 |
+
+Bash builtins v3 把“字符 Lisp”落实为可执行协议：命令是 `stdin → stdout` 函数，管道是组合，
+stderr 是诊断通道，退出状态是 `Result`。新增 `map_lines` / `filter_lines` / `fold_lines` /
+`scan_lines` / `pipe_functions` / `map0`、`with_tempdir` / `with_cwd` 与 stack-safe
+`trampoline`。数据派生参数走 argv 型 `run_cmd`；旧 `exec_cmd` 仅作为显式 shell 程序的兼容口。
 
 ---
 
@@ -66,7 +91,7 @@ CodeAct 是一个**通用代码执行工具**，允许模型编写并执行 Type
 
 | 维度 | Skill | Action |
 |------|-------|--------|
-| 格式 | SKILL.md (Markdown 提示词) | .py/.ts/.sh/.c/.cpp 脚本 + YAML 前置元数据 |
+| 格式 | SKILL.md (Markdown 提示词) | .py/.ts/.sh/.c/.cpp/.rs/.ml/.scm 脚本 + YAML 前置元数据 |
 | 执行 | 模型阅读指令，逐步调用工具 | 脚本在沙箱运行，结果立即返回 |
 | 目的 | 教"如何思考" | 直接"做"某件事 |
 | 交互 | 多轮工具调用 | 单次调用返回 |
@@ -128,8 +153,11 @@ ActionTool ───┘
 |------|------|
 | `src/tools/CodeActTool/CodeActTool.ts` | CodeAct 工具定义 |
 | `src/tools/CodeActTool/prompt.ts` | 系统提示词生成 |
+| `src/tools/CodeActTool/controlStructures.ts` | Rust/OCaml/Scheme/Bash 高级控制结构知识卡 |
 | `src/tools/ActionTool/ActionTool.ts` | Action 工具定义 |
 | `src/tools/ActionTool/prompt.ts` | Action 提示词 (动态列出可用 Actions) |
 | `src/utils/codeActSandbox.ts` | 沙箱执行引擎 (两者共用) |
+| `src/utils/codeActLanguageAdapters.ts` | 八种语言的 runtime/compile/bootstrap 注册表 |
+| `src/utils/codeActRuntime.ts` | 不经 shell 的 PATH 工具链探测 |
 | `src/utils/loadActionsDir.ts` | Action 发现与 YAML 解析 |
 | `src/utils/executeAction.ts` | Action 执行引擎 |

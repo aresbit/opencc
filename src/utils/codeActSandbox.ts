@@ -5,7 +5,8 @@
  * writes the agent's code, and executes it via the appropriate runtime.
  * Only console.log() / print() output is returned to the model.
  *
- * Supports: TypeScript (bun), Python (python3), Bash (bash), C (gcc), C++ (g++).
+ * Supports TypeScript, Python, Bash, C, C++, Rust, OCaml, and Scheme through
+ * language adapters with explicit runtime discovery.
  *
  * The sandbox is NOT a security boundary. It runs with the same user
  * privileges as BashTool. It exists for context isolation and clean teardown.
@@ -14,23 +15,20 @@
 import { spawn } from 'child_process'
 import { StringDecoder } from 'string_decoder'
 import { join } from 'path'
-import { mkdir, writeFile, rm as rmDir, readdir, cp, copyFile } from 'fs/promises'
+import { mkdir, mkdtemp, writeFile, rm as rmDir, readdir, cp, copyFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
+import { getCodeActSandboxDir } from './codeActBuiltins.js'
 import {
-  ensureCodeActBuiltinsSync,
-  getCodeActBaseDir,
-  getCodeActSandboxDir,
-} from './codeActBuiltins.js'
-import { ensureCodeActBuiltinsPythonSync } from './codeActBuiltins_py.js'
-import { ensureCodeActBuiltinsBashSync } from './codeActBuiltins_bash.js'
-import { ensureCodeActBuiltinsCSync } from './codeActBuiltins_c.js'
-import { compileC, compileCpp } from './codeActCompile.js'
+  getCodeActLanguageAdapter,
+  getCodeActRuntimeStatus,
+  type CodeActLanguage,
+} from './codeActLanguageAdapters.js'
 import { remapCodeActError, userFacingName } from './codeActErrorRemap.js'
 
 // ── Types ──────────────────────────────────────────────────────────
 
-export type CodeActLanguage = 'typescript' | 'python' | 'bash' | 'c' | 'cpp'
+export type { CodeActLanguage } from './codeActLanguageAdapters.js'
 
 export interface CodeActOptions {
   timeoutMs?: number
@@ -38,6 +36,8 @@ export interface CodeActOptions {
   cwd?: string
   language?: CodeActLanguage
   persistKey?: string
+  /** Additional environment for trusted internal callers such as ActionTool. */
+  environment?: Record<string, string>
 }
 
 export interface CodeActResult {
@@ -47,121 +47,7 @@ export interface CodeActResult {
   exitCode: number
 }
 
-// ── Language dispatch ──────────────────────────────────────────────
-
-interface LanguageConfig {
-  extension: string
-  command: string | null // null for compiled languages (run binary directly)
-  cmdArgs: (scriptPath: string) => string[]
-  importHint: string
-  builtinsDir: string
-  needsCompile: boolean
-  compile: ((src: string, dst: string, sig?: AbortSignal) => Promise<{ success: boolean; binaryPath?: string; stderr: string; exitCode: number }>) | null
-}
-
-const LANGUAGE_CONFIG: Record<CodeActLanguage, LanguageConfig> = {
-  typescript: {
-    extension: '.ts',
-    command: 'bun',
-    cmdArgs: (p) => ['run', p],
-    importHint: `// ── Agent CodeAct sandbox (TypeScript) ──
-// Built-in utilities:
-//   import { readFile, writeFile, mkdir, rm, exists, readdir, copyFile, appendFile, stat } from './builtins/fs.js'
-//   import { exec, $ } from './builtins/shell.js'
-//   import { fetch, fetchJSON } from './builtins/fetch.js'
-//   import path from './builtins/path.js'
-//   import * as os from './builtins/os.js'
-// User actions (if any):
-//   import { myAction } from './actions/my-action.js'
-// Only console.log() output reaches the model.
-// Intermediate results stay in the sandbox process.
-
-`,
-    builtinsDir: 'builtins',
-    needsCompile: false,
-    compile: null,
-  },
-  python: {
-    extension: '.py',
-    command: 'python3',
-    cmdArgs: (p) => [p],
-    importHint: `# ── Agent CodeAct sandbox (Python) ──
-# Built-in utilities:
-#   from builtins_py.fs import read_file, write_file, mkdir, rm, exists, readdir, copy_file, append_file, stat
-#   from builtins_py.shell import exec, sh
-#   from builtins_py.fetch import fetch, fetch_json
-#   from builtins_py.path import join, dirname, basename, splitext, abspath, Path
-#   from builtins_py.os_info import homedir, tmpdir, platform_name, cwd, chdir, env
-# User actions (if any):
-#   import sys; sys.path.insert(0, 'actions')
-#   from my_action import my_function
-# Only print() output reaches the model.
-# Use sys.stdout.flush() after printing if you need immediate output.
-
-`,
-    builtinsDir: 'builtins_py',
-    needsCompile: false,
-    compile: null,
-  },
-  bash: {
-    extension: '.sh',
-    command: 'bash',
-    cmdArgs: (p) => [p],
-    importHint: `# ── Agent CodeAct sandbox (Bash) ──
-# Source built-in utilities:
-#   source ./builtins_bash/bash.sh
-# Source user actions (if any):
-#   for f in ./actions/*.sh; do source "$f"; done 2>/dev/null || true
-# Only echo/printf output reaches the model.
-# Use exit 0 for success, exit 1 for failure.
-
-set -euo pipefail
-source ./builtins_bash/bash.sh 2>/dev/null || true
-
-`,
-    builtinsDir: 'builtins_bash',
-    needsCompile: false,
-    compile: null,
-  },
-  c: {
-    extension: '.c',
-    command: null, // run compiled binary
-    cmdArgs: (p) => [p],
-    importHint: `/* ── Agent CodeAct sandbox (C) ──
- * Built-in headers:
- *   #include "builtins_c/fs.h"
- *   #include "builtins_c/shell.h"
- * Only printf() output reaches the model.
- * Return 0 for success, non-zero for failure.
- */
-
-#include <stdio.h>
-#include <stdlib.h>
-`,
-    builtinsDir: 'builtins_c',
-    needsCompile: true,
-    compile: compileC,
-  },
-  cpp: {
-    extension: '.cpp',
-    command: null,
-    cmdArgs: (p) => [p],
-    importHint: `/* ── Agent CodeAct sandbox (C++) ──
- * Built-in headers:
- *   #include "builtins_c/fs.h"
- *   #include "builtins_c/shell.h"
- * Only std::cout output reaches the model.
- * Return 0 for success, non-zero for failure.
- */
-
-#include <iostream>
-#include <cstdlib>
-`,
-    builtinsDir: 'builtins_c',
-    needsCompile: true,
-    compile: compileCpp,
-  },
-}
+const MAX_CAPTURE_BYTES_PER_STREAM = 2 * 1024 * 1024
 
 // ── Actions directory ──────────────────────────────────────────────
 
@@ -209,45 +95,58 @@ export async function executeCodeActCode(
   options?: CodeActOptions,
 ): Promise<CodeActResult> {
   const lang = options?.language ?? 'typescript'
-  const config = LANGUAGE_CONFIG[lang]
+  const adapter = getCodeActLanguageAdapter(lang)
+  const runtime = getCodeActRuntimeStatus(lang)
+  if (!runtime.available || !runtime.command) {
+    return {
+      success: false,
+      stdout: '',
+      stderr: `CodeAct runtime unavailable for ${lang}. ${runtime.installHint ?? ''}`.trim(),
+      exitCode: 127,
+    }
+  }
   const persistKey = options?.persistKey
+
+  if (persistKey && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(persistKey)) {
+    return {
+      success: false,
+      stdout: '',
+      stderr: 'persistKey must be 1-64 characters: letters, digits, underscore, or hyphen.',
+      exitCode: 2,
+    }
+  }
 
   // Determine sandbox directory
   let sandboxDir: string
   if (persistKey) {
     sandboxDir = join(getCodeActSandboxDir(), `persist_${persistKey}`)
+    await mkdir(sandboxDir, { recursive: true })
   } else {
-    sandboxDir = join(getCodeActSandboxDir(), `exec_${Date.now()}`)
+    await mkdir(getCodeActSandboxDir(), { recursive: true })
+    sandboxDir = await mkdtemp(join(getCodeActSandboxDir(), 'exec_'))
   }
-  await mkdir(sandboxDir, { recursive: true })
 
   // Bootstrap and copy builtins (only if fresh or ephemeral)
-  const builtinsSrc = (() => {
-    switch (lang) {
-      case 'python': return ensureCodeActBuiltinsPythonSync()
-      case 'bash': return ensureCodeActBuiltinsBashSync()
-      case 'c':
-      case 'cpp': return ensureCodeActBuiltinsCSync()
-      default: return ensureCodeActBuiltinsSync()
-    }
-  })()
+  const builtinsSrc = adapter.ensureBuiltins()
 
-  const builtinsDst = join(sandboxDir, config.builtinsDir)
-  if (!existsSync(builtinsDst)) {
-    await copyBuiltinsInto(sandboxDir, builtinsSrc, config.builtinsDir)
-  }
+  const builtinsDst = join(sandboxDir, adapter.builtinsDir)
+  // Refresh managed builtins even in a persistent sandbox. Otherwise a cache
+  // version bump updates the global source but leaves every persistKey on the
+  // old implementation forever.
+  await rmDir(builtinsDst, { recursive: true, force: true })
+  await copyBuiltinsInto(sandboxDir, builtinsSrc, adapter.builtinsDir)
 
   // Always refresh actions/ directory (so updates are picked up)
   await copyDirContents(getActionsSrcDir(), join(sandboxDir, 'actions'))
 
   // Write agent code with appropriate extension and import hint
-  const agentBasename = `agent${config.extension}`
+  const agentBasename = `agent${adapter.extension}`
   const agentPath = join(sandboxDir, agentBasename)
-  await writeFile(agentPath, config.importHint + code, 'utf-8')
+  await writeFile(agentPath, adapter.importHint + code, 'utf-8')
 
   // Number of lines the import hint prepends, so error locations reported by
   // the runtime can be mapped back to the coordinate system the model wrote in.
-  const headerLines = (config.importHint.match(/\n/g) ?? []).length
+  const headerLines = (adapter.importHint.match(/\n/g) ?? []).length
   const remapCtx = {
     headerLines,
     agentBasename,
@@ -256,10 +155,11 @@ export async function executeCodeActCode(
   }
   const remap = (s: string) => remapCodeActError(s, remapCtx)
 
-  // Compile if needed (C/C++)
-  if (config.needsCompile && config.compile) {
+  // Compile when the selected adapter has a compile phase.
+  let compileStderr = ''
+  if (adapter.compile) {
     const binPath = join(sandboxDir, 'agent')
-    const compResult = await config.compile(agentPath, binPath, options?.signal)
+    const compResult = await adapter.compile(agentPath, binPath, options?.signal)
     if (!compResult.success) {
       // Cleanup on compile failure (unless persisted)
       if (!persistKey) {
@@ -272,14 +172,15 @@ export async function executeCodeActCode(
         exitCode: compResult.exitCode,
       }
     }
+    compileStderr = compResult.stderr
   }
 
   // Determine what to execute
-  const scriptToRun = config.needsCompile
+  const scriptToRun = adapter.compile
     ? join(sandboxDir, 'agent')
     : agentPath
-  const execCommand = config.needsCompile ? scriptToRun : config.command!
-  const execArgs = config.needsCompile ? [] : config.cmdArgs(agentPath)
+  const execCommand = adapter.compile ? scriptToRun : runtime.command
+  const execArgs = adapter.compile ? [] : adapter.interpreterArgs!(agentPath)
 
   // Execute
   try {
@@ -290,9 +191,11 @@ export async function executeCodeActCode(
       options?.timeoutMs ?? 300_000,
       options?.signal,
       options?.cwd,
+      options?.environment,
     )
     // Rewrite sandbox line numbers / paths in stderr back to user coordinates.
-    return { ...result, stderr: remap(result.stderr) }
+    const stderr = [compileStderr, result.stderr].filter(Boolean).join('\n')
+    return { ...result, stderr: remap(stderr) }
   } catch (err) {
     return {
       success: false,
@@ -317,12 +220,14 @@ function spawnWithTimeout(
   timeoutMs: number,
   signal?: AbortSignal,
   workDir?: string,
+  environment?: Record<string, string>,
 ): Promise<CodeActResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
       env: {
         ...(process.env as Record<string, string>),
+        ...environment,
         CODEACT_SANDBOX: '1',
         CODEACT_WORKSPACE: workDir ?? process.cwd(),
       },
@@ -331,6 +236,8 @@ function spawnWithTimeout(
 
     let stdout = ''
     let stderr = ''
+    let stdoutBytes = 0
+    let stderrBytes = 0
     let settled = false
 
     // Decode stdout/stderr through StringDecoder so multi-byte UTF-8 sequences
@@ -356,22 +263,54 @@ function spawnWithTimeout(
 
     if (signal) {
       if (signal.aborted) {
+        settled = true
         clearTimeout(timer)
+        child.kill('SIGTERM')
         resolve({ success: false, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() + '\n[ABORTED]', exitCode: -1 })
         return
       }
       signal.addEventListener('abort', () => {
-        if (!settled) {
-          settled = true
-          clearTimeout(timer)
-          child.kill('SIGTERM')
-        }
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        child.kill('SIGTERM')
         resolve({ success: false, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() + '\n[ABORTED]', exitCode: -1 })
       })
     }
 
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += outDecoder.write(chunk) })
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += errDecoder.write(chunk) })
+    const outputLimit = (stream: 'stdout' | 'stderr') => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.kill('SIGTERM')
+      setTimeout(() => child.kill('SIGKILL'), 5000)
+      resolve({
+        success: false,
+        stdout: stdout + outDecoder.end(),
+        stderr: stderr + errDecoder.end() +
+          `\n[OUTPUT LIMIT: ${stream} exceeded ${MAX_CAPTURE_BYTES_PER_STREAM} bytes]`,
+        exitCode: -1,
+      })
+    }
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (settled) return
+      const remaining = MAX_CAPTURE_BYTES_PER_STREAM - stdoutBytes
+      if (remaining <= 0) return outputLimit('stdout')
+      const accepted = chunk.subarray(0, remaining)
+      stdout += outDecoder.write(accepted)
+      stdoutBytes += accepted.length
+      if (accepted.length < chunk.length) outputLimit('stdout')
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (settled) return
+      const remaining = MAX_CAPTURE_BYTES_PER_STREAM - stderrBytes
+      if (remaining <= 0) return outputLimit('stderr')
+      const accepted = chunk.subarray(0, remaining)
+      stderr += errDecoder.write(accepted)
+      stderrBytes += accepted.length
+      if (accepted.length < chunk.length) outputLimit('stderr')
+    })
 
     child.on('error', (err) => {
       if (!settled) { settled = true; clearTimeout(timer); reject(err) }

@@ -31,6 +31,9 @@ type Case = {
 const TS: RemapContext = { headerLines: 13, agentBasename: 'agent.ts', sandboxDir: '/home/u/.claude/codeact/sandbox/exec_1', displayName: 'code.ts' }
 const PY: RemapContext = { headerLines: 13, agentBasename: 'agent.py', sandboxDir: '/home/u/.claude/codeact/sandbox/exec_2', displayName: 'code.py' }
 const C: RemapContext = { headerLines: 10, agentBasename: 'agent.c', sandboxDir: '/home/u/.claude/codeact/sandbox/exec_3', displayName: 'code.c' }
+const RUST: RemapContext = { headerLines: 6, agentBasename: 'agent.rs', sandboxDir: '/home/u/.claude/codeact/sandbox/exec_4', displayName: 'code.rs' }
+const OCAML: RemapContext = { headerLines: 5, agentBasename: 'agent.ml', sandboxDir: '/home/u/.claude/codeact/sandbox/exec_5', displayName: 'code.ml' }
+const SCHEME: RemapContext = { headerLines: 4, agentBasename: 'agent.scm', sandboxDir: '/home/u/.claude/codeact/sandbox/exec_6', displayName: 'code.scm' }
 
 const CASES: Case[] = [
   {
@@ -95,6 +98,33 @@ const CASES: Case[] = [
     ctx: TS,
     trueUserLine: 0,
     mustContain: 'code.ts:0',
+  },
+  {
+    label: 'rustc arrow diagnostic',
+    stderr:
+      'error[E0425]: cannot find value `missing` in this scope\n' +
+      ' --> /home/u/.claude/codeact/sandbox/exec_4/agent.rs:7:14\n' +
+      '  |\n7 |     println!("{}", missing);\n  |                    ^^^^^^^ not found',
+    ctx: RUST,
+    trueUserLine: 1,
+    mustContain: 'code.rs:1',
+  },
+  {
+    label: 'ocaml compiler diagnostic',
+    stderr:
+      'File "/home/u/.claude/codeact/sandbox/exec_5/agent.ml", line 6, characters 8-15:\n' +
+      'Error: Unbound value missing',
+    ctx: OCAML,
+    trueUserLine: 1,
+    mustContain: 'code.ml", line 1',
+  },
+  {
+    label: 'scheme source location',
+    stderr:
+      '/home/u/.claude/codeact/sandbox/exec_6/agent.scm:5:2: Unbound variable: missing',
+    ctx: SCHEME,
+    trueUserLine: 1,
+    mustContain: 'code.scm:1',
   },
 ]
 

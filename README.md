@@ -203,7 +203,7 @@ learn-tool action=demote_memory entryId=LRN-20260606-001
 
 | 工具 | 注册名 | 说明 |
 |------|--------|------|
-| CodeActTool | `CodeAct` | 沙箱内多语言代码执行（TypeScript / Python / Bash / C / C++），内置 fs/shell/fetch 工具，stderr 与错误行号映射回用户坐标 |
+| CodeActTool | `CodeAct` | 沙箱内八语言代码执行（TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme）；含函数式 Bash、OCaml 5 effects、Scheme continuations 能力提示，运行时探测及错误行号映射 |
 | ActionTool | `Action` | 执行 `~/.claude/action/` 下可复用的 Actions 脚本 |
 | MythosTool | `mythos` | 六阶段深度研究：结构化 claim + 证据 + 对抗性验证，带运行完整性自检 |
 | AutoresearchTool | `autoresearch` | Karpathy 式自主迭代优化：改 → 验证 → keep/discard，可跑实验队列 |

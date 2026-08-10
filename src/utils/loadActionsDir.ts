@@ -1,7 +1,7 @@
 /**
  * Action discovery — finds and parses executable scripts from ~/.claude/action/.
  *
- * Actions are code files (TypeScript, Python, Bash, C, C++) with YAML frontmatter
+ * Actions are code files (TypeScript, Python, Bash, C, C++, Rust, OCaml, Scheme) with YAML frontmatter
  * that describe their name, inputs, and behavior. Unlike Skills (prompt templates),
  * Actions are executed directly and return results in a single round-trip.
  *
@@ -19,7 +19,15 @@ import { join, extname, basename } from 'path'
 import { readFile, readdir } from 'fs/promises'
 import { existsSync } from 'fs'
 
-export type ActionLanguage = 'typescript' | 'python' | 'bash' | 'c' | 'cpp'
+export type ActionLanguage =
+  | 'typescript'
+  | 'python'
+  | 'bash'
+  | 'c'
+  | 'cpp'
+  | 'rust'
+  | 'ocaml'
+  | 'scheme'
 
 export interface ActionDef {
   name: string
@@ -34,6 +42,17 @@ const EXTENSION_TO_LANGUAGE: Record<string, ActionLanguage> = {
   '.sh': 'bash',
   '.c': 'c',
   '.cpp': 'cpp',
+  '.rs': 'rust',
+  '.ml': 'ocaml',
+  '.scm': 'scheme',
+}
+
+const ACTION_LANGUAGES = new Set<ActionLanguage>(
+  Object.values(EXTENSION_TO_LANGUAGE),
+)
+
+function isActionLanguage(value: string | undefined): value is ActionLanguage {
+  return value !== undefined && ACTION_LANGUAGES.has(value as ActionLanguage)
 }
 
 function languageFromExt(path: string): ActionLanguage | null {
@@ -112,14 +131,12 @@ export async function loadActionsFromDir(
 
       const name = frontmatter['name'] ?? basename(entry, extname(entry))
       const description = frontmatter['description'] ?? `${lang} script: ${name}`
-      const declaredLang = frontmatter['language'] as ActionLanguage | undefined
+      const declaredLang = frontmatter['language']
 
       actions.push({
         name,
         filePath,
-        language: declaredLang && EXTENSION_TO_LANGUAGE[`.${declaredLang}`]
-          ? declaredLang
-          : lang,
+        language: isActionLanguage(declaredLang) ? declaredLang : lang,
         description,
       })
     } catch {
