@@ -49,10 +49,10 @@ const inputSchema = lazySchema(() =>
         `Agents in flight at once. Default ${DEFAULT_CONCURRENCY}, max ${MAX_CONCURRENCY}.`,
       ),
     isolation: z
-      .enum(['worktree'])
+      .enum(['worktree', 'remote'])
       .optional()
       .describe(
-        'Pass "worktree" when the agents write to the repository, so they cannot overwrite each other.',
+        'Pass "worktree" when the agents write to the repository, so they cannot overwrite each other. "remote" runs each item on the MateBot remote transport (requires MATEBOT_REMOTE_WS_URL).',
       ),
   }),
 )

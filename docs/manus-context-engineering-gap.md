@@ -254,6 +254,13 @@ opencc 只有"写"没有"读"：`TodoWrite` 把清单推进 `AppStateStore`，RE
 在 tool_result 之后追加 user 消息是安全的 —— `normalizeMessagesForAPI` 为兼容 Bedrock
 本来就会合并连续 user 消息，复述会并进同一个 user turn。
 
+**与 `utils/memoryTrigger.ts` 的关系（rebase 后核实）**：主干上已有一份同样引用
+Manus 第 5 条的实现，但打的是另一个面 —— 它把 `REHEARSAL.md` / `SCRATCHPAD.md`
+注入**系统提示**，复述的是跨会话累积的记忆；这里注入的是**消息尾部**，复述的是本次
+会话 `TodoWrite` 里那份还没做完的计划。两者不重叠，也不互相干扰：memoryTrigger 走的是
+`DANGEROUS_uncachedSystemPromptSection`，位于缓存断点之后，因此它逐轮变化也不会
+让前缀失效 —— 这正是第 1 条要求的处理方式。
+
 ---
 
 ## 关键文件
@@ -264,8 +271,13 @@ opencc 只有"写"没有"读"：`TodoWrite` 把清单推进 `AppStateStore`，RE
 | `src/services/compact/microCompact.ts` | 清理时改用可还原占位符 |
 | `src/utils/todoRecitation.ts` | 计划反推、复述渲染、自替换应用 |
 | `src/query.ts` | 复述接入点（microcompact 之后、collapse 之前） |
+| `src/utils/repeatedFailure.ts` | 重复失败识别与破局提示（第 6 条） |
+| `src/tools/WideResearchTool/` | 扇出原语：`plan.ts` 规划、`aggregate.ts` 逐项预算聚合 |
+| `src/utils/argvFlags.ts` | 预解析读 argv 布尔标志时统一遵守 `--` 边界 |
 | `src/services/compact/__tests__/restorableRef.test.ts` | 21 个测试（含工具名漂移守卫） |
 | `src/utils/__tests__/todoRecitation.test.ts` | 18 个测试 |
+| `src/utils/__tests__/repeatedFailure.test.ts` | 15 个测试 |
+| `src/tools/WideResearchTool/__tests__/` | 25 个测试（规划 + 聚合） |
 
 ---
 
@@ -274,7 +286,13 @@ opencc 只有"写"没有"读"：`TodoWrite` 把清单推进 `AppStateStore`，RE
 1. **扫一遍其余 `isEnabled()` 的会话内稳定性** —— LSPTool 是查到的第一个实例，
    `ChromeCDPTool`（探测 CDP 脚本是否存在）等还没逐个核实。可以考虑加一条不变量：
    `isEnabled()` 必须是会话内稳定的，可用性随时变化的属于 call time
-2. **子 agent 沙箱隔离** —— 云端 agent 与本地 CLI 最本质的差别，工作量最大
-3. **扇出编排原语** —— Wide Research 式的"对 N 个同类条目并行处理"
-4. 补核实第 6 条与 Skills 渐进披露的实现状态
-5. 装上 node_modules 后补 LSPTool 那项的测试（见上文说明）
+2. ~~**子 agent 沙箱隔离**~~ —— 已核实本来就有，见上文"更正"一节
+3. ~~**扇出编排原语**~~ —— `wide_research` 已落地；rebase 后 `isolation` 跟进主干新增的
+   `"remote"`，扇出可以直接走 MateBot 远程传输
+4. ~~补核实第 6 条与 Skills 渐进披露的实现状态~~ —— 第 6 条已补齐，
+   Skills 三层渐进披露核实为已实现
+5. 装上 node_modules 后补 LSPTool 那项的测试（见上文说明）。本容器里
+   `bun install` 走不通：`.npmrc` 把 registry 钉在 `registry.npmmirror.com`，
+   而此处的出站代理连不上该域名（npmjs 可达），因此依赖树只装了一小部分，
+   凡是 import 到 `lodash-es` 的既有测试都会报 `Cannot find module` —— 这是环境问题，
+   在主干上同样复现

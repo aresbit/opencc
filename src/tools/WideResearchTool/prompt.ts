@@ -9,7 +9,7 @@ Inputs:
 - \`items\`: the list, 2 to 50 entries.
 - \`subagent_type\`: which agent runs each item (default: general-purpose).
 - \`concurrency\`: agents in flight at once (default 5, max 15).
-- \`isolation\`: pass \`"worktree"\` when the agents will write to the repository, so they cannot overwrite each other.
+- \`isolation\`: pass \`"worktree"\` when the agents will write to the repository, so they cannot overwrite each other; \`"remote"\` to run each item off this machine (MateBot remote transport).
 
 Returns a per-item report: how many succeeded, every failure with its reason, and each successful result under a per-item output budget. Results that hit the budget are marked as truncated and named, so you can re-run one on its own with the Agent tool.
 
