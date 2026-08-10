@@ -223,6 +223,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | Paper2CodeTool | `paper2code` | `extract` 把 arXiv 论文切成可引用产物并裁定提取质量；`verify` 对写出的实现跑确定性检查（结构 / 语法 / 引用锚定 / UNSPECIFIED 审计 / import / 冒烟） |
 | QuantVerifyTool | `quant_verify` | 量化结果硬门禁：从收益序列重算 Sharpe/MaxDD/Calmar 并核对报告数字，检查成本是否真扣、留出集是否被反复评分、样本是否撑得起结论；定价侧核对 NPV/Greeks 与基准偏差 |
 | ManuscriptCheckTool | `manuscript_check` | 中文稿件硬检查：AI 痕迹模式扫描（带行号与改法）、对话占比、五感覆盖、角色声音辨识度（字符二元组分布比对）、伏笔回收台账 |
+| RedTeamSkill | `RedTeamSkill` / `redteam` | 授权 CTF/靶场安全模式：固化 ELF/ABI、内存破坏、NX/ASLR/PIE、ROP、canary/RELRO/FORTIFY 与盲 oracle 方法；生成证据驱动的 binary plan 和 hardening audit，且不提升权限或关闭沙箱 |
 | RedoTool | `redotool` | 重放仓库早期提交历史，生成可发布的教学讲解 |
 | GoalTool | `create_goal` 等 | 长期目标追踪：成功标准 + 证据门禁的完成裁定、人类闸门、停滞检测、token / 轮次 / 时限预算 |
 | McpFsTool | `mcpfs` 等 | MCP 工具桥接：本地注册表按需 bridge 执行，见上文 MCP-FS 节 |

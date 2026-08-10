@@ -103,12 +103,6 @@ import {
   classifyYoloAction,
   formatActionForClassifier,
 } from './yoloClassifier.js'
-import {
-  isRedTeamMode,
-  shouldBypassPermissionsRedTeam,
-  createRedTeamAllowDecision,
-  enhancePermissionContextForRedTeam,
-} from '../../redteam/redteam.js'
 
 const CLASSIFIER_FAIL_CLOSED_REFRESH_MS = 30 * 60 * 1000 // 30 minutes
 
@@ -1188,12 +1182,6 @@ async function hasPermissionsToUseToolInner(
 ): Promise<PermissionDecision> {
   if (context.abortController.signal.aborted) {
     throw new AbortError()
-  }
-
-  // Red Team Mode: Check for permission bypass
-  if (isRedTeamMode() && shouldBypassPermissionsRedTeam(tool.name, input)) {
-    console.log(`[REDTEAM] Permission bypass for ${tool.name}`)
-    return createRedTeamAllowDecision(input)
   }
 
   let appState = context.getAppState()

@@ -3,21 +3,29 @@
  * 整合 rtm-harness 的漏洞发现/验证/修复全流程领域知识
  */
 
+import {
+  BINARY_EXPLOITATION_WORKFLOW,
+  SOFTWARE_SECURITY_KNOWLEDGE,
+  SOFTWARE_SECURITY_SOURCE,
+} from './software-security.js'
+
 export * from './prompts.js'
 export * from './vuln-scan.js'
 export * from './triage.js'
 export * from './threat-model.js'
+export * from './software-security.js'
 
 /**
  * 领域知识版本号，用于缓存失效和兼容性检查
  */
-export const RTM_KNOWLEDGE_VERSION = '1.0.0'
+export const RTM_KNOWLEDGE_VERSION = '2.0.0'
 
 /**
  * 流水线阶段定义
  */
 export const PIPELINE_STAGES = [
   { id: 'recon', name: 'Reconnaissance', description: 'Partition attack surface into focus areas' },
+  { id: 'binary-plan', name: 'Binary Plan', description: 'Establish ELF/ABI facts, mitigations, primitive, and CTF strategy' },
   { id: 'find', name: 'Find', description: 'Parallel agents hunt crashes per focus area' },
   { id: 'grade', name: 'Grade', description: 'Verify crash reproduces in fresh container' },
   { id: 'judge', name: 'Judge', description: 'Decide NEW / DUP_BETTER / DUP_SKIP' },
@@ -49,6 +57,11 @@ export const VULNERABILITY_CLASSES = [
   'redos',
   'info-disclosure',
   'race-condition',
+  'control-flow-hijack',
+  'code-injection',
+  'code-reuse',
+  'memory-disclosure',
+  'unsafe-elf-hardening',
   'securit-misconfiguration',
   'broken-access-control',
   'cryptographic-failure',
@@ -102,6 +115,11 @@ Key principles:
 4. Judge distinguishes root cause from crash class
 5. Report covers primitive, reachability, heap_layout, escalation_path, constraints
 6. Patch fixes root cause (not crash site), verified by rebuild + re-attack
+
+Authorized binary-security source: ${SOFTWARE_SECURITY_SOURCE}
+Binary CTF workflow: ${BINARY_EXPLOITATION_WORKFLOW.join(' -> ')}
+Mitigation reasoning covers ELF/ABI, NX, ASLR, PIE, stack canaries, RELRO,
+FORTIFY_SOURCE, information disclosure, code reuse, and blind-oracle limits.
 `
 }
 
@@ -126,5 +144,5 @@ export function buildSecuritySystemPrompt(options?: {
     extra += `\n## Target\n${options.targetPath}\n`
   }
 
-  return base + extra
+  return base + '\n' + SOFTWARE_SECURITY_KNOWLEDGE + extra
 }

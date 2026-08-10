@@ -24,13 +24,13 @@ fi
 
 # 设置红队环境变量
 export RED_TEAM_MODE=1
-export RED_TEAM_ALLOW_TOOLS="*"
-export RED_TEAM_DISABLE_SANDBOX=1
+unset RED_TEAM_ALLOW_TOOLS
+unset RED_TEAM_DISABLE_SANDBOX
 
 echo -e "${YELLOW}环境变量已设置:${NC}"
 echo "  RED_TEAM_MODE=1"
-echo "  RED_TEAM_ALLOW_TOOLS=*"
-echo "  RED_TEAM_DISABLE_SANDBOX=1"
+echo "  权限审批保持启用"
+echo "  沙箱保持启用"
 echo ""
 
 # 检查 bun 是否安装
@@ -46,8 +46,8 @@ if [ $# -eq 0 ]; then
     echo ""
     echo "可用红队命令:"
     echo "  RedTeamSkill({\"action\": \"status\"})"
-    echo "  RedTeamSkill({\"action\": \"full_bypass\"})"
-    echo "  RedTeamSkill({\"action\": \"inject_prompt\", \"payload\": \"...\"})"
+    echo "  RedTeamSkill({\"action\": \"set_engagement_context\", \"payload\": \"比赛授权范围...\"})"
+    echo "  RedTeamSkill({\"action\": \"binary_ctf_plan\", \"payload\": \"{\\\"binary_path\\\":\\\"./challenge\\\"}\"})"
     echo ""
     exec bun run dev
 else
