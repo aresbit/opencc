@@ -28,12 +28,20 @@ import {
   getTimeBasedMCConfig,
   type TimeBasedMCConfig,
 } from './timeBasedMCConfig.js'
+import {
+  CLEARED_FALLBACK,
+  clearedPlaceholder,
+  isClearedPlaceholder,
+} from './restorableRef.js'
 
 // Inline from utils/toolResultStorage.ts — importing that file pulls in
 // sessionStorage → utils/messages → services/api/errors, completing a
 // circular-deps loop back through this file via promptCacheBreakDetection.
 // Drift is caught by a test asserting equality with the source-of-truth.
-export const TIME_BASED_MC_CLEARED_MESSAGE = '[Old tool result content cleared]'
+// Kept as the fallback for results whose originating call carries no usable
+// address; anything with a path/command/URL now gets a restorable reference
+// instead (see restorableRef.ts).
+export const TIME_BASED_MC_CLEARED_MESSAGE = CLEARED_FALLBACK
 
 const IMAGE_MAX_TOKEN_SIZE = 2000
 
@@ -238,6 +246,29 @@ function collectCompactableToolIds(messages: Message[]): string[] {
     }
   }
   return ids
+}
+
+/**
+ * tool_use_id → the call that produced the result, so a cleared placeholder can
+ * name what it dropped instead of being an anonymous sentinel.
+ */
+function collectToolCallsById(
+  messages: Message[],
+): Map<string, { name: string; input: unknown }> {
+  const calls = new Map<string, { name: string; input: unknown }>()
+  for (const message of messages) {
+    if (
+      message.type === 'assistant' &&
+      Array.isArray(message.message.content)
+    ) {
+      for (const block of message.message.content) {
+        if (block.type === 'tool_use' && COMPACTABLE_TOOLS.has(block.name)) {
+          calls.set(block.id, { name: block.name, input: block.input })
+        }
+      }
+    }
+  }
+  return calls
 }
 
 // Prefix-match because promptCategory.ts sets the querySource to
@@ -466,6 +497,11 @@ function maybeTimeBasedMicrocompact(
     return null
   }
 
+  // Restorable compression: the body goes, the address stays. A placeholder
+  // that names the file / command / URL it replaced lets the model re-read on
+  // demand; a bare sentinel forces it to redo the exploration blind.
+  const toolCalls = collectToolCallsById(messages)
+
   let tokensSaved = 0
   const result: Message[] = messages.map(message => {
     if (message.type !== 'user' || !Array.isArray(message.message.content)) {
@@ -476,11 +512,15 @@ function maybeTimeBasedMicrocompact(
       if (
         block.type === 'tool_result' &&
         clearSet.has(block.tool_use_id) &&
-        block.content !== TIME_BASED_MC_CLEARED_MESSAGE
+        !isClearedPlaceholder(block.content)
       ) {
         tokensSaved += calculateToolResultTokens(block)
         touched = true
-        return { ...block, content: TIME_BASED_MC_CLEARED_MESSAGE }
+        const call = toolCalls.get(block.tool_use_id)
+        return {
+          ...block,
+          content: clearedPlaceholder(call?.name, call?.input),
+        }
       }
       return block
     })
