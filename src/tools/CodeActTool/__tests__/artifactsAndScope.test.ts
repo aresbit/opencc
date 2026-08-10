@@ -108,6 +108,78 @@ describe('CodeAct prompt scope', () => {
   })
 })
 
+describe('CodeAct artifact manifest in the result', () => {
+  test('lists produced files with a path that resolves', () => {
+    const block = mapResult('trained', {}) as { content: string }
+    expect(block.content).toBe('trained')
+
+    const withFiles = CodeActTool.mapToolResultToToolResultBlockParam!(
+      {
+        success: true,
+        stdout: 'final loss 0.02',
+        stderr: '',
+        exitCode: 0,
+        artifacts: [
+          { relPath: 'metrics.csv', path: '/durable/metrics.csv', bytes: 2048 },
+        ],
+        artifactsTruncated: false,
+      } as never,
+      'tu_1',
+    ) as { content: string }
+    expect(withFiles.content).toContain('final loss 0.02')
+    expect(withFiles.content).toContain('metrics.csv')
+    expect(withFiles.content).toContain('/durable/metrics.csv')
+  })
+
+  test('a silent run that wrote files is not scolded for printing nothing', () => {
+    // The nudge exists for a script that forgot to print. A script that wrote
+    // its result to disk did not forget anything.
+    const block = CodeActTool.mapToolResultToToolResultBlockParam!(
+      {
+        success: true,
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        artifacts: [{ relPath: 'out.bin', path: '/durable/out.bin', bytes: 10 }],
+      } as never,
+      'tu_1',
+    ) as { content: string }
+    expect(block.content).not.toMatch(/produced no output/)
+    expect(block.content).toContain('out.bin')
+  })
+})
+
+describe('CodeAct prompt: long work and Rust', () => {
+  const prompt = () => getCodeActPrompt(getCodeActRuntimeStatuses())
+
+  test('documents that files come back', () => {
+    expect(prompt()).toMatch(/Files are a first-class result/)
+  })
+
+  test('documents background runs and what they are for', () => {
+    const text = prompt()
+    expect(text).toMatch(/run_in_background/)
+    expect(text).toMatch(/poll_run_id/)
+    expect(text).toMatch(/limit on \*waiting\*/)
+  })
+
+  test('steers compute-heavy work to Rust', () => {
+    const text = prompt()
+    expect(text).toMatch(/Prefer Rust for anything compute-heavy/)
+    // Both halves of the argument, since either alone is a weaker case.
+    expect(text).toMatch(/orders of magnitude faster/)
+    expect(text).toMatch(/no data races|memory-safe|use-after-free/)
+  })
+
+  test('does not overclaim Rust — names where Python still wins', () => {
+    expect(prompt()).toMatch(/Python remains the right choice/)
+  })
+
+  test('keeps the std-only constraint next to the Rust advice', () => {
+    expect(prompt()).toMatch(/std-only/)
+  })
+})
+
 describe('CodeAct tool metadata', () => {
   test('the description advertises the image path', async () => {
     expect(await CodeActTool.description!({} as never, {} as never)).toMatch(

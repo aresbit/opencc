@@ -25,6 +25,11 @@ import {
   type CodeActLanguage,
 } from './codeActLanguageAdapters.js'
 import { remapCodeActError, userFacingName } from './codeActErrorRemap.js'
+import {
+  collectArtifacts,
+  preserveArtifacts,
+  type Artifact,
+} from './codeActArtifacts.js'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -45,6 +50,10 @@ export interface CodeActResult {
   stdout: string
   stderr: string
   exitCode: number
+  /** Files the script produced. Empty when it only printed. */
+  artifacts?: Artifact[]
+  /** True when more files were produced than are listed. */
+  artifactsTruncated?: boolean
 }
 
 const MAX_CAPTURE_BYTES_PER_STREAM = 2 * 1024 * 1024
@@ -183,6 +192,7 @@ export async function executeCodeActCode(
   const execArgs = adapter.compile ? [] : adapter.interpreterArgs!(agentPath)
 
   // Execute
+  const startedAt = Date.now()
   try {
     const result = await spawnWithTimeout(
       execCommand,
@@ -195,7 +205,27 @@ export async function executeCodeActCode(
     )
     // Rewrite sandbox line numbers / paths in stderr back to user coordinates.
     const stderr = [compileStderr, result.stderr].filter(Boolean).join('\n')
-    return { ...result, stderr: remap(stderr) }
+
+    // Collected here, inside the try, because the finally below deletes the
+    // whole sandbox on an ephemeral run — anything the script wrote has to be
+    // both noticed and rescued before that happens.
+    const { artifacts, truncated } = await collectArtifacts(sandboxDir, {
+      managed: [adapter.builtinsDir, 'actions', agentBasename, 'agent'],
+      // A persistent sandbox still holds every previous run's output, so only
+      // what this run touched counts as this run's artifacts.
+      since: persistKey ? startedAt : undefined,
+    })
+    const kept = persistKey
+      ? artifacts
+      : await preserveArtifacts(artifacts, `run_${Date.now().toString(36)}`)
+
+    return {
+      ...result,
+      stderr: remap(stderr),
+      ...(kept.length > 0
+        ? { artifacts: kept, artifactsTruncated: truncated }
+        : {}),
+    }
   } catch (err) {
     return {
       success: false,

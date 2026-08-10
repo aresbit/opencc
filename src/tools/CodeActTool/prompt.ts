@@ -43,7 +43,7 @@ available language or explain which toolchain is required.
 | **bash** | bash | Composed stream processing: map/filter/fold over lines, fail-fast scripts, array-safe command construction |
 | **c** | gcc → binary | Performance-critical computation, FFI, numerical kernels |
 | **cpp** | g++/clang++ → C++23 binary | Zero-cost ranges, variant/expected state machines, simulation |
-| **rust** | rustc (edition 2024) | Safe systems code, Result, iterators, explicit state machines |
+| **rust** | rustc (edition 2024) | **First choice for compute** — hot loops, simulation, solvers, long unattended runs; safe by construction, ~40x a Python loop |
 | **ocaml** | ocamlopt/ocamlc | Algebraic data types, exhaustive matching, modules, OCaml 5 effects |
 | **scheme** | Guile 3 | Symbolic code, proper tail calls, hygienic macros, continuations |
 
@@ -93,6 +93,52 @@ Two habits that make the difference: state the result numerically (accuracy,
 error, timing, a table) rather than "it worked", and when a script grows past a
 single throwaway, give it a \`persistKey\` and build it up across calls instead
 of retyping it.
+
+### Files are a first-class result
+
+Anything the script writes is listed back to you with its size and a path that
+still resolves — the sandbox is cleaned up after an ephemeral run, so produced
+files are moved somewhere durable first. Writing a CSV, a checkpoint, a
+generated module or a report is therefore a real way to return work, not
+something that disappears.
+
+Two consequences worth acting on. Write results to files when they are big or
+structured, and print a short summary instead of dumping the whole thing into
+the transcript. And when you write files, name them for what they are —
+\`metrics.csv\`, \`model.npz\` — because the manifest is what the next turn reads.
+
+### Work that outlasts a tool call
+
+A tool call cannot sit blocked for forty minutes, which is why the default
+budget is five. That is a limit on *waiting*, not on the work: pass
+\`run_in_background: true\` and you get a run id immediately, with the timeout
+raised to an hour (six maximum). Do something else, then \`poll_run_id\` for the
+output and artifacts; \`stop_run_id\` ends it early.
+
+Use it for training runs, parameter sweeps, long simulations, big builds —
+anything where the honest estimate is "minutes, not seconds". Pair it with
+\`persistKey\` so the run has somewhere to leave checkpoints.
+
+### Prefer Rust for anything compute-heavy
+
+When the task is real computation and Rust is available, write Rust. It is
+typically one to two orders of magnitude faster than the Python equivalent for
+tight numeric loops, and the properties that make a long unattended run
+trustworthy — no data races, no use-after-free, no silent numeric aliasing,
+errors as \`Result\` rather than exceptions escaping a worker — are exactly the
+ones that matter when nobody is watching the process for an hour.
+
+Reach for Rust when the work is: a simulation, an optimiser, a solver, a
+search, a large data pass, anything with a hot loop, or anything running in the
+background where a crash halfway through wastes the whole budget. Use
+\`std::thread\` and \`chunks\` for parallelism; the standard library is enough and
+CodeAct Rust is std-only, so do not reach for external crates.
+
+Python remains the right choice when the work is dominated by a library that
+already exists (fitting with NumPy, plotting) rather than by your own loop, and
+prototyping in Python before porting a hot loop to Rust is a reasonable path —
+just do not leave a numeric kernel in Python because it was the first thing
+written.
 
 ### Python packages
 

@@ -11,6 +11,18 @@ import {
   buildImageToolResult,
   isImageOutput,
 } from '../BashTool/utils.js'
+import {
+  renderArtifacts,
+  type Artifact,
+} from '../../utils/codeActArtifacts.js'
+import {
+  DEFAULT_BACKGROUND_TIMEOUT_MS,
+  getRun,
+  renderRunView,
+  startBackgroundRun,
+  stopRun,
+  viewRun,
+} from '../../utils/codeActRuns.js'
 
 import { CODE_ACT_TOOL_NAME } from './toolName.js'
 export { CODE_ACT_TOOL_NAME }
@@ -35,7 +47,8 @@ const inputSchema = lazySchema(() =>
         'Programming language. Default: typescript. ' +
         'Use python for data analysis/quant trading/ML tasks. ' +
         'Use bash for simple shell automation. ' +
-        'Use rust for safe systems code and explicit state machines. ' +
+        'Prefer rust for anything compute-heavy: hot loops, simulation, solvers, ' +
+        'and long background runs — fast and memory-safe. ' +
         'Use ocaml for algebraic data types, modules, and effect handlers. ' +
         'Use scheme for macros, continuations, and symbolic computation. ' +
         'Use c/cpp for performance-critical compiled code.',
@@ -45,6 +58,18 @@ const inputSchema = lazySchema(() =>
     ),
     cwd: z.string().optional().describe(
       'Working directory override. Defaults to the project root.',
+    ),
+    run_in_background: z.boolean().optional().describe(
+      'Start the run and return a run id immediately instead of waiting. For ' +
+      'work that outlasts a tool call: training, sweeps, long simulations. ' +
+      'Default timeout rises to 1 hour (max 6). Poll with poll_run_id.',
+    ),
+    poll_run_id: z.string().optional().describe(
+      'Report the status and, once finished, the output and artifacts of a ' +
+      'background run. Ignores `code`.',
+    ),
+    stop_run_id: z.string().optional().describe(
+      'Stop a background run. Ignores `code`.',
     ),
     persistKey: z.string().optional().describe(
       'When provided, the sandbox is kept at ~/.claude/codeact/sandbox/persist_<key> ' +
@@ -62,6 +87,18 @@ const outputSchema = lazySchema(() =>
     stdout: z.string(),
     stderr: z.string(),
     exitCode: z.number(),
+    artifacts: z
+      .array(
+        z.object({
+          relPath: z.string(),
+          path: z.string(),
+          bytes: z.number(),
+        }),
+      )
+      .optional(),
+    artifactsTruncated: z.boolean().optional(),
+    runId: z.string().optional(),
+    runStatus: z.string().optional(),
   }),
 )
 
@@ -95,7 +132,69 @@ export const CodeActTool = buildTool({
 
   renderToolUseMessage() { return null },
 
-  async call({ code, language, timeoutMs, cwd, persistKey }, context) {
+  async call(
+    {
+      code,
+      language,
+      timeoutMs,
+      cwd,
+      persistKey,
+      run_in_background,
+      poll_run_id,
+      stop_run_id,
+    },
+    context,
+  ) {
+    if (poll_run_id || stop_run_id) {
+      const runId = (poll_run_id ?? stop_run_id)!
+      const record = getRun(runId)
+      if (!record) {
+        return {
+          data: {
+            success: false,
+            stdout: '',
+            stderr: `No CodeAct run with id "${runId}". Background runs live for this session only.`,
+            exitCode: 2,
+          },
+        }
+      }
+      if (stop_run_id) stopRun(runId)
+      const view = viewRun(getRun(runId)!)
+      return {
+        data: {
+          success: view.status === 'completed',
+          stdout: renderRunView(view),
+          stderr: '',
+          exitCode: view.exitCode ?? 0,
+          runId,
+          runStatus: view.status,
+          ...(view.artifacts?.length ? { artifacts: view.artifacts } : {}),
+        },
+      }
+    }
+
+    if (run_in_background) {
+      const record = startBackgroundRun(code, {
+        language: language as CodeActLanguage | undefined,
+        timeoutMs: timeoutMs ?? DEFAULT_BACKGROUND_TIMEOUT_MS,
+        cwd,
+        persistKey,
+      })
+      return {
+        data: {
+          success: true,
+          stdout:
+            `Started background run ${record.runId}. Do other work and poll it ` +
+            `with poll_run_id: "${record.runId}" — output and artifacts arrive ` +
+            'when it finishes.',
+          stderr: '',
+          exitCode: 0,
+          runId: record.runId,
+          runStatus: record.status,
+        },
+      }
+    }
+
     const result = await executeCodeActCode(code, {
       language: language as CodeActLanguage | undefined,
       timeoutMs,
@@ -110,6 +209,12 @@ export const CodeActTool = buildTool({
         stdout: result.stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
+        ...(result.artifacts?.length
+          ? {
+              artifacts: result.artifacts,
+              artifactsTruncated: result.artifactsTruncated ?? false,
+            }
+          : {}),
       },
     }
   },
@@ -120,6 +225,10 @@ export const CodeActTool = buildTool({
       stdout: string
       stderr: string
       exitCode: number
+      artifacts?: Artifact[]
+      artifactsTruncated?: boolean
+      runId?: string
+      runStatus?: string
     }
     // A plot, a rendered frame, a confusion matrix: without this the image is
     // a wall of base64 the model cannot see and the user never receives. Same
@@ -141,12 +250,15 @@ export const CodeActTool = buildTool({
       parts.push(`\n<!-- stderr (exit ${out.exitCode}): -->\n${out.stderr}`)
     }
     // A script that exits 0 with no stdout is almost always a mistake — the
-    // model forgot to print its result. Say so, rather than returning a bare
-    // "exit code 0" the model reads as success.
-    if (out.success && !out.stdout && !out.stderr) {
+    // model forgot to print its result. Unless it wrote files, in which case
+    // the work landed somewhere real and the manifest below says where.
+    if (out.success && !out.stdout && !out.stderr && !out.artifacts?.length) {
       parts.push(
         'CodeAct exited 0 but produced no output. Only stdout (console.log / print / echo / printf / std::cout) reaches you — add a print of the result you need.',
       )
+    }
+    if (out.artifacts?.length) {
+      parts.push(renderArtifacts(out.artifacts, out.artifactsTruncated ?? false))
     }
     return {
       tool_use_id: toolUseID,
@@ -158,5 +270,14 @@ export const CodeActTool = buildTool({
   },
 } satisfies ToolDef<
   typeof inputSchema,
-  { success: boolean; stdout: string; stderr: string; exitCode: number }
+  {
+    success: boolean
+    stdout: string
+    stderr: string
+    exitCode: number
+    artifacts?: Artifact[]
+    artifactsTruncated?: boolean
+    runId?: string
+    runStatus?: string
+  }
 >)
