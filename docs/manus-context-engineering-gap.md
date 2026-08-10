@@ -25,8 +25,42 @@
 | **4. 通过复述操纵注意力** | **已补**（本轮） | 见下 |
 | **5. 保留错误现场** | **已满足** | `is_error` 原样进入上下文；`utils/messages.ts` 里唯一的 sanitize 是剥离 error 结果中的非 text 块，属 API 协议要求（"all content must be type text if is_error is true"），不是隐藏错误 |
 | **6. 别把自己 few-shot 进沟里** | 未核实 | — |
-| **Wide Research** —— 完整实例子 agent、独立 VM、全新上下文、彼此不通信 | **部分具备** | AgentTool 已支持一条消息内并行 fan-out，fork 还能共享缓存；缺的是每个子 agent 独立沙箱（现共享宿主文件系统）与"对 N 个同类条目扇出"的编排原语 |
+| **Wide Research** —— 完整实例子 agent、独立 VM、全新上下文、彼此不通信 | **隔离已具备（此前记错）**；缺扇出编排原语 | 见下
 | **Agent Skills 渐进披露** | 未核实 | SkillTool 解析 frontmatter、按需加载 body，看起来至少有两级 |
+
+---
+
+## 更正：子 agent 隔离本来就有
+
+我此前在差距表里写"缺每个子 agent 独立沙箱（现共享宿主文件系统）"，**这是错的**。
+当时只看了 `runAgent.ts` 与 `agentToolUtils.ts`，没找到真正的工具定义 `AgentTool.tsx`。
+
+实际已实现的部分相当完整：
+
+- `AgentTool.tsx` 输入 schema 有 `isolation: 'worktree'`（ant 构建另有 `'remote'` 走 CCR）
+- `createAgentWorktree(slug)` 建独立 worktree，`cwdOverridePath` + `runWithCwdOverride`
+  让该 agent 的所有文件/shell 操作落在自己的树里（`cwd.ts` 用 AsyncLocalStorage，
+  文档明说就是为并发 agent 设计的）
+- system prompt 在 `wrapWithCwd` 内构建，所以 `getCwd()` 解析正确
+- fork + worktree 时会注入路径翻译提示，让子 agent 知道自己换了树
+- 清理是干净的：`hasWorktreeChanges()` 判定无改动就 `removeAgentWorktree()` 并清掉
+  metadata 里的 worktreePath（避免 resume 指向已删目录）；有改动则保留并把
+  worktreePath / worktreeBranch 返回给调用方
+- 自定义 agent 可在 frontmatter 里声明 `isolation:`（`loadAgentsDir.ts`）
+
+**真正缺的是触发条件。** 没有任何内置 agent 声明 `isolation`，而提示词里两条指令
+是脱节的：248 行要求"尽可能并发启动多个 agent 以提升性能"，272 行中立地陈述
+`isolation: "worktree"` 这个能力存在 —— 但从没说过**并行写文件的 agent 会互相覆盖**。
+机制描述了，触发条件不在任何地方，所以模型基本不会去用。
+
+这一轮补的就是那个连接：并行 + 写操作 → 必须逐个 `isolation: "worktree"`；只读扇出
+（搜索/阅读/抓取/评审）→ 不要用，白付一次 worktree 拷贝。另外说明了被隔离的 agent
+看到的是不同路径（别把自己树里的绝对路径递给它），以及结果里带回 worktreePath /
+worktreeBranch 时那些改动还躺在那儿，需要复核并合并才算交付。
+
+**没有改任何默认值。** 内置 agent 要不要默认隔离是语义变更 —— 比如 paperAgent 开了
+隔离之后，生成的实现目录会落在临时 worktree 而不是用户的工作树里，这未必是想要的；
+novaAgent 本身就有自己的分支策略，套 worktree 会和它冲突。这属于该由你定的事。
 
 ---
 

@@ -245,7 +245,7 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
   const concurrencyNote =
     !listViaAttachment && getSubscriptionType() !== 'pro'
       ? `
-- Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
+- Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses. If those agents will write to the repository, give each one \`isolation: "worktree"\` so they cannot overwrite each other`
       : ''
 
   // Non-coordinator gets the full prompt with all sections
@@ -269,7 +269,9 @@ Usage notes:
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.)${forkEnabled ? '' : ", since it is not aware of the user's intent"}
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
 - If the user specifies that they want you to run agents "in parallel", you MUST send a single message with multiple ${AGENT_TOOL_NAME} tool use content blocks. For example, if you need to launch both a build-validator agent and a test-runner agent in parallel, send a single message with both tool calls.
-- You can optionally set \`isolation: "worktree"\` to run the agent in a temporary git worktree, giving it an isolated copy of the repository. The worktree is automatically cleaned up if the agent makes no changes; if changes are made, the worktree path and branch are returned in the result.${
+- You can optionally set \`isolation: "worktree"\` to run the agent in a temporary git worktree, giving it an isolated copy of the repository. The worktree is automatically cleaned up if the agent makes no changes; if changes are made, the worktree path and branch are returned in the result.
+- **Isolate agents that write, when you run more than one at a time.** Two agents editing the same working tree overwrite each other's files and each reports success on a tree the other has since changed — you end up unable to trust either result, and the damage is silent. Whenever a single message launches several agents that will edit files, run builds, install dependencies, or check out branches, give each one \`isolation: "worktree"\`. When the fan-out is read-only — searching, reading, fetching, reviewing — skip it; a worktree copy buys nothing there.
+- A worktree-isolated agent works on different paths than you do. Describe files by repo-relative path rather than handing it absolute paths from your own tree, and expect its edits to land in the returned worktree, not in your working copy. When the result carries a worktree path and branch, the changes are still sitting there: review and integrate them (merge the branch, or read the files across and apply them) before treating that work as delivered.${
     process.env.USER_TYPE === 'ant'
       ? `\n- You can set \`isolation: "remote"\` to run the agent in a remote CCR environment. This is always a background task; you'll be notified when it completes. Use for long-running tasks that need a fresh sandbox.`
       : ''
