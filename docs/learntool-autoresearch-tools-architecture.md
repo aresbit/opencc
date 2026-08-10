@@ -16,12 +16,13 @@
 
 命名对齐：注册名 `learn-tool`，显示名 `LearnTool`，目录 `src/tools/LearnTool/`。
 
-### 1.2 四个 Action
+### 1.2 五个 Action
 
 | Action | 职责 |
 |------|------|
 | `learn` | 将学习/错误/需求写入 `.learnings/{LEARNINGS,ERRORS,FEATURE_REQUESTS}.md`，自动打上 `**Verified-By**` 占位符 |
 | `ingest_memory` | 从记忆目录按主题提取相关段落，转成结构化学习条目（`topic` 必填） |
+| `plan_training` | 按任务目标、数据形态、验证器与算力选择 Memory/Reflexion、LoRA SFT、DPO、GRPO 或 DAPO，给出起始参数和评估门；只读，不改权重 |
 | `promote_memory` | 将**已验证**条目晋升为长期记忆。默认写盘;未带证据的条目一律跳过 |
 | `demote_memory` | 按 entryId 反转一次晋升，反转本身也记日志 |
 
@@ -35,20 +36,22 @@
 | 支柱 | 机制 |
 |---|---|
 | 准入闸 | `**Verified-By**` 证据。无证据的条目不晋升，`dryRun: true` 可先预览 |
-| 显式验证 | 条目须含 `**Verified-By**: <证据>`，占位符与各种否定写法一律拒绝 |
-| 审计日志 | 每次真实晋升追加 `.self_improving_promotions.log`：内容 SHA、memoryType、git HEAD |
+| 显式验证 | 证据须来自人工、测试、CI、benchmark 或独立 review；占位符、模糊文本、模型自证一律拒绝 |
+| 多验证器 | 高影响 `feedback` 需要人工确认或至少两个不同验证通道，避免同一个 judge 自证 |
+| 审计日志 | 每次真实晋升追加 `.self_improving_promotions.log`：内容 SHA、memoryType、git HEAD、验证通道 |
 | 可逆 | `demote_memory entryId=…` 删除该条目晋升出的全部记忆文件 |
 
 准入闸是不可配置的安全性质。旧调用中的 `onlyVerified: true` 仍可使用，但
 `onlyVerified: false` 会在 schema 层被拒绝，执行路径也会无条件检查证据。
 
 默认 `memoryType` 是 `project` 而非 `feedback`——`feedback` 对未来行为影响最强，晋升进去
-必须刻意。去重按内容 SHA-256，改标题重复晋升拦得住。
+必须刻意，而且准入门更强。去重按内容 SHA-256，改标题重复晋升拦得住；工具结果会逐条报告
+`promotionDecisions`，使拒绝原因和验证通道可观察。
 
 > **2026-08-01 修复**：验证门此前是失效的。`learn` 自动打的占位符
 > `(none — fill in evidence before promote_memory will accept this entry)` 因为否定正则
 > 锚定为 `/^none$/` 而**通过了检查**——即每条新建条目从诞生就算"已验证"。现由
-> `verification.ts` 的共享 sentinel + 宽容否定检测处理，`verification.eval.ts` 17/17 守着。
+> `verification.ts` 的共享 sentinel、来源分类与自证检测处理，`verification.eval.ts` 守着。
 
 ### 1.4 管道
 
@@ -61,6 +64,29 @@ MemoryStore 长期记忆 + 晋升审计日志
   ↓  需要时
 demote_memory → 反转
 ```
+
+训练规划走另一条只读路径：
+
+```
+目标 + 数据形态 + verifier + 算力
+  ↓
+plan_training
+  ├─ 易变知识 → Memory / Reflexion
+  ├─ 高质量示范 → LoRA SFT
+  ├─ 偏好对 → DPO
+  ├─ 可执行奖励 → GRPO
+  └─ 长轨迹不稳定 → DAPO
+  ↓
+起始超参数 + public/private 隔离 + process/outcome/meta-verifier 门 + 停止/回滚条件
+```
+
+参数是小规模 sweep 的起点，不是万能最优值。规划器特别固化了 CS329A 强调的几项工程约束：
+
+- 生成候选与筛选分离，目标通过率维持在 10%–50%；
+- 训练可见的 public feedback 不得兼任晋升用 private holdout；
+- 代码奖励拆成编译、测试、过程质量，coverage/格式只作 shaping；
+- GRPO 监控组内奖励方差与 KL；DAPO 使用 Clip-Higher（0.20/0.28）、动态采样、token 级损失和超长软惩罚；
+- 晋升必须对比冻结基线，并报告 pass@1、重复运行可靠性和回归结果。
 
 > **2026-08-01 变更**：`dryRun` 默认由 `true` 改为 `false`。原先需要人工填证据*并且*显式传
 > `dryRun: false`，是双重确认。现在闸门收敛到一处——证据本身。这个默认值只在 Verified-By
@@ -191,6 +217,7 @@ LearnTool 管**跨会话的经验沉淀**（有人工审阅兜底）。两者不
 |------|------|
 | `src/tools/LearnTool/LearnTool.ts` | 学习与晋升引擎（867 行，原 1363 行） |
 | `src/tools/LearnTool/verification.ts` | `Verified-By` 验证门 |
+| `src/tools/LearnTool/rsiTrainingPlanner.ts` | RSI 方法选择、微调起始参数、评估门与停止条件 |
 | `src/tools/LearnTool/prompt.ts` | 工具描述与「何时使用」提示词 |
 | `src/tools/AutoresearchTool/AutoresearchTool.ts` | 实验引擎 |
 | `src/tools/AutoresearchTool/metricProvenance.ts` | 指标溯源与 keep 门控 |

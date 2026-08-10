@@ -20,4 +20,17 @@ describe('LearnTool promotion admission gate', () => {
 
     expect(parsed.success).toBe(true)
   })
+
+  test('accepts a read-only RSI training plan request', () => {
+    const parsed = LearnTool.inputSchema.safeParse({
+      action: 'plan_training',
+      trainingGoal: 'tool_use',
+      hasVerifiableReward: true,
+      computeBudget: 'medium',
+    })
+
+    expect(parsed.success).toBe(true)
+    if (!parsed.success) return
+    expect(LearnTool.isReadOnly(parsed.data)).toBe(true)
+  })
 })

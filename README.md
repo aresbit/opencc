@@ -136,7 +136,7 @@ ChatWise SQLite DB (~/.config/app.chatwise/app.db)
 
 ## LearnTool：受控的自我改进工具
 
-`learn-tool`（注册名 `LearnTool`，源码 `src/tools/LearnTool/`）是一个"记录—验证—晋升—撤回"的自我改进闭环。设计原则对齐 Anthropic Institute 关于
+`learn-tool`（注册名 `LearnTool`，源码 `src/tools/LearnTool/`）是一个“记录—规划—验证—晋升—撤回”的自我改进闭环。它内置 CS329A 的生成—评估—筛选—训练框架，能规划 Memory/Reflexion、LoRA SFT、DPO、GRPO 与 DAPO，但不会自行修改模型权重。设计原则对齐 Anthropic Institute 关于
 [Recursive Self-Improvement](https://www.anthropic.com/institute/recursive-self-improvement) 的立场：跨会话生效的写入必须**有证据支撑**、**可审计**、**可逆**。
 
 ### 默认行为
@@ -146,7 +146,8 @@ ChatWise SQLite DB (~/.config/app.chatwise/app.db)
 | `promote_memory` 是否真写 | 写盘 | 默认直接晋升；准入闸是 `**Verified-By**` 证据，无真实证据的条目一律跳过。`dryRun: true` 可先预览 |
 | `onlyVerified` | 固定为 `true` | 仅为兼容旧调用保留；传 `false` 会被 schema 拒绝，准入闸不可关闭 |
 | 写入哪种 memory type | `project` | `feedback` 类型对未来会话的行为影响最大，需要显式指定 |
-| 「已验证」判定 | 严格 | 条目正文必须包含显式字段 `**Verified-By**: <evidence>`；`learn` 自动打上的占位符与各种否定写法一律拒绝 |
+| 「已验证」判定 | 严格 | 证据必须能归类到人工、测试、CI、benchmark 或独立 review；占位符、模糊文本和模型自证一律拒绝 |
+| 高影响 `feedback` 晋升 | 双通道 | 需要显式人工确认，或至少测试/CI/benchmark/review 中两个不同通道 |
 | `ingest_memory` 的 `topic` 参数 | 必填 | 不传会报错 |
 
 ### 状态目录
@@ -162,7 +163,7 @@ ChatWise SQLite DB (~/.config/app.chatwise/app.db)
 ```
 
 `.self_improving_promotions.log` 每行一条 JSON，字段：
-`{timestamp, entryId, sourceFile, contentSha, memoryType, savedMemoryId, gitHead}` —
+`{timestamp, entryId, sourceFile, contentSha, memoryType, savedMemoryId, gitHead, verificationChannels}` —
 这是后续 `demote_memory` 回滚的依据，也是 RSI 安全审计的"verifiable trail"。
 
 ### 日常使用姿势
@@ -184,6 +185,10 @@ learn-tool action=promote_memory dryRun=true
 # 5) 后悔了？按 entryId 撤回：
 learn-tool action=demote_memory entryId=LRN-20260606-001
 #    会删除从该条目 promote 出去的所有记忆文件，并在 promotions.log 留下反向记录
+
+# 6) 只规划训练，不修改模型权重：
+learn-tool action=plan_training trainingGoal=tool_use \
+  hasVerifiableReward=true longHorizon=true computeBudget=medium
 ```
 
 ### action 速查
@@ -192,6 +197,7 @@ learn-tool action=demote_memory entryId=LRN-20260606-001
 |--------|----------|------------|
 | `learn` | `.learnings/{LEARNINGS,ERRORS,FEATURE_REQUESTS}.md` | 无（除非后续 promote） |
 | `ingest_memory` | `.learnings/LEARNINGS.md` | 无（除非后续 promote） |
+| `plan_training` | 不写盘；返回方法、超参数、评估门和停止条件 | 无 |
 | `promote_memory` | `~/.claude/projects/<proj>/memory/*.md` + `MEMORY.md` + promotions.log | **有**（所有后续会话都会加载） |
 | `demote_memory` | 删除 memory 文件 + 追加反向 promotions.log | **有**（反向） |
 
@@ -203,7 +209,7 @@ learn-tool action=demote_memory entryId=LRN-20260606-001
 
 | 工具 | 注册名 | 说明 |
 |------|--------|------|
-| CodeActTool | `CodeAct` | 沙箱内八语言代码执行（TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme）；含函数式 Bash、OCaml 5 effects、Scheme continuations 能力提示，运行时探测及错误行号映射 |
+| CodeActTool | `CodeAct` | 沙箱内八语言代码执行（TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme）；内置 TS/Python/C++23 函数式控制库、函数式 Bash、OCaml 5 effects 与 Scheme continuations，支持运行时探测及错误行号映射 |
 | ActionTool | `Action` | 执行 `~/.claude/action/` 下可复用的 Actions 脚本 |
 | MythosTool | `mythos` | 六阶段深度研究：结构化 claim + 证据 + 对抗性验证，带运行完整性自检 |
 | AutoresearchTool | `autoresearch` | Karpathy 式自主迭代优化：改 → 验证 → keep/discard，可跑实验队列 |

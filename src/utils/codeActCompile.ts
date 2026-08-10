@@ -41,7 +41,13 @@ export async function compileCpp(
   outPath: string,
   signal?: AbortSignal,
 ): Promise<CompileResult> {
-  return compile(srcPath, outPath, 'g++', ['-Wall', '-O2', '-std=c++17'], signal)
+  return compile(
+    srcPath,
+    outPath,
+    'g++',
+    ['-Wall', '-Wextra', '-Wpedantic', '-O2', '-std=c++23'],
+    signal,
+  )
 }
 
 /** Compile one self-contained Rust source file without fetching crates. */

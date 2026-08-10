@@ -11,8 +11,8 @@
  */
 
 import { join } from 'path'
-import { mkdir, writeFile, access } from 'fs/promises'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdir, writeFile, readFile, access } from 'fs/promises'
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { getCodeActBaseDir } from './codeActBuiltins.js'
 
 function builtinsPyDir(): string {
@@ -274,6 +274,163 @@ def hostname():
 `
 }
 
+function pyFunctional(): string {
+  return `# CodeAct builtin: functional control and data composition (Python)
+from __future__ import annotations
+
+import inspect
+from dataclasses import dataclass
+from typing import Any, Callable, Generic, Iterable, Iterator, TypeVar, Union
+
+T = TypeVar('T')
+U = TypeVar('U')
+E = TypeVar('E')
+A = TypeVar('A')
+
+
+@dataclass(frozen=True)
+class Ok(Generic[T]):
+    value: T
+
+
+@dataclass(frozen=True)
+class Err(Generic[E]):
+    error: E
+
+
+Result = Union[Ok[T], Err[E]]
+
+
+def map_result(result: Result, f: Callable[[Any], U]) -> Result:
+    return Ok(f(result.value)) if isinstance(result, Ok) else result
+
+
+def bind_result(result: Result, f: Callable[[Any], Result]) -> Result:
+    return f(result.value) if isinstance(result, Ok) else result
+
+
+def map_error(result: Result, f: Callable[[Any], E]) -> Result:
+    return result if isinstance(result, Ok) else Err(f(result.error))
+
+
+def attempt(f: Callable[[], T]) -> Result:
+    try:
+        return Ok(f())
+    except Exception as error:
+        return Err(error)
+
+
+async def attempt_async(f: Callable[[], Any]) -> Result:
+    try:
+        value = f()
+        return Ok(await value if inspect.isawaitable(value) else value)
+    except Exception as error:
+        return Err(error)
+
+
+def pipe(value: Any, *functions: Callable[[Any], Any]) -> Any:
+    for function in functions:
+        value = function(value)
+    return value
+
+
+def compose(*functions: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    def composed(value: Any) -> Any:
+        for function in reversed(functions):
+            value = function(value)
+        return value
+    return composed
+
+
+async def async_pipe(value: Any, *functions: Callable[[Any], Any]) -> Any:
+    for function in functions:
+        value = function(value)
+        if inspect.isawaitable(value):
+            value = await value
+    return value
+
+
+def map_iter(source: Iterable[T], f: Callable[[T], U]) -> Iterator[U]:
+    for value in source:
+        yield f(value)
+
+
+def filter_iter(source: Iterable[T], predicate: Callable[[T], bool]) -> Iterator[T]:
+    for value in source:
+        if predicate(value):
+            yield value
+
+
+def take(source: Iterable[T], count: int) -> Iterator[T]:
+    if count <= 0:
+        return
+    for index, value in enumerate(source):
+        if index >= count:
+            return
+        yield value
+
+
+def fold(source: Iterable[T], initial: A, f: Callable[[A, T], A]) -> A:
+    accumulator = initial
+    for value in source:
+        accumulator = f(accumulator, value)
+    return accumulator
+
+
+def scan(source: Iterable[T], initial: A, f: Callable[[A, T], A]) -> Iterator[A]:
+    accumulator = initial
+    for value in source:
+        accumulator = f(accumulator, value)
+        yield accumulator
+
+
+@dataclass(frozen=True)
+class Done(Generic[T]):
+    value: T
+
+
+@dataclass(frozen=True)
+class Call(Generic[T]):
+    next: Callable[[], Union[Done[T], 'Call[T]']]
+
+
+def trampoline(bounce: Union[Done[T], Call[T]]) -> T:
+    current = bounce
+    while isinstance(current, Call):
+        current = current.next()
+    return current.value
+
+
+def bracket(
+    acquire: Callable[[], T],
+    use: Callable[[T], U],
+    release: Callable[[T], None],
+) -> U:
+    resource = acquire()
+    try:
+        return use(resource)
+    finally:
+        release(resource)
+
+
+async def async_bracket(
+    acquire: Callable[[], Any],
+    use: Callable[[Any], Any],
+    release: Callable[[Any], Any],
+) -> Any:
+    resource = acquire()
+    if inspect.isawaitable(resource):
+        resource = await resource
+    try:
+        value = use(resource)
+        return await value if inspect.isawaitable(value) else value
+    finally:
+        released = release(resource)
+        if inspect.isawaitable(released):
+            await released
+`
+}
+
 // ── Bootstrap ──────────────────────────────────────────────────────
 
 const PY_BUILTINS: Record<string, string> = {
@@ -283,9 +440,23 @@ const PY_BUILTINS: Record<string, string> = {
   'fetch.py': pyFetch(),
   'path.py': pyPath(),
   'os_info.py': pyOsInfo(),
+  'functional.py': pyFunctional(),
+}
+
+const PY_BUILTINS_VERSION = '3'
+
+function versionPath(dir: string): string {
+  return join(dir, '.version')
 }
 
 async function isFresh(dir: string): Promise<boolean> {
+  try {
+    if ((await readFile(versionPath(dir), 'utf-8')).trim() !== PY_BUILTINS_VERSION) {
+      return false
+    }
+  } catch {
+    return false
+  }
   for (const name of Object.keys(PY_BUILTINS)) {
     try {
       await access(join(dir, name))
@@ -307,6 +478,7 @@ export async function ensureCodeActBuiltinsPython(): Promise<string> {
       writeFile(join(dir, name), content, 'utf-8'),
     ),
   )
+  await writeFile(versionPath(dir), PY_BUILTINS_VERSION, 'utf-8')
   return dir
 }
 
@@ -314,11 +486,19 @@ export function ensureCodeActBuiltinsPythonSync(): string {
   const dir = builtinsPyDir()
   mkdirSync(dir, { recursive: true })
 
+  let stale = true
+  try {
+    stale = readFileSync(versionPath(dir), 'utf-8').trim() !== PY_BUILTINS_VERSION
+  } catch { /* missing version => stale */ }
+
   for (const [name, content] of Object.entries(PY_BUILTINS)) {
     const p = join(dir, name)
-    if (!existsSync(p)) {
+    if (stale || !existsSync(p)) {
       writeFileSync(p, content, 'utf-8')
     }
+  }
+  if (stale) {
+    writeFileSync(versionPath(dir), PY_BUILTINS_VERSION, 'utf-8')
   }
   return dir
 }

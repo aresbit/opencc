@@ -30,6 +30,11 @@ describe('CodeAct language adapters', () => {
       'dynamic-wind',
       'string/stream Lisp',
       'trampoline',
+      'discriminated unions',
+      'match/case',
+      'std::expected',
+      'ranges::views',
+      'scope_exit',
     ]) {
       expect(prompt).toContain(concept)
     }
@@ -61,6 +66,99 @@ describe('CodeAct language adapters', () => {
       { language: 'typescript' },
     )
     expect(result).toMatchObject({ success: true, stdout: '6', exitCode: 0 })
+  })
+
+  test('runs TypeScript Result, lazy iterables, bracket, and a trampoline', async () => {
+    const result = await executeCodeActCode(
+      `import { ok, flatMapResult, filterIterable, fold, call, done, trampoline, bracket, type Bounce } from './builtins/functional.js'
+
+const countdown = (n: number): Bounce<string> =>
+  n === 0 ? done('done') : call(() => countdown(n - 1))
+const answer = flatMapResult(ok(21), n => ok(n * 2))
+const total = fold(filterIterable([1, 2, 3, 4], n => n % 2 === 0), 0, (a, n) => a + n)
+const events: string[] = []
+const scoped = await bracket(
+  () => ({ value: 'resource' }),
+  resource => { events.push('use'); return resource.value },
+  () => { events.push('release') },
+)
+console.log(answer.ok ? answer.value : answer.error, total, trampoline(countdown(10_000)), scoped, events.join(','))`,
+      { language: 'typescript' },
+    )
+    expect(result).toMatchObject({
+      success: true,
+      stdout: '42 6 done resource use,release',
+      exitCode: 0,
+    })
+  })
+
+  test('runs Python Result matching, lazy iterators, bracket, and a trampoline', async () => {
+    const result = await executeCodeActCode(
+      `from builtins_py.functional import Ok, Err, bind_result, filter_iter, fold, Call, Done, trampoline, bracket
+
+def countdown(n):
+    return Done('done') if n == 0 else Call(lambda: countdown(n - 1))
+
+answer = bind_result(Ok(21), lambda n: Ok(n * 2))
+total = fold(filter_iter(range(1, 5), lambda n: n % 2 == 0), 0, lambda a, n: a + n)
+events = []
+scoped = bracket(
+    lambda: {'value': 'resource'},
+    lambda resource: (events.append('use'), resource['value'])[1],
+    lambda _resource: events.append('release'),
+)
+match answer:
+    case Ok(value): print(value, total, trampoline(countdown(10_000)), scoped, ','.join(events))
+    case Err(error): raise error`,
+      { language: 'python' },
+    )
+    expect(result).toMatchObject({
+      success: true,
+      stdout: '42 6 done resource use,release',
+      exitCode: 0,
+    })
+  })
+
+  test('runs modern C++23 ranges, expected, variant, RAII, and a trampoline', async () => {
+    const result = await executeCodeActCode(
+      `#include "builtins_c/functional.hpp"
+#include <functional>
+#include <ranges>
+#include <string>
+
+int main() {
+  auto values = std::views::iota(1, 11)
+      | std::views::filter([](int n) { return n % 2 == 0; })
+      | std::views::transform([](int n) { return n * n; });
+  codeact::Result<int> total = codeact::fold(values, 0, std::plus<>{});
+
+  std::variant<int, std::string> state = 7;
+  auto visited = std::visit(codeact::overloaded{
+    [](int value) { return value; },
+    [](const std::string& value) { return static_cast<int>(value.size()); },
+  }, state);
+
+  bool released = false;
+  { codeact::scope_exit release([&] { released = true; }); }
+
+  using Bounce = codeact::Bounce<std::string>;
+  std::function<Bounce(int)> countdown;
+  countdown = [&](int n) -> Bounce {
+    if (n == 0) return Bounce::done("done");
+    return Bounce::call([&, n] { return countdown(n - 1); });
+  };
+
+  if (!total) return 1;
+  std::cout << *total << ' ' << visited << ' ' << std::boolalpha << released
+            << ' ' << codeact::trampoline(countdown(10'000)) << '\\n';
+}`,
+      { language: 'cpp' },
+    )
+    expect(result).toMatchObject({
+      success: true,
+      stdout: '220 7 true done',
+      exitCode: 0,
+    })
   })
 
   test('preserves Python, C, and C++ adapters', async () => {

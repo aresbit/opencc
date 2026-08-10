@@ -28,10 +28,11 @@ CodeAct 是一个**通用代码执行工具**，允许模型编写并执行 Type
 
 | 语言 | 运行时 | 内置库 |
 |------|--------|--------|
-| TypeScript | bun run | `fs.ts` (readFile/writeFile/mkdir/rm/exists/readdir), `shell.ts` (exec/$), `fetch.ts` (fetch/fetchJSON), `path.ts`, `os.ts` |
-| Python | python3 | `fs.py`, `shell.py`, `fetch.py`, `path.py`, `os_info.py` |
+| TypeScript | bun run | `fs.ts`、`shell.ts`、`fetch.ts`、`path.ts`、`os.ts`；`functional.ts`（Result/Option、组合、惰性迭代、bracket、trampoline） |
+| Python | python3 | `fs.py`、`shell.py`、`fetch.py`、`path.py`、`os_info.py`；`functional.py`（Result、组合、generator、bracket、trampoline） |
 | Bash | bash | `bash.sh`（文件、argv 命令、函数式流、资源作用域、trampoline） |
-| C/C++ | gcc/g++ | `fs.h`, `shell.h` 头文件形式 |
+| C | gcc | `fs.h`、`shell.h` 头文件形式 |
+| C++ | C++23-capable g++/clang++ | C 头文件；`functional.hpp`（expected、ranges 辅助、variant visitor、RAII、trampoline、fix point） |
 | Rust | rustc, edition 2024 | `codeact.rs`（workspace、文件、argv 子进程） |
 | OCaml | ocamlopt/ocamlc | `Codeact` 模块（资源保护、文件、Unix 子进程） |
 | Scheme | Guile 3 | `codeact.scm`（文件、fold、trampoline） |
@@ -63,12 +64,27 @@ exit 127 和安装提示，不会让模型对同一不可用命令反复试错�
 | **python** | 数据分析、量化交易、ML/NumPy、统计 |
 | **bash** | 简单自动化、shell 管道 |
 | **c** | 性能关键计算、FFI、数值内核 |
-| **cpp** | 性能关键 + STL、回测引擎、仿真 |
+| **cpp** | C++23 零成本 ranges、`variant`/`expected` 状态机、RAII、回测与仿真 |
 | **rust** | 所有权安全、Result/Iterator、显式状态机、Future |
 | **ocaml** | 代数数据类型、模块、尾递归、OCaml 5 效应处理器 |
 | **scheme** | 符号计算、卫生宏、proper tail calls、call/cc |
 
 ### 1.6 高级控制结构映射
+
+CodeAct 不把“函数式”绑定到某一种语法。TypeScript、Python 和现代 C++ 同样可以承载
+代数数据类型、组合式错误处理、惰性数据流、资源作用域与显式续延；差别主要在运行时成本、
+类型约束和生态接口。
+
+| 控制问题 | TypeScript | Python | C++23 |
+|---|---|---|---|
+| 可恢复失败 | discriminated union `Result` | frozen dataclass `Ok`/`Err` + `match` | `std::expected` |
+| 惰性变换 | generator / `Iterable` | iterator / generator | `std::ranges::views` |
+| 数据化控制状态 | tagged union + exhaustive `never` | dataclass union + `match/case` | `std::variant` + `std::visit` |
+| 资源作用域 | async `bracket` | context manager / async `bracket` | RAII / `scope_exit` |
+| 栈安全递归 | `Bounce` + `trampoline` | `Call`/`Done` + `trampoline` | `Bounce<T>` + `trampoline` |
+
+三套 `functional` builtins 提供相似的最小词汇，而不是笨重框架。模型可先将失败、状态和资源
+生命周期显式数据化，再用 `map`/`bind`/`fold`/模式匹配组合；只有副作用边界才执行 I/O。
 
 | 控制问题 | Rust | OCaml | Scheme | Bash |
 |---|---|---|---|---|
@@ -153,11 +169,14 @@ ActionTool ───┘
 |------|------|
 | `src/tools/CodeActTool/CodeActTool.ts` | CodeAct 工具定义 |
 | `src/tools/CodeActTool/prompt.ts` | 系统提示词生成 |
-| `src/tools/CodeActTool/controlStructures.ts` | Rust/OCaml/Scheme/Bash 高级控制结构知识卡 |
+| `src/tools/CodeActTool/controlStructures.ts` | 八语言高级控制结构与函数式宿主知识卡 |
 | `src/tools/ActionTool/ActionTool.ts` | Action 工具定义 |
 | `src/tools/ActionTool/prompt.ts` | Action 提示词 (动态列出可用 Actions) |
 | `src/utils/codeActSandbox.ts` | 沙箱执行引擎 (两者共用) |
 | `src/utils/codeActLanguageAdapters.ts` | 八种语言的 runtime/compile/bootstrap 注册表 |
+| `src/utils/codeActBuiltins.ts` | TypeScript builtins（含 `functional.ts`） |
+| `src/utils/codeActBuiltins_py.ts` | Python builtins（含版本化 `functional.py`） |
+| `src/utils/codeActBuiltins_c.ts` | C/C++ builtins（含 C++23 `functional.hpp`） |
 | `src/utils/codeActRuntime.ts` | 不经 shell 的 PATH 工具链探测 |
 | `src/utils/loadActionsDir.ts` | Action 发现与 YAML 解析 |
 | `src/utils/executeAction.ts` | Action 执行引擎 |

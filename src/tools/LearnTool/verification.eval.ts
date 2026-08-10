@@ -66,9 +66,21 @@ const CASES: Case[] = [
   },
   {
     group: 'evidence',
-    label: 'evidence that merely contains a negation word is not rejected',
+    label: 'unattributed prose is not independent evidence',
     body: stamp('confirmed none of the 12 corpus cases regress'),
+    want: false,
+  },
+  {
+    group: 'evidence',
+    label: 'a benchmark comparison',
+    body: stamp('benchmark score improved from 0.71 to 0.78'),
     want: true,
+  },
+  {
+    group: 'evidence',
+    label: 'model self-certification is rejected',
+    body: stamp('model self-verified after reading its answer'),
+    want: false,
   },
 ]
 

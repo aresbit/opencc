@@ -9,8 +9,8 @@
  */
 
 import { join } from 'path'
-import { mkdir, writeFile, access } from 'fs/promises'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { mkdir, writeFile, readFile, access } from 'fs/promises'
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { getCodeActBaseDir } from './codeActBuiltins.js'
 
 function builtinsCDir(): string {
@@ -147,12 +147,188 @@ static char* shell_exec(const char *cmd, int *exit_code) {
 `
 }
 
+function cppFunctionalHeader(): string {
+  return `/* CodeAct builtin: functional control and data composition (C++23) */
+#ifndef CODEACT_FUNCTIONAL_HPP
+#define CODEACT_FUNCTIONAL_HPP
+
+#include <algorithm>
+#include <concepts>
+#include <exception>
+#include <expected>
+#include <functional>
+#include <iterator>
+#include <ranges>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace codeact {
+
+template<class T, class E = std::string>
+using Result = std::expected<T, E>;
+
+template<class T, class E, class F>
+auto map_result(std::expected<T, E> result, F&& function)
+    -> std::expected<std::invoke_result_t<F, T>, E> {
+    using U = std::invoke_result_t<F, T>;
+    if (!result) return std::unexpected(std::move(result.error()));
+    if constexpr (std::is_void_v<U>) {
+        std::invoke(std::forward<F>(function), std::move(*result));
+        return {};
+    } else {
+        return std::expected<U, E>(std::invoke(std::forward<F>(function), std::move(*result)));
+    }
+}
+
+template<class T, class E, class F>
+auto bind_result(std::expected<T, E> result, F&& function)
+    -> std::invoke_result_t<F, T> {
+    using R = std::invoke_result_t<F, T>;
+    if (!result) return R(std::unexpected(std::move(result.error())));
+    return std::invoke(std::forward<F>(function), std::move(*result));
+}
+
+template<class F>
+auto attempt(F&& function)
+    -> std::expected<std::invoke_result_t<F>, std::string> {
+    using T = std::invoke_result_t<F>;
+    try {
+        if constexpr (std::is_void_v<T>) {
+            std::invoke(std::forward<F>(function));
+            return {};
+        } else {
+            return std::expected<T, std::string>(std::invoke(std::forward<F>(function)));
+        }
+    } catch (const std::exception& error) {
+        return std::unexpected(std::string(error.what()));
+    } catch (...) {
+        return std::unexpected(std::string("unknown exception"));
+    }
+}
+
+template<class T>
+auto pipe(T&& value) -> std::decay_t<T> {
+    return std::forward<T>(value);
+}
+
+template<class T, class F, class... Fs>
+auto pipe(T&& value, F&& function, Fs&&... rest) {
+    return pipe(
+        std::invoke(std::forward<F>(function), std::forward<T>(value)),
+        std::forward<Fs>(rest)...
+    );
+}
+
+template<std::ranges::input_range Range>
+auto to_vector(Range&& range) {
+    using Value = std::ranges::range_value_t<Range>;
+    std::vector<Value> output;
+    if constexpr (std::ranges::sized_range<Range>) {
+        output.reserve(static_cast<std::size_t>(std::ranges::size(range)));
+    }
+    std::ranges::copy(range, std::back_inserter(output));
+    return output;
+}
+
+template<std::ranges::input_range Range, class Accumulator, class F>
+auto fold(Range&& range, Accumulator initial, F&& function) -> Accumulator {
+    for (auto&& value : range) {
+        initial = std::invoke(
+            function,
+            std::move(initial),
+            std::forward<decltype(value)>(value)
+        );
+    }
+    return initial;
+}
+
+template<class... Functions>
+struct overloaded : Functions... {
+    using Functions::operator()...;
+};
+template<class... Functions>
+overloaded(Functions...) -> overloaded<Functions...>;
+
+template<class F>
+class scope_exit {
+public:
+    explicit scope_exit(F function)
+        : function_(std::move(function)), active_(true) {}
+    scope_exit(const scope_exit&) = delete;
+    scope_exit& operator=(const scope_exit&) = delete;
+    scope_exit(scope_exit&& other) noexcept(std::is_nothrow_move_constructible_v<F>)
+        : function_(std::move(other.function_)), active_(std::exchange(other.active_, false)) {}
+    ~scope_exit() noexcept(noexcept(std::declval<F&>()())) {
+        if (active_) function_();
+    }
+    void release() noexcept { active_ = false; }
+
+private:
+    F function_;
+    bool active_;
+};
+
+template<class F>
+scope_exit(F) -> scope_exit<F>;
+
+template<class T>
+class Bounce {
+public:
+    using Next = std::function<Bounce<T>()>;
+
+    static Bounce done(T value) { return Bounce(std::move(value)); }
+    static Bounce call(Next next) { return Bounce(std::move(next)); }
+
+    bool is_done() const noexcept { return std::holds_alternative<T>(state_); }
+    T take_value() { return std::move(std::get<T>(state_)); }
+    Bounce resume() { return std::get<Next>(state_)(); }
+
+private:
+    explicit Bounce(T value) : state_(std::move(value)) {}
+    explicit Bounce(Next next) : state_(std::move(next)) {}
+    std::variant<T, Next> state_;
+};
+
+template<class T>
+T trampoline(Bounce<T> bounce) {
+    while (!bounce.is_done()) bounce = bounce.resume();
+    return bounce.take_value();
+}
+
+template<class F>
+class fix_point {
+public:
+    explicit fix_point(F function) : function_(std::move(function)) {}
+
+    template<class... Args>
+    decltype(auto) operator()(Args&&... args) const {
+        return function_(*this, std::forward<Args>(args)...);
+    }
+
+private:
+    F function_;
+};
+
+template<class F>
+auto fix(F&& function) {
+    return fix_point<std::decay_t<F>>(std::forward<F>(function));
+}
+
+} // namespace codeact
+
+#endif /* CODEACT_FUNCTIONAL_HPP */
+`
+}
+
 function cMakefile(): string {
   return `# Auto-generated Makefile for CodeAct C/C++ sandbox
 CC = gcc
 CXX = g++
 CFLAGS = -Wall -Wextra -O2 -I.
-CXXFLAGS = -Wall -Wextra -O2 -I.
+CXXFLAGS = -Wall -Wextra -Wpedantic -O2 -std=c++23 -I.
 LDFLAGS =
 
 .PHONY: all clean
@@ -175,20 +351,47 @@ clean:
 const C_BUILTINS: Record<string, string> = {
   'fs.h': cFsHeader(),
   'shell.h': cShellHeader(),
+  'functional.hpp': cppFunctionalHeader(),
   'Makefile': cMakefile(),
+}
+
+// Rewrite the shared cache when generated headers or compiler defaults change.
+const C_BUILTINS_VERSION = '2'
+
+function versionPath(dir: string): string {
+  return join(dir, '.version')
+}
+
+async function isFresh(dir: string): Promise<boolean> {
+  try {
+    if ((await readFile(versionPath(dir), 'utf-8')).trim() !== C_BUILTINS_VERSION) {
+      return false
+    }
+  } catch {
+    return false
+  }
+  for (const name of Object.keys(C_BUILTINS)) {
+    try {
+      await access(join(dir, name))
+    } catch {
+      return false
+    }
+  }
+  return true
 }
 
 export async function ensureCodeActBuiltinsC(): Promise<string> {
   const dir = builtinsCDir()
   await mkdir(dir, { recursive: true })
 
-  for (const [name, content] of Object.entries(C_BUILTINS)) {
-    try {
-      await access(join(dir, name))
-    } catch {
-      await writeFile(join(dir, name), content, 'utf-8')
-    }
-  }
+  if (await isFresh(dir)) return dir
+
+  await Promise.all(
+    Object.entries(C_BUILTINS).map(([name, content]) =>
+      writeFile(join(dir, name), content, 'utf-8'),
+    ),
+  )
+  await writeFile(versionPath(dir), C_BUILTINS_VERSION, 'utf-8')
   return dir
 }
 
@@ -196,11 +399,19 @@ export function ensureCodeActBuiltinsCSync(): string {
   const dir = builtinsCDir()
   mkdirSync(dir, { recursive: true })
 
+  let stale = true
+  try {
+    stale = readFileSync(versionPath(dir), 'utf-8').trim() !== C_BUILTINS_VERSION
+  } catch { /* missing version => stale */ }
+
   for (const [name, content] of Object.entries(C_BUILTINS)) {
     const p = join(dir, name)
-    if (!existsSync(p)) {
+    if (stale || !existsSync(p)) {
       writeFileSync(p, content, 'utf-8')
     }
+  }
+  if (stale) {
+    writeFileSync(versionPath(dir), C_BUILTINS_VERSION, 'utf-8')
   }
   return dir
 }

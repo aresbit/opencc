@@ -8,9 +8,16 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { DESCRIPTION, getLearnToolPrompt } from './prompt.js'
 import {
-  isVerifiedEffective as isVerifiedBody,
+  isVerifiedForPromotion,
+  type VerificationChannel,
   VERIFIED_PLACEHOLDER,
 } from './verification.js'
+import {
+  buildRsiTrainingPlan,
+  RSI_COMPUTE_BUDGETS,
+  RSI_TRAINING_GOALS,
+  RSI_TRAINING_METHODS,
+} from './rsiTrainingPlanner.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { MemoryStore } from '../MemoryTool/MemoryStore.js'
 import { MEMORY_TYPES, type MemoryType } from '../../memdir/memoryTypes.js'
@@ -25,11 +32,12 @@ const inputSchema = lazySchema(() =>
       .enum([
         'learn',
         'ingest_memory',
+        'plan_training',
         'promote_memory',
         'demote_memory',
       ])
       .describe(
-        'learn logs a learning/error/feature-request entry to .learnings/; ingest_memory converts existing memory markdown into structured learnings; promote_memory promotes verified learnings into long-term memory (entries without real Verified-By evidence are skipped); demote_memory reverses a previous promotion by entry id.',
+        'learn logs a learning/error/feature-request entry to .learnings/; ingest_memory converts existing memory markdown into structured learnings; plan_training selects memory/SFT/DPO/GRPO/DAPO and returns starting parameters without changing model weights; promote_memory promotes verified learnings into long-term memory; demote_memory reverses a previous promotion by entry id.',
       ),
     sourceAction: z
       .string()
@@ -64,6 +72,40 @@ const inputSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('Used by action=ingest_memory: topic filter (default: cdp).'),
+    trainingGoal: z
+      .enum(RSI_TRAINING_GOALS)
+      .optional()
+      .describe('Used by action=plan_training: capability being adapted.'),
+    trainingMethod: z
+      .enum(RSI_TRAINING_METHODS)
+      .optional()
+      .describe('Used by action=plan_training: method override (default: auto).'),
+    datasetSize: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('Used by action=plan_training: approximate number of clean examples or pairs.'),
+    hasDemonstrations: z
+      .boolean()
+      .optional()
+      .describe('Used by action=plan_training: whether clean target demonstrations exist.'),
+    hasPreferencePairs: z
+      .boolean()
+      .optional()
+      .describe('Used by action=plan_training: whether independent chosen/rejected pairs exist.'),
+    hasVerifiableReward: z
+      .boolean()
+      .optional()
+      .describe('Used by action=plan_training: whether an objective executable reward exists.'),
+    longHorizon: z
+      .boolean()
+      .optional()
+      .describe('Used by action=plan_training: whether trajectories are long enough to need DAPO-style controls.'),
+    computeBudget: z
+      .enum(RSI_COMPUTE_BUDGETS)
+      .optional()
+      .describe('Used by action=plan_training: rollout/training budget (default: medium).'),
     sourceFilePath: z
       .string()
       .optional()
@@ -112,7 +154,13 @@ type Trend = 'improving' | 'stable' | 'degrading'
 const outputSchema = lazySchema(() =>
   z.object({
     success: z.boolean(),
-    action: z.enum(['learn', 'ingest_memory', 'promote_memory', 'demote_memory']),
+    action: z.enum([
+      'learn',
+      'ingest_memory',
+      'plan_training',
+      'promote_memory',
+      'demote_memory',
+    ]),
     summary: z.string(),
     projectRoot: z.string(),
     filesCreated: z.array(z.string()).optional(),
@@ -123,6 +171,33 @@ const outputSchema = lazySchema(() =>
     skippedCount: z.number().optional(),
     dryRunPreview: z.array(z.string()).optional(),
     promotionLogPath: z.string().optional(),
+    promotionDecisions: z
+      .array(
+        z.object({
+          entryId: z.string(),
+          eligible: z.boolean(),
+          channels: z.array(z.enum(['human', 'test', 'ci', 'benchmark', 'review'])),
+          reason: z.string(),
+        }),
+      )
+      .optional(),
+    trainingPlan: z
+      .object({
+        method: z.enum(['memory_reflexion', 'lora_sft', 'dpo', 'grpo', 'dapo']),
+        rationale: z.string(),
+        hyperparameters: z.array(
+          z.object({
+            name: z.string(),
+            value: z.string(),
+            rationale: z.string(),
+          }),
+        ),
+        pipeline: z.array(z.string()),
+        evaluationGates: z.array(z.string()),
+        stopConditions: z.array(z.string()),
+        warnings: z.array(z.string()),
+      })
+      .optional(),
   }),
 )
 
@@ -153,6 +228,7 @@ interface PromotionLogEntry {
   memoryType: MemoryType
   savedMemoryId: string
   gitHead?: string
+  verificationChannels?: VerificationChannel[]
 }
 
 type LearningKind = NonNullable<Input['learningType']>
@@ -531,6 +607,36 @@ async function runIngestMemory(projectRoot: string, input: Input): Promise<Outpu
   }
 }
 
+function runPlanTraining(projectRoot: string, input: Input): Output {
+  if (!input.trainingGoal) {
+    return {
+      success: false,
+      action: 'plan_training',
+      projectRoot,
+      summary: 'action=plan_training requires trainingGoal.',
+    }
+  }
+
+  const trainingPlan = buildRsiTrainingPlan({
+    goal: input.trainingGoal,
+    method: input.trainingMethod,
+    datasetSize: input.datasetSize,
+    hasDemonstrations: input.hasDemonstrations,
+    hasPreferencePairs: input.hasPreferencePairs,
+    hasVerifiableReward: input.hasVerifiableReward,
+    longHorizon: input.longHorizon,
+    computeBudget: input.computeBudget,
+  })
+
+  return {
+    success: true,
+    action: 'plan_training',
+    projectRoot,
+    summary: `Recommended ${trainingPlan.method} for goal=${input.trainingGoal}; this is a plan only and does not modify model weights.`,
+    trainingPlan,
+  }
+}
+
 function parseLearningEntries(content: string): LearningEntry[] {
   const headingRegex = /^## \[([^\]]+)\]\s+(.+)$/gm
   const matches = Array.from(content.matchAll(headingRegex))
@@ -557,23 +663,6 @@ function parseLearningEntries(content: string): LearningEntry[] {
     })
   }
   return out
-}
-
-/**
- * Strict verification: an entry only counts as verified if it carries an
- * explicit `**Verified-By**: <evidence>` block in the body. The previous
- * keyword-regex heuristic was trivially fooled because the model both writes
- * the entry AND decides whether to promote it — a textbook RSI failure mode
- * (Anthropic 2026-05: "misalignment present in today's models could compound
- * as the models build their successors").
- *
- * Accepted forms (evidence must be a non-empty phrase):
- *   **Verified-By**: user
- *   **Verified-By**: 3 passing runs in CI
- *   **Verified-By**: regression test tests/foo.test.ts
- */
-function isVerifiedEffective(entry: LearningEntry): boolean {
-  return isVerifiedBody(entry.body)
 }
 
 function normalizeTitle(text: string): string {
@@ -644,11 +733,22 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
   let promotedCount = 0
   let skippedCount = 0
   const dryRunPreview: string[] = []
+  const promotionDecisions: NonNullable<Output['promotionDecisions']> = []
 
   for (const entry of entries) {
     if (promotedCount >= maxEntries) break
-    if (!isVerifiedEffective(entry)) {
+    const verification = isVerifiedForPromotion(
+      entry.body,
+      memoryType === 'feedback',
+    )
+    if (!verification.effective) {
       skippedCount += 1
+      promotionDecisions.push({
+        entryId: entry.id,
+        eligible: false,
+        channels: verification.channels,
+        reason: verification.reason,
+      })
       continue
     }
 
@@ -665,6 +765,8 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
       '',
       `Source File: ${sourcePath}`,
       'Source: learn-tool promote_memory',
+      `Verified By: ${verification.evidence}`,
+      `Verification Channels: ${verification.channels.join(', ')}`,
       gitHead ? `Source Git HEAD: ${gitHead}` : '',
     ]
       .filter(Boolean)
@@ -677,10 +779,22 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
     // Anthropic article warns about.
     if (promotedContentShas.has(contentSha)) {
       skippedCount += 1
+      promotionDecisions.push({
+        entryId: entry.id,
+        eligible: false,
+        channels: verification.channels,
+        reason: 'duplicate promotion content hash',
+      })
       continue
     }
     if (await hasDuplicateMemory(store, memoryType, entry)) {
       skippedCount += 1
+      promotionDecisions.push({
+        entryId: entry.id,
+        eligible: false,
+        channels: verification.channels,
+        reason: 'duplicate memory id or title',
+      })
       continue
     }
 
@@ -702,9 +816,16 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
         memoryType,
         savedMemoryId: saved.id,
         gitHead,
+        verificationChannels: verification.channels,
       })
       promotedContentShas.add(contentSha)
     }
+    promotionDecisions.push({
+      entryId: entry.id,
+      eligible: true,
+      channels: verification.channels,
+      reason: verification.reason,
+    })
     promotedCount += 1
   }
 
@@ -721,6 +842,7 @@ async function runPromoteMemory(projectRoot: string, input: Input): Promise<Outp
     skippedCount,
     dryRunPreview: dryRun ? dryRunPreview : undefined,
     promotionLogPath: dryRun ? undefined : promotionLogPath,
+    promotionDecisions,
   }
 }
 
@@ -807,8 +929,8 @@ export const LearnTool = buildTool({
   isConcurrencySafe() {
     return false
   },
-  isReadOnly() {
-    return false
+  isReadOnly(input) {
+    return input.action === 'plan_training'
   },
   toAutoClassifierInput(input) {
     return input.action
@@ -821,6 +943,8 @@ export const LearnTool = buildTool({
         return { data: await runLearn(projectRoot, input) }
       case 'ingest_memory':
         return { data: await runIngestMemory(projectRoot, input) }
+      case 'plan_training':
+        return { data: runPlanTraining(projectRoot, input) }
       case 'promote_memory':
         return { data: await runPromoteMemory(projectRoot, input) }
       case 'demote_memory':
@@ -858,6 +982,41 @@ export const LearnTool = buildTool({
     }
     if (output.promotionLogPath) {
       lines.push(`Promotion Log: ${output.promotionLogPath}`)
+    }
+    if (output.trainingPlan) {
+      lines.push(`Method: ${output.trainingPlan.method}`)
+      lines.push(`Rationale: ${output.trainingPlan.rationale}`)
+      lines.push('Starting parameters:')
+      for (const parameter of output.trainingPlan.hyperparameters) {
+        lines.push(`- ${parameter.name}=${parameter.value} — ${parameter.rationale}`)
+      }
+      lines.push('Pipeline:')
+      for (const step of output.trainingPlan.pipeline) {
+        lines.push(`- ${step}`)
+      }
+      lines.push('Evaluation gates:')
+      for (const gate of output.trainingPlan.evaluationGates) {
+        lines.push(`- ${gate}`)
+      }
+      lines.push('Stop conditions:')
+      for (const condition of output.trainingPlan.stopConditions) {
+        lines.push(`- ${condition}`)
+      }
+      if (output.trainingPlan.warnings.length > 0) {
+        lines.push('Warnings:')
+        for (const warning of output.trainingPlan.warnings) {
+          lines.push(`- ${warning}`)
+        }
+      }
+    }
+    if (output.promotionDecisions?.length) {
+      lines.push('Promotion decisions:')
+      for (const decision of output.promotionDecisions.slice(0, 10)) {
+        const channels = decision.channels.join(', ') || 'none'
+        lines.push(
+          `- ${decision.entryId}: ${decision.eligible ? 'eligible' : 'rejected'} (${channels}) — ${decision.reason}`,
+        )
+      }
     }
     if (output.dryRunPreview?.length) {
       lines.push('DryRun Preview:')

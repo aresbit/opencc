@@ -13,8 +13,10 @@
  * to notice the condition mid-task without deliberating about it.
  */
 
+import { RSI_TRAINING_KNOWLEDGE_CARD } from './rsiTrainingPlanner.js'
+
 export const DESCRIPTION =
-  'Capture durable lessons from this session and promote the verified ones into long-term memory. Use when the user corrects you, when the same failure recurs, or when you discover something non-obvious that would save time next session.'
+  'Capture durable lessons, plan evidence-driven memory/SFT/DPO/GRPO/DAPO adaptation, and promote independently verified lessons into long-term memory.'
 
 export function getLearnToolPrompt(): string {
   return `## learn-tool — carry lessons across sessions
@@ -60,7 +62,7 @@ it and log that instead — the surprise is the part worth keeping.
 
 \`\`\`
 learn-tool action="learn"
-  learningType="learning" | "error" | "feature"
+  learningType="correction" | "insight" | "knowledge_gap" | "best_practice" | "error" | "feature_request"
   title="<one line>"
   details="<what happened, why it matters, how to apply it next time>"
 \`\`\`
@@ -75,15 +77,18 @@ evidence.
 later session. It writes by default — the admission control is not a
 confirmation flag, it is the \`**Verified-By**\` line:
 
-1. A human replaces the placeholder with real evidence — a test name, a CI run,
-   an explicit confirmation. **This is the human's step, and you cannot do it
-   for them.** Writing your own evidence into an entry you also wrote defeats
-   the entire mechanism.
-2. \`learn-tool action="promote_memory"\` promotes every entry that carries real
+1. A human replaces the placeholder with attributable evidence — a passing
+   regression test, a successful CI run, a benchmark comparison, an independent
+   review, or explicit user confirmation. Vague phrases and model
+   self-certification are rejected.
+2. High-impact \`memoryType="feedback"\` requires explicit human confirmation or
+   at least two different verifier channels. One judge cannot certify a
+   steering rule that affects every future session.
+3. \`learn-tool action="promote_memory"\` promotes every entry that carries real
    evidence and skips the rest, reporting both counts.
-3. \`dryRun: true\` previews without writing, when you want to show the user what
+4. \`dryRun: true\` previews without writing, when you want to show the user what
    would be promoted before doing it.
-4. \`action: "demote_memory" entryId="LRN-…"\` reverses a promotion, and the
+5. \`action: "demote_memory" entryId="LRN-…"\` reverses a promotion, and the
    reversal is itself logged.
 
 So the honest sequence is: log the entry, tell the user what evidence would
@@ -97,5 +102,13 @@ hash and the git HEAD, so any promotion can be traced and undone later.
 
 \`action: "ingest_memory"\` converts existing memory markdown into structured
 learnings; it requires an explicit \`topic\`.
+
+Use \`action: "plan_training"\` when deciding whether an observed gap belongs
+in memory or warrants SFT/DPO/GRPO/DAPO. Supply \`trainingGoal\` and the available
+evidence/data fields. This action is read-only: it returns a method, starting
+hyperparameters, evaluation gates, stop conditions, and warnings; it never
+changes model weights.
+
+${RSI_TRAINING_KNOWLEDGE_CARD}
 `
 }

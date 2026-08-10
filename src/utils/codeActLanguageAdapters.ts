@@ -54,12 +54,16 @@ export interface CodeActLanguageAdapter {
 
 const TYPESCRIPT_HINT = `// ── Agent CodeAct sandbox (TypeScript) ──
 // import filesystem helpers from './builtins/fs.js' and shell helpers from './builtins/shell.js'.
+// import Result/Option, lazy iterables, pipe/trampoline/bracket from './builtins/functional.js'.
+// Prefer discriminated unions and exhaustive never checks for explicit control states.
 // Treat stdout as the result channel; keep intermediate values inside this process.
 
 `
 
 const PYTHON_HINT = `# ── Agent CodeAct sandbox (Python) ──
 # Import helpers from builtins_py.fs, builtins_py.shell, builtins_py.fetch, and builtins_py.path.
+# Import Ok/Err, generators, pipe/trampoline/bracket from builtins_py.functional.
+# Prefer iterators/generators, dataclass unions, match/case, and context managers.
 # Treat stdout as the result channel; call print() for the final value.
 
 `
@@ -80,8 +84,11 @@ const C_HINT = `/* ── Agent CodeAct sandbox (C) ──
 #include <stdlib.h>
 `
 
-const CPP_HINT = `/* ── Agent CodeAct sandbox (C++) ──
- * #include "builtins_c/fs.h" or "builtins_c/shell.h" for helpers.
+const CPP_HINT = `/* ── Agent CodeAct sandbox (modern C++23) ──
+ * #include "builtins_c/functional.hpp" for expected, pipe, ranges helpers,
+ * overloaded variant matching, scope_exit, fix, and stack-safe trampoline.
+ * #include "builtins_c/fs.h" or "builtins_c/shell.h" for effects.
+ * Prefer std::expected, std::variant/visit, ranges/views, RAII, and value semantics.
  * Print the final result and return a non-zero status on failure.
  */
 #include <iostream>
@@ -136,7 +143,7 @@ const ADAPTERS: Record<CodeActLanguage, CodeActLanguageAdapter> = {
   cpp: {
     id: 'cpp', extension: '.cpp', importHint: CPP_HINT,
     builtinsDir: 'builtins_c', ensureBuiltins: ensureCodeActBuiltinsCSync,
-    runtimeCandidates: ['g++'], installHint: 'Install G++.', compile: compileCpp,
+    runtimeCandidates: ['g++'], installHint: 'Install a C++23-capable G++/Clang++ toolchain.', compile: compileCpp,
   },
   rust: {
     id: 'rust', extension: '.rs', importHint: RUST_HINT,

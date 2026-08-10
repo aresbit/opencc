@@ -313,12 +313,142 @@ export function chdir(dir: string): void {
 `
 }
 
+function functionalBuiltin(): string {
+  return `// CodeAct builtin: functional control and data composition
+
+export type Result<T, E = Error> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: E }
+
+export const ok = <T>(value: T): Result<T, never> => ({ ok: true, value })
+export const err = <E>(error: E): Result<never, E> => ({ ok: false, error })
+
+export function mapResult<T, U, E>(result: Result<T, E>, f: (value: T) => U): Result<U, E> {
+  return result.ok ? ok(f(result.value)) : result
+}
+
+export function flatMapResult<T, U, E, F>(
+  result: Result<T, E>,
+  f: (value: T) => Result<U, F>,
+): Result<U, E | F> {
+  return result.ok ? f(result.value) : result
+}
+
+export function mapError<T, E, F>(result: Result<T, E>, f: (error: E) => F): Result<T, F> {
+  return result.ok ? result : err(f(result.error))
+}
+
+export function attempt<T>(f: () => T): Result<T, Error> {
+  try {
+    return ok(f())
+  } catch (error) {
+    return err(error instanceof Error ? error : new Error(String(error)))
+  }
+}
+
+export async function attemptAsync<T>(f: () => Promise<T>): Promise<Result<T, Error>> {
+  try {
+    return ok(await f())
+  } catch (error) {
+    return err(error instanceof Error ? error : new Error(String(error)))
+  }
+}
+
+export type Option<T> =
+  | { readonly some: true; readonly value: T }
+  | { readonly some: false }
+
+export const some = <T>(value: T): Option<T> => ({ some: true, value })
+export const none: Option<never> = Object.freeze({ some: false })
+
+export function fromNullable<T>(value: T | null | undefined): Option<NonNullable<T>> {
+  return value == null ? none : some(value as NonNullable<T>)
+}
+
+export function mapOption<T, U>(option: Option<T>, f: (value: T) => U): Option<U> {
+  return option.some ? some(f(option.value)) : none
+}
+
+export function pipe<A>(value: A): A
+export function pipe<A, B>(value: A, ab: (value: A) => B): B
+export function pipe<A, B, C>(value: A, ab: (value: A) => B, bc: (value: B) => C): C
+export function pipe<A, B, C, D>(value: A, ab: (value: A) => B, bc: (value: B) => C, cd: (value: C) => D): D
+export function pipe(value: unknown, ...functions: Array<(value: any) => any>): unknown {
+  return functions.reduce((current, f) => f(current), value)
+}
+
+export function compose(...functions: Array<(value: any) => any>) {
+  return (value: unknown): unknown => functions.reduceRight((current, f) => f(current), value)
+}
+
+export function* mapIterable<T, U>(source: Iterable<T>, f: (value: T, index: number) => U): Generator<U> {
+  let index = 0
+  for (const value of source) yield f(value, index++)
+}
+
+export function* filterIterable<T>(source: Iterable<T>, predicate: (value: T, index: number) => boolean): Generator<T> {
+  let index = 0
+  for (const value of source) if (predicate(value, index++)) yield value
+}
+
+export function* take<T>(source: Iterable<T>, count: number): Generator<T> {
+  if (count <= 0) return
+  let seen = 0
+  for (const value of source) {
+    yield value
+    if (++seen >= count) return
+  }
+}
+
+export function fold<T, A>(source: Iterable<T>, initial: A, f: (accumulator: A, value: T) => A): A {
+  let accumulator = initial
+  for (const value of source) accumulator = f(accumulator, value)
+  return accumulator
+}
+
+export function* scan<T, A>(source: Iterable<T>, initial: A, f: (accumulator: A, value: T) => A): Generator<A> {
+  let accumulator = initial
+  for (const value of source) {
+    accumulator = f(accumulator, value)
+    yield accumulator
+  }
+}
+
+export type Bounce<T> =
+  | { readonly done: true; readonly value: T }
+  | { readonly done: false; readonly next: () => Bounce<T> }
+
+export const done = <T>(value: T): Bounce<T> => ({ done: true, value })
+export const call = <T>(next: () => Bounce<T>): Bounce<T> => ({ done: false, next })
+
+export function trampoline<T>(bounce: Bounce<T>): T {
+  let current = bounce
+  while (!current.done) current = current.next()
+  return current.value
+}
+
+export async function bracket<R, T>(
+  acquire: () => R | Promise<R>,
+  use: (resource: R) => T | Promise<T>,
+  release: (resource: R) => void | Promise<void>,
+): Promise<T> {
+  const resource = await acquire()
+  try {
+    return await use(resource)
+  } finally {
+    await release(resource)
+  }
+}
+`
+}
+
 // ── Bootstrap ──────────────────────────────────────────────────────
 
 // Bump when any generated builtin source changes so cached copies in
 // ~/.claude/codeact/builtins/ are regenerated instead of served stale.
 // v2: shell.ts exec() uses StringDecoder to fix UTF-8 chunk-boundary corruption.
-const BUILTINS_VERSION = '2'
+// v3: functional.ts adds Result/Option, lazy iterables, trampoline, and bracket.
+const BUILTINS_VERSION = '3'
 
 const BUILTINS: Record<string, string> = {
   'fs.ts': fsBuiltin(),
@@ -326,6 +456,7 @@ const BUILTINS: Record<string, string> = {
   'fetch.ts': fetchBuiltin(),
   'path.ts': pathBuiltin(),
   'os.ts': osBuiltin(),
+  'functional.ts': functionalBuiltin(),
 }
 
 function versionPath(dir: string): string {

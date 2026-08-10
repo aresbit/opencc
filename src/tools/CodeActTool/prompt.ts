@@ -11,6 +11,7 @@ import {
   ADVANCED_LANGUAGE_GUIDES,
   BASH_CONTROL_GUIDE,
   CONTROL_STRUCTURE_GUIDE,
+  FUNCTIONAL_LANGUAGE_GUIDES,
 } from './controlStructures.js'
 
 export function getCodeActPrompt(statuses: RuntimeStatus[] = []): string {
@@ -41,7 +42,7 @@ available language or explain which toolchain is required.
 | **python** | python3 | Data analysis, quant trading, ML/NumPy, statistics, scientific computing |
 | **bash** | bash | Simple automation, shell pipelines, system commands |
 | **c** | gcc → binary | Performance-critical computation, FFI, numerical kernels |
-| **cpp** | g++ → binary | Performance-critical with STL, backtesting engines, simulation |
+| **cpp** | g++/clang++ → C++23 binary | Zero-cost ranges, variant/expected state machines, simulation |
 | **rust** | rustc (edition 2024) | Safe systems code, Result, iterators, explicit state machines |
 | **ocaml** | ocamlopt/ocamlc | Algebraic data types, exhaustive matching, modules, OCaml 5 effects |
 | **scheme** | Guile 3 | Symbolic code, proper tail calls, hygienic macros, continuations |
@@ -74,6 +75,7 @@ Prefer dedicated tools (Bash, Read, Edit, etc.) when:
 import { readFile, writeFile, mkdir, rm, exists, readdir, copyFile, appendFile, stat } from './builtins/fs.js'
 import { exec, $ } from './builtins/shell.js'
 import { fetch, fetchJSON } from './builtins/fetch.js'
+import { ok, err, mapResult, flatMapResult, pipe, mapIterable, filterIterable, fold, scan, call, done, trampoline, bracket } from './builtins/functional.js'
 import path from './builtins/path.js'
 import * as os from './builtins/os.js'
 \`\`\`
@@ -83,17 +85,27 @@ import * as os from './builtins/os.js'
 from builtins_py.fs import read_file, write_file, mkdir, rm, exists, readdir, copy_file, append_file, stat
 from builtins_py.shell import exec, sh
 from builtins_py.fetch import fetch, fetch_json
+from builtins_py.functional import Ok, Err, map_result, bind_result, pipe, map_iter, filter_iter, fold, scan, Call, Done, trampoline, bracket, async_bracket
 from builtins_py.path import join, dirname, basename, splitext, abspath, Path
 from builtins_py.os_info import homedir, tmpdir, platform_name, cwd, chdir, env
 \`\`\`
 
 ${BASH_CONTROL_GUIDE}
 
-**C/C++:**
+**C:**
 \`\`\`c
 #include "builtins_c/fs.h"    // read_file(), write_file(), file_exists(), mkdir_p()
 #include "builtins_c/shell.h"  // shell_exec()
 \`\`\`
+
+**Modern C++23:**
+\`\`\`cpp
+#include "builtins_c/functional.hpp" // Result(expected), pipe/fold, overloaded, scope_exit, Bounce/trampoline, fix
+#include "builtins_c/fs.h"
+#include "builtins_c/shell.h"
+\`\`\`
+
+${FUNCTIONAL_LANGUAGE_GUIDES}
 
 ${ADVANCED_LANGUAGE_GUIDES}
 
