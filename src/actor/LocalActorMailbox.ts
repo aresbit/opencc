@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, readdir, readFile, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import * as lockfile from '../utils/lockfile.js'
@@ -12,6 +12,15 @@ import {
   isExpiredActorEnvelope,
   parseActorAddress,
 } from './types.js'
+
+/** Sidecar marking an address as served; see announce(). */
+const PRESENCE_SUFFIX = '.presence.json'
+
+export type ActorPresence = {
+  address: string
+  unread: number
+  lastSeenAt?: string
+}
 
 type StoredEnvelope = {
   envelope: ActorEnvelope
@@ -190,6 +199,78 @@ export class LocalActorMailbox {
     } finally {
       await release()
     }
+  }
+
+  /**
+   * Records that this address exists and is being served.
+   *
+   * Two things make presence a separate file rather than something derivable
+   * from the mailbox. Filenames are lossy for non-ASCII names, so the
+   * directory listing cannot reconstruct an address; and a session that has
+   * never been written to has no mailbox at all, which is exactly the session
+   * a peer needs to discover before it can send the first message.
+   */
+  async announce(addressValue: string): Promise<void> {
+    const address = parseActorAddress(addressValue)
+    if (address.transport !== 'local') return
+    const path = this.presencePathFor(address)
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(
+      path,
+      jsonStringify(
+        { address: address.canonical, lastSeenAt: new Date().toISOString() },
+        null,
+        2,
+      ),
+      'utf8',
+    )
+  }
+
+  /** Every announced local actor, with what is waiting for each. */
+  async list(): Promise<ActorPresence[]> {
+    let teams: string[]
+    try {
+      teams = await readdir(this.root)
+    } catch {
+      return []
+    }
+
+    const found: ActorPresence[] = []
+    for (const team of teams) {
+      let entries: string[]
+      try {
+        entries = await readdir(join(this.root, team))
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        if (!entry.endsWith(PRESENCE_SUFFIX)) continue
+        try {
+          const raw = jsonParse(
+            await readFile(join(this.root, team, entry), 'utf8'),
+          ) as { address?: unknown; lastSeenAt?: unknown }
+          if (typeof raw.address !== 'string') continue
+          found.push({
+            address: raw.address,
+            lastSeenAt:
+              typeof raw.lastSeenAt === 'string' ? raw.lastSeenAt : undefined,
+            unread: (await this.peek(raw.address)).length,
+          })
+        } catch {
+          // A half-written or hand-edited presence file is not worth failing
+          // discovery over.
+        }
+      }
+    }
+    return found.sort((a, b) => a.address.localeCompare(b.address))
+  }
+
+  private presencePathFor(address: ActorAddress): string {
+    return join(
+      this.root,
+      this.safeComponent(address.team),
+      `${this.safeComponent(address.name)}${PRESENCE_SUFFIX}`,
+    )
   }
 
   async peek(addressValue: string): Promise<ActorEnvelope[]> {

@@ -7,6 +7,14 @@ import { logForDebugging } from '../utils/debug.js'
 
 const POLL_INTERVAL_MS = 1000
 
+/**
+ * Presence is refreshed far less often than the mailbox is polled. It exists
+ * so peers can discover an address before anything has been sent to it; a
+ * once-per-second rewrite would be pure churn for a fact that changes when a
+ * session starts and stops.
+ */
+const ANNOUNCE_INTERVAL_MS = 30_000
+
 /** Delivered per turn, so one noisy sender cannot bury the user's own prompt. */
 const MAX_ENVELOPES_PER_TURN = 20
 
@@ -55,18 +63,26 @@ export function useActorInboxPoller({
   onSubmitMessage,
 }: Props): void {
   const inFlight = useRef(false)
+  const announcedAt = useRef(0)
 
   const poll = useCallback(async () => {
     if (!enabled || inFlight.current) return
-    // A busy session leaves everything in the mailbox and re-peeks next tick.
-    // Interrupting a running turn would inject a message the model never asked
-    // for, mid-tool-call; the envelope is durable, so waiting costs nothing.
-    if (isLoading || focusedInputDialog) return
-
     inFlight.current = true
     try {
       const address = getCurrentActorAddress()
       const mailbox = new LocalActorMailbox()
+
+      if (Date.now() - announcedAt.current >= ANNOUNCE_INTERVAL_MS) {
+        announcedAt.current = Date.now()
+        await mailbox.announce(address)
+      }
+
+      // A busy session still announces -- it is very much alive, and dropping
+      // off the roster mid-turn is exactly when a peer wants to reach it. It
+      // just does not deliver: injecting mid-turn hands the model a message it
+      // never asked for in the middle of a tool call, and the mailbox is
+      // durable, so waiting needs no second queue and cannot drop anything.
+      if (isLoading || focusedInputDialog) return
 
       const pending = await mailbox.peek(address)
       if (pending.length === 0) return
