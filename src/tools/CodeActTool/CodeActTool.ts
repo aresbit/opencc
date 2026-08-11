@@ -82,6 +82,8 @@ const inputSchema = lazySchema(() =>
   }),
 )
 
+type InputSchema = ReturnType<typeof inputSchema>
+
 const outputSchema = lazySchema(() =>
   z.object({
     success: z.boolean(),
@@ -270,7 +272,7 @@ export const CodeActTool = buildTool({
     }
   },
 } satisfies ToolDef<
-  typeof inputSchema,
+  InputSchema,
   {
     success: boolean
     stdout: string
