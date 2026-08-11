@@ -1,3 +1,4 @@
+import type { Dirent } from 'fs'
 import { readdir, readFile } from 'fs/promises'
 import { join, relative } from 'path'
 import {
@@ -75,7 +76,11 @@ if errors:
 
 async function collectPythonFiles(dir: string, root = dir): Promise<string[]> {
   const out: string[] = []
-  let entries: Awaited<ReturnType<typeof readdir>>
+  // Annotated from the real overload rather than `ReturnType<typeof readdir>`,
+  // which picks an arbitrary one — it resolved to the Buffer-name variant, so
+  // every `entry.name` comparison below was checked against a Buffer and the
+  // checker could no longer see mistakes in this loop.
+  let entries: Dirent[]
   try {
     entries = await readdir(dir, { withFileTypes: true })
   } catch {

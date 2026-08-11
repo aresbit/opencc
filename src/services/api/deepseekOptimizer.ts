@@ -59,8 +59,11 @@
 import { createHash } from 'crypto'
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
-import type { MessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
-import type { SystemPrompt } from '../../utils/systemPromptType.js'
+// BetaMessageParam, not MessageParam: the latter is not exported from the beta
+// messages module, so this import resolved to nothing and every one of the 17
+// annotations below was silently unchecked.
+import type { BetaMessageParam as MessageParam } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import { asSystemPrompt, type SystemPrompt } from '../../utils/systemPromptType.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 
@@ -321,7 +324,10 @@ export class ImmutablePrefix {
   private _fingerprintBytes: number = 0
 
   constructor() {
-    this._systemPrompt = []
+    // Branded via the helper rather than a bare literal: SystemPrompt exists to
+    // mark a prompt as validated, and spreading or assigning a plain array
+    // silently drops that mark.
+    this._systemPrompt = asSystemPrompt([])
     this._toolSchemas = []
   }
 
@@ -333,7 +339,7 @@ export class ImmutablePrefix {
    * between requests. No dynamic content (timestamps, random IDs).
    */
   setSystemPrompt(prompt: SystemPrompt): void {
-    this._systemPrompt = [...prompt]
+    this._systemPrompt = asSystemPrompt([...prompt])
     this._fingerprint = null
     this._fingerprintBytes = 0
     this._built = true
