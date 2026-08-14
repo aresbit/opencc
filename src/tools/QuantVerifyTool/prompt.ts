@@ -50,6 +50,15 @@ Put the numbers your report will state into \`claimed\`. That is the point: the 
 
 Tune on \`validation\`. Score \`test\` once, at the end, and record that as \`holdoutEvaluations: 1\`. If you have already scored the test set several times while iterating, say so honestly — the count is what makes the figures interpretable, and a truthful 4 is worth more than a fictional 1.
 
+Declare test exposure honestly. Add \`"selectionIntegrity": {"testExposure": "test-blind"}\` when the final candidate was fixed before any test evidence was visible. If a later edit followed visible test evidence, declare \`"test-guided"\` and supply a separate never-scored window as \`selectionIntegrity.externalHoldout\` — the test figures are no longer out-of-sample, and the external holdout is the conservative evidence:
+
+\`\`\`json
+"selectionIntegrity": {
+  "testExposure": "test-guided",
+  "externalHoldout": {"net": [...], "window": {"start": "2026-01-01", "end": "2026-06-30"}}
+}
+\`\`\`
+
 **Pricing.** Emit the cases with their benchmarks:
 
 \`\`\`json

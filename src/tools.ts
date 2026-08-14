@@ -17,6 +17,7 @@ import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
 import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
 import { SoftwareAnalysisTool } from './tools/SoftwareAnalysisTool/SoftwareAnalysisTool.js'
+import { QuantOrientTool } from './tools/QuantOrientTool/QuantOrientTool.js'
 import { ManuscriptCheckTool } from './tools/ManuscriptCheckTool/ManuscriptCheckTool.js'
 import { WideResearchTool } from './tools/WideResearchTool/WideResearchTool.js'
 import { SelfImproveTool } from './tools/SelfImproveTool/SelfImproveTool.js'
@@ -248,6 +249,7 @@ export function getAllBaseTools(): Tools {
     Paper2CodeTool,
     QuantVerifyTool,
     SoftwareAnalysisTool,
+    QuantOrientTool,
     ManuscriptCheckTool,
     WideResearchTool,
     SelfImproveTool,

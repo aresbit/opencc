@@ -55,6 +55,17 @@ export interface BacktestArtifact {
     validation?: { net?: number[]; gross?: number[] }
   }
   trades?: number
+  /**
+   * AutoQuant-style selection integrity. `testExposure` declares whether the
+   * final candidate was fixed before any test evidence became visible
+   * (`test-blind`) or a later source edit followed visible test evidence
+   * (`test-guided`). A test-guided process must carry a separate, never-scored
+   * external holdout. Undeclared → the check is skipped, not failed.
+   */
+  selectionIntegrity?: {
+    testExposure?: 'test-blind' | 'test-guided'
+    externalHoldout?: { net?: number[]; window?: DateRange }
+  }
   /** The numbers the report states. Checked against the series. */
   claimed?: {
     sharpe?: number
@@ -397,6 +408,76 @@ function checkInSampleGap(
   }
 }
 
+/**
+ * AutoQuant selectionIntegrity: was the final candidate fixed before test
+ * evidence was visible? A `test-guided` process is not disqualified, but it must
+ * carry a separate never-scored external holdout, because the test window's
+ * figures are no longer test-blind. Undeclared → skipped (opt-in discipline),
+ * so this never flips an otherwise-valid legacy artifact to failed.
+ */
+function checkTestExposure(artifact: BacktestArtifact): BacktestCheck {
+  const si = artifact.selectionIntegrity
+  const exposure = si?.testExposure
+  if (!si || exposure === undefined) {
+    return {
+      id: 'test_exposure',
+      title: 'Test-exposure discipline',
+      status: 'skipped',
+      detail:
+        'selectionIntegrity.testExposure not declared. State "test-blind" (the candidate was fixed before any test evidence was visible) or "test-guided" (a later edit followed visible test evidence); a test-guided process must supply selectionIntegrity.externalHoldout.net.',
+    }
+  }
+
+  if (exposure === 'test-blind') {
+    return {
+      id: 'test_exposure',
+      title: 'Test-exposure discipline',
+      status: 'pass',
+      detail:
+        'Declared test-blind: the final candidate was fixed before test evidence was visible. Do not rewrite a later test-guided edit as test-blind.',
+    }
+  }
+
+  if (exposure === 'test-guided') {
+    const holdout = si.externalHoldout?.net
+    if (!holdout?.length) {
+      return {
+        id: 'test_exposure',
+        title: 'Test-exposure discipline',
+        status: 'fail',
+        detail:
+          'Declared test-guided but no selectionIntegrity.externalHoldout.net was supplied. When test evidence guided a later edit, the test window is no longer out-of-sample; a separate, never-scored external holdout is required to support the claim.',
+      }
+    }
+    const window = si.externalHoldout?.window
+    const testEnd = parseDate(artifact.splits?.test?.end)
+    const holdoutStart = parseDate(window?.start)
+    if (testEnd !== null && holdoutStart !== null && holdoutStart < testEnd) {
+      return {
+        id: 'test_exposure',
+        title: 'Test-exposure discipline',
+        status: 'fail',
+        detail: `External holdout starts ${window?.start} but the test window runs to ${artifact.splits?.test?.end} — the holdout overlaps the test window and is not independent.`,
+      }
+    }
+    return {
+      id: 'test_exposure',
+      title: 'Test-exposure discipline',
+      status: 'pass',
+      detail: `Declared test-guided with a ${holdout.length}-observation external holdout${
+        window?.start ? ` starting ${window.start}` : ''
+      }. Report the external-holdout figures as the conservative out-of-sample evidence.`,
+    }
+  }
+
+  return {
+    id: 'test_exposure',
+    title: 'Test-exposure discipline',
+    status: 'fail',
+    detail: `selectionIntegrity.testExposure is "${String(exposure)}"; expected "test-blind" or "test-guided".`,
+  }
+}
+
 export function verifyBacktest(artifact: BacktestArtifact): BacktestReport {
   const shape = checkArtifactShape(artifact)
   if (shape.status === 'fail') {
@@ -417,6 +498,7 @@ export function verifyBacktest(artifact: BacktestArtifact): BacktestReport {
     checkClaimedMetrics(artifact, computed),
     checkCosts(artifact),
     checkSplitDiscipline(artifact),
+    checkTestExposure(artifact),
     checkStatisticalPower(artifact, computed),
     checkInSampleGap(artifact, computed),
   ]

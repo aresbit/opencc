@@ -258,3 +258,72 @@ describe("verifyBacktest", () => {
 		expect(report.checks.find((c) => c.id === "artifact")!.status).toBe("fail");
 	});
 });
+
+describe("test-exposure discipline (selectionIntegrity)", () => {
+	const exposure = (a: BacktestArtifact) =>
+		verifyBacktest(a).checks.find((c) => c.id === "test_exposure")!;
+
+	test("undeclared exposure is skipped, not failed", () => {
+		const report = verifyBacktest(soundArtifact());
+		expect(exposure(soundArtifact()).status).toBe("skipped");
+		// A legacy artifact without selectionIntegrity still verifies.
+		expect(report.verdict).toBe("verified");
+	});
+
+	test("test-blind passes with no external holdout required", () => {
+		const c = exposure(
+			soundArtifact({ selectionIntegrity: { testExposure: "test-blind" } }),
+		);
+		expect(c.status).toBe("pass");
+	});
+
+	test("test-guided without an external holdout fails", () => {
+		const c = exposure(
+			soundArtifact({ selectionIntegrity: { testExposure: "test-guided" } }),
+		);
+		expect(c.status).toBe("fail");
+		expect(verifyBacktest(
+			soundArtifact({ selectionIntegrity: { testExposure: "test-guided" } }),
+		).verdict).toBe("failed");
+	});
+
+	test("test-guided with a non-overlapping external holdout passes", () => {
+		const c = exposure(
+			soundArtifact({
+				selectionIntegrity: {
+					testExposure: "test-guided",
+					externalHoldout: {
+						net: [0.001, -0.002, 0.003],
+						window: { start: "2026-01-01", end: "2026-06-30" },
+					},
+				},
+			}),
+		);
+		expect(c.status).toBe("pass");
+	});
+
+	test("an external holdout that overlaps the test window fails", () => {
+		const c = exposure(
+			soundArtifact({
+				selectionIntegrity: {
+					testExposure: "test-guided",
+					externalHoldout: {
+						net: [0.001, -0.002],
+						window: { start: "2024-01-01", end: "2024-06-30" }, // inside test 2023–2025
+					},
+				},
+			}),
+		);
+		expect(c.status).toBe("fail");
+		expect(c.detail).toContain("overlaps the test window");
+	});
+
+	test("an unrecognized exposure value fails", () => {
+		const c = exposure(
+			soundArtifact({
+				selectionIntegrity: { testExposure: "trust-me" as never },
+			}),
+		);
+		expect(c.status).toBe("fail");
+	});
+});

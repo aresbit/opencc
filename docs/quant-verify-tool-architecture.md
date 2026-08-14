@@ -141,3 +141,56 @@ Risk Mode 里 `iterate goal="Kupiec p > 0.05"` 是同一个错误的风控版本
 - `holdoutEvaluations` 是自报字段。工具能让诚实变得可用，不能强制诚实。
 - 指标假设收益已经是超额收益（rf = 0）；用别的约定时 Sharpe 会有系统性偏移。
 - 不检查 IC/ICIR、换手率、容量——这些需要持仓与信号序列，目前不在产物里。
+
+---
+
+## 八、AutoQuant 来源：从硬门禁到治理化生命周期
+
+> 2026-08-15 —— 对 OpenAlice（TraderAlice/OpenAlice，coding agent 的本地交易工作台）与其量化引擎 AutoQuant V2（TraderAlice/Auto-Quant-V2）做 autoresearch 后的一次 quantAgent RSI。
+
+`quant_verify` 解决的是"数字可信"这一个点。AutoQuant V2 的命题更进一步：**把整个量化研究变成可版本化、可测试、可被 Agent 操作的工程流程**，纪律由结构而非告诫保证——与 Jane Street 的工程取向一致。它把 `quant_verify` 已经做到的"不可变测量"扩展成一整条状态机。
+
+对照（缺口即 RSI 方向）：
+
+| AutoQuant 机制 | 结构保证的东西 | quantAgent 原状态 |
+|------|------|------|
+| `research.md` brief 先于任何数据/代码 | 问题可仅凭文件系统恢复 | 直接进 Mythos→C++，无可恢复 brief |
+| Study 冻结问题 → Session 有界可编辑 → Run 不可变 → Report/Review 证据绑定 | 非法状态不可表示、证据不可变 | 有 `quant_verify`（Run 的雏形），无生命周期包裹 |
+| `aq orient` | 确定性"下一步"，中断后可恢复 | 无，依赖对话记忆 |
+| caller-owned 意图 vs researcher-owned 方法 | 不发明 universe/benchmark/风险偏好 | 仅 `[UNSPECIFIED]` 单标记，无归属划分 |
+| 严格 intake、未知用 `null` 不发明 | 前视偏差被结构挡住、provenance 保留 | "去前瞻偏差"仅为口号 |
+| failure disposition：失败 Run 是 `scientific-limit` 证据 | 负面结果持久化，禁止原样重跑/删除 | 自修复循环把失败当作要修掉的东西 |
+| 独立 Review 把每条声明分级 verified/declared/observed-unbound/unverified | 声明级问责 | 只有 `quant_verify` 单一裁定 |
+
+落地：以上作为一个新的顶层"治理化研究生命周期"节写入 `src/tools/AgentTool/built-in/quantAgent.ts`，位于核心身份之后、Jane Street 内核之前，成为所有模式之上的控制层。`quant_verify` 被重新定位为该生命周期里 Run/Report 契约的裁定器。
+
+### 第二次迭代：`quant_orient`（已落地）
+
+> 2026-08-15 —— 把 orient 从提示词约定升级为只读工具，使"可恢复"从自觉变成结构。
+
+新增 `src/tools/QuantOrientTool/`：读 `research.md` 与 `results/*.json`（quant_verify 的产物格式），复用 `verifyBacktest`/`verifyPricing` 裁定每个 Run，输出当前生命周期 stage 与唯一 NEXT。stage：`no-brief` / `brief-unresolved` / `study-unbound` / `run-incomplete` / `run-failed` / `run-verified`。只读、并发安全、确定性。
+
+| 文件 | 说明 |
+|------|------|
+| `src/tools/QuantOrientTool/orient.ts` | 纯状态机：brief 扫描（unresolved 硬门禁 + caller-owned 字段 advisory）、由最新 Run 裁定驱动的 stage 推断、格式化 |
+| `src/tools/QuantOrientTool/QuantOrientTool.ts` | 工具装配、文件读取、路径约束、Run 分类与复用 quant_verify |
+| `src/tools/QuantOrientTool/prompt.ts` | 工具名/描述/提示 |
+| `src/tools/QuantOrientTool/__tests__/orient.test.ts` | 13 个纯核心测试 |
+
+设计取舍：unresolved 标记（作者自留的 `[UNSPECIFIED`/TODO/未勾选 `- [ ]`/待定）是驱动 stage 的硬信号；caller-owned 字段做关键词扫描，仅作 advisory 不阻断——关键词缺失无法证明字段真缺失。"最新 Run"按 mtime 取，所有 Run 在快照里全列出。quantAgent 提示词的"orient：可恢复的下一步"节与工具列表已改为引用 `quant_orient`。
+
+### 第三次迭代：`quant_verify` 的 `test_exposure` 检查（已落地）
+
+> 2026-08-15 —— 对齐 AutoQuant 的 selectionIntegrity.testGuidanceObservability。
+
+回测产物新增可选字段 `selectionIntegrity`：
+- `testExposure: "test-blind"` —— 最终候选在任何 test 证据可见之前冻结 → pass，不要求外部 holdout。
+- `testExposure: "test-guided"` —— 后续编辑跟在可见 test 证据之后 → 必须提供 `externalHoldout.net`（从未打分的独立窗口），且不得与 test 窗口重叠，否则 fail。
+- 未声明 → `skipped`（不阻断），保持对既有产物非破坏；但治理化流程要求显式声明。
+- 取值非法 → fail。
+
+新增第七项检查 `checkTestExposure`（`backtest.ts`），装配进 `verifyBacktest` 的检查序列，quant_verify 的提示与 quantAgent 的"测试暴露"节同步更新。6 个新测试（`backtest.test.ts`），全套 48 个回测/定价/orient 测试通过。非破坏性验证：未带 `selectionIntegrity` 的既有产物仍裁定 `verified`。
+
+后续可选（本次未做，属另行声明的工作）：
+- 为 `quant_verify` 增补 IC/ICIR（需要持仓与信号序列进产物）。
+- 在磁盘上引入显式 Study/Session 状态文件，使 orient 能区分同一 Project 下的多个并行 Study（当前以 results 目录下最新产物为代理）。
