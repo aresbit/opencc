@@ -87,7 +87,7 @@ const inputSchema = lazySchema(() =>
       .min(1)
       .max(60)
       .optional()
-      .describe('Per-phase wall-clock budget. A phase that exceeds it is recorded as a failed direction; the rest of the depth continues. Default: 12.'),
+      .describe('Per-phase wall-clock budget. A phase that exceeds it is recorded as a failed direction; the rest of the depth continues. Default: 5.'),
     runBudgetMinutes: z
       .number()
       .min(1)
@@ -267,8 +267,14 @@ const MYTHOS_ADVERSARIAL = 'mythos_adversarial.md'
  * emits almost no tokens while waiting, the failure looks like "slow research"
  * rather than "stuck". A phase that has not finished in this long is not going
  * to; the run continues without it and records the loss.
+ *
+ * Effective per-phase budget. `phaseTimeoutMinutes` (input schema, default 5)
+ * overrides this when wired through `call()`. 20 minutes per phase meant a
+ * single stuck WebSearch/WebFetch burned the whole budget — a depth of
+ * recurrent+distill+halt could then cost an hour before the run budget was
+ * ever consulted.
  */
-const PHASE_TIMEOUT_MS = 12 * 60_000
+const PHASE_TIMEOUT_MS = 5 * 60_000
 
 /**
  * A phase that ran out of time, as distinct from a user cancellation.
@@ -903,6 +909,7 @@ async function runPrelude(
   canUseTool: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[2] : never,
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
   onProgress: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[4] : never,
+  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
 ): Promise<{ landscapeMap: string; directions: Direction[] }> {
   const preludeText = await runSubagentPhase(
     buildPreludePrompt(topic),
@@ -911,6 +918,7 @@ async function runPrelude(
     parentMessage,
     onProgress,
     'prelude',
+    phaseTimeoutMs,
   )
 
   await writeFile(join(workDir, 'mythos_prelude.md'), preludeText, 'utf-8')
@@ -969,6 +977,7 @@ async function runRecurrentDepth(
   canUseTool: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[2] : never,
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
   onProgress: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[4] : never,
+  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
 ): Promise<{ added: number; sources: number }> {
   const recurrentText = await runSubagentPhase(
     buildRecurrentPrompt(direction, depth, state),
@@ -979,6 +988,7 @@ async function runRecurrentDepth(
     'recurrent',
     depth,
     direction.title,
+    phaseTimeoutMs,
   )
 
   // Capture narrative for the finding record
@@ -1106,6 +1116,7 @@ async function runDistillation(
   canUseTool: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[2] : never,
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
   onProgress: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[4] : never,
+  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
 ): Promise<{ convergence: number; newDirections: Direction[] }> {
   const distillText = await runSubagentPhase(
     buildDistillationPrompt(state, depthJustCompleted),
@@ -1115,6 +1126,7 @@ async function runDistillation(
     onProgress,
     'distillation',
     depthJustCompleted,
+    phaseTimeoutMs,
   )
 
   await writeFile(join(workDir, `mythos_distillation_d${depthJustCompleted}.md`), distillText, 'utf-8')
@@ -1206,6 +1218,7 @@ async function runHaltingJudge(
   canUseTool: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[2] : never,
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
   onProgress: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[4] : never,
+  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
 ): Promise<{ decision: HaltDecision; rationale: string; focus?: string }> {
   const text = await runSubagentPhase(
     buildHaltingPrompt(state, depthJustCompleted, maxDepth, extendCap),
@@ -1215,6 +1228,7 @@ async function runHaltingJudge(
     onProgress,
     'halting',
     depthJustCompleted,
+    phaseTimeoutMs,
   )
 
   const json = extractFencedJson(text) as
@@ -1262,6 +1276,7 @@ async function runAdversarialProbe(
   canUseTool: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[2] : never,
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
   onProgress: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[4] : never,
+  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
 ): Promise<{ survived: number; wounded: number; broken: number; robustness: string }> {
   const text = await runSubagentPhase(
     buildAdversarialPrompt(state),
@@ -1270,6 +1285,7 @@ async function runAdversarialProbe(
     parentMessage,
     onProgress,
     'adversarial',
+    phaseTimeoutMs,
   )
 
   await writeFile(join(workDir, MYTHOS_ADVERSARIAL), text, 'utf-8')
@@ -1337,6 +1353,7 @@ async function runCoda(
   canUseTool: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[2] : never,
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
   onProgress: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[4] : never,
+  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
 ): Promise<string> {
   const codaText = await runSubagentPhase(
     buildCodaPrompt(topic, state),
@@ -1345,6 +1362,7 @@ async function runCoda(
     parentMessage,
     onProgress,
     'coda',
+    phaseTimeoutMs,
   )
 
   const reportPath = join(workDir, MYTHOS_REPORT)
@@ -1571,6 +1589,11 @@ export const MythosTool = buildTool({
     const baseMaxDepth = state.maxDepth
     const breadth = state.breadth
 
+    // Derived only from input, so it is declared before the try/prelude that
+    // consumes it — the recurrent-loop declaration below would sit after the
+    // prelude call and leave it in the temporal dead zone on a fresh run.
+    const phaseTimeoutMs = (input.phaseTimeoutMinutes ?? 5) * 60_000
+
     try {
       // ============================================================
       // PHASE 1: PRELUDE — only if starting fresh
@@ -1583,6 +1606,7 @@ export const MythosTool = buildTool({
           canUseTool,
           parentMessage,
           onProgress,
+          phaseTimeoutMs,
         )
         state.landscapeMap = preludeResult.landscapeMap
         state.directions = preludeResult.directions
@@ -1596,7 +1620,6 @@ export const MythosTool = buildTool({
       // entry so a `continue` resumption gets a fresh budget instead of
       // inheriting an already-exhausted one from the previous segment.
       const runStartedAt = Date.now()
-      const phaseTimeoutMs = (input.phaseTimeoutMinutes ?? 12) * 60_000
       const runBudgetMs = (input.runBudgetMinutes ?? 20) * 60_000
       const startDepth = isContinue ? state.currentDepth + 1 : 1
       let d = startDepth
@@ -1630,7 +1653,7 @@ export const MythosTool = buildTool({
         const outcomes = await Promise.all(
           selected.map(async dir => {
             try {
-              await runRecurrentDepth(workDir, dir, d, state, context, canUseTool, parentMessage, onProgress)
+              await runRecurrentDepth(workDir, dir, d, state, context, canUseTool, parentMessage, onProgress, phaseTimeoutMs)
               return { dir, error: null as string | null }
             } catch (e) {
               if (isAbortError(e)) throw e
@@ -1669,6 +1692,7 @@ export const MythosTool = buildTool({
             canUseTool,
             parentMessage,
             onProgress,
+            phaseTimeoutMs,
           )
 
           // Inject adaptive directions for next depth
@@ -1735,6 +1759,7 @@ export const MythosTool = buildTool({
             canUseTool,
             parentMessage,
             onProgress,
+            phaseTimeoutMs,
           )
 
           if (halt.decision === 'abort') {
@@ -1764,6 +1789,7 @@ export const MythosTool = buildTool({
           canUseTool,
           parentMessage,
           onProgress,
+          phaseTimeoutMs,
         )
 
         // Persist after probe
@@ -1807,6 +1833,7 @@ export const MythosTool = buildTool({
         canUseTool,
         parentMessage,
         onProgress,
+        phaseTimeoutMs,
       )
 
       await writeRuntimeState(workDir, {
