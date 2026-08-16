@@ -87,7 +87,7 @@ const inputSchema = lazySchema(() =>
       .min(1)
       .max(60)
       .optional()
-      .describe('Per-phase wall-clock budget. A phase that exceeds it is recorded as a failed direction; the rest of the depth continues. Default: 5.'),
+      .describe('Per-phase wall-clock budget. A phase that exceeds it is recorded as a failed direction; the rest of the depth continues. Default: 2.'),
     runBudgetMinutes: z
       .number()
       .min(1)
@@ -268,13 +268,13 @@ const MYTHOS_ADVERSARIAL = 'mythos_adversarial.md'
  * rather than "stuck". A phase that has not finished in this long is not going
  * to; the run continues without it and records the loss.
  *
- * Effective per-phase budget. `phaseTimeoutMinutes` (input schema, default 5)
- * overrides this when wired through `call()`. 20 minutes per phase meant a
- * single stuck WebSearch/WebFetch burned the whole budget — a depth of
- * recurrent+distill+halt could then cost an hour before the run budget was
- * ever consulted.
+ * Effective per-phase budget. `phaseTimeoutMinutes` (input schema, default 2)
+ * overrides this when wired through `call()`. Lowered from 5 minutes: the run
+ * budget is now checked every depth, so it is the real wall-time bound, and a
+ * single stuck WebSearch/WebFetch no longer needs a full 5 minutes before the
+ * run can move on.
  */
-const PHASE_TIMEOUT_MS = 5 * 60_000
+const PHASE_TIMEOUT_MS = 2 * 60_000
 
 /**
  * A phase that ran out of time, as distinct from a user cancellation.
@@ -607,7 +607,7 @@ function loadBearingScore(state: LatentState, claimId: string): number {
 }
 
 function summarizeLatentForPrompt(state: LatentState, opts?: { maxClaims?: number; maxQuestions?: number; maxContradictions?: number }): string {
-  const maxClaims = opts?.maxClaims ?? 25
+  const maxClaims = opts?.maxClaims ?? 15
   const maxQuestions = opts?.maxQuestions ?? 12
   const maxContradictions = opts?.maxContradictions ?? 10
 
@@ -662,9 +662,9 @@ async function runSubagentPhase(
   parentMessage: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[3] : never,
   onProgress: Parameters<typeof buildTool>[0] extends { call: (...args: infer P) => any } ? P[4] : never,
   phase: MythosProgress['phase'],
+  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
   depth?: number,
   direction?: string,
-  phaseTimeoutMs: number = PHASE_TIMEOUT_MS,
 ): Promise<string> {
   const { GENERAL_PURPOSE_AGENT } = await import('../AgentTool/built-in/generalPurposeAgent.js')
   // createUserMessage takes an options object, not a string. Passing the
@@ -804,7 +804,7 @@ function buildRecurrentPrompt(
 }
 
 function buildDistillationPrompt(state: LatentState, depthJustCompleted: number): string {
-  const stateSummary = summarizeLatentForPrompt(state, { maxClaims: 60, maxQuestions: 30, maxContradictions: 25 })
+  const stateSummary = summarizeLatentForPrompt(state, { maxClaims: 30, maxQuestions: 20, maxContradictions: 15 })
   return [
     DISTILLATION_SYSTEM_PROMPT,
     '',
@@ -857,7 +857,7 @@ function buildAdversarialPrompt(state: LatentState): string {
     ...ranked,
     '',
     '## Full latent state context',
-    summarizeLatentForPrompt(state, { maxClaims: 30 }),
+    summarizeLatentForPrompt(state, { maxClaims: 20 }),
     '',
     'Probe the top claims now. Emit the JSON block at the end.',
   ].join('\n')
@@ -986,9 +986,9 @@ async function runRecurrentDepth(
     parentMessage,
     onProgress,
     'recurrent',
+    phaseTimeoutMs,
     depth,
     direction.title,
-    phaseTimeoutMs,
   )
 
   // Capture narrative for the finding record
@@ -1125,8 +1125,8 @@ async function runDistillation(
     parentMessage,
     onProgress,
     'distillation',
-    depthJustCompleted,
     phaseTimeoutMs,
+    depthJustCompleted,
   )
 
   await writeFile(join(workDir, `mythos_distillation_d${depthJustCompleted}.md`), distillText, 'utf-8')
@@ -1227,8 +1227,8 @@ async function runHaltingJudge(
     parentMessage,
     onProgress,
     'halting',
-    depthJustCompleted,
     phaseTimeoutMs,
+    depthJustCompleted,
   )
 
   const json = extractFencedJson(text) as
@@ -1592,7 +1592,7 @@ export const MythosTool = buildTool({
     // Derived only from input, so it is declared before the try/prelude that
     // consumes it — the recurrent-loop declaration below would sit after the
     // prelude call and leave it in the temporal dead zone on a fresh run.
-    const phaseTimeoutMs = (input.phaseTimeoutMinutes ?? 5) * 60_000
+    const phaseTimeoutMs = (input.phaseTimeoutMinutes ?? 2) * 60_000
 
     try {
       // ============================================================
@@ -1628,6 +1628,20 @@ export const MythosTool = buildTool({
       while (d <= effectiveMaxDepth) {
         state.currentDepth = d - 1
 
+        // Hard budget cap. The halting judge consults the run budget only at
+        // the final planned depth (decideHalting), so the budget never bounded
+        // wall time — a 20-minute budget could run 65 minutes (13 subagent
+        // phases × 5-minute timeout). Stop before spending another full depth.
+        if (Date.now() - runStartedAt >= runBudgetMs) {
+          state.haltingDecisions.push({
+            depth: d - 1,
+            decision: 'halt',
+            rationale: `Halting: run exceeded its ${Math.round(runBudgetMs / 60_000)}-minute budget before depth ${d} started.`,
+            timestamp: Date.now(),
+          })
+          break
+        }
+
         // Select directions for this depth (breadth-controlled)
         const available = state.directions.filter(dir => !state.completedDirectionIds.includes(dir.id))
         const selected = available.slice(0, breadth)
@@ -1653,11 +1667,11 @@ export const MythosTool = buildTool({
         const outcomes = await Promise.all(
           selected.map(async dir => {
             try {
-              await runRecurrentDepth(workDir, dir, d, state, context, canUseTool, parentMessage, onProgress, phaseTimeoutMs)
-              return { dir, error: null as string | null }
+              const res = await runRecurrentDepth(workDir, dir, d, state, context, canUseTool, parentMessage, onProgress, phaseTimeoutMs)
+              return { dir, error: null as string | null, added: res.added }
             } catch (e) {
               if (isAbortError(e)) throw e
-              return { dir, error: describeError(e) }
+              return { dir, error: describeError(e), added: 0 }
             }
           }),
         )
@@ -1679,38 +1693,47 @@ export const MythosTool = buildTool({
 
         state.currentDepth = d
 
+        const addedThisDepth = outcomes.reduce((n, o) => n + (o.added ?? 0), 0)
+
         // Distillation is a consolidation pass over claims already collected;
         // if it fails, the claims are still valid, so a failure here degrades
         // the run (no dedup/adaptive directions this depth) rather than ending
         // it. Aborts still propagate.
-        try {
-          const distillResult = await runDistillation(
-            workDir,
-            state,
-            d,
-            context,
-            canUseTool,
-            parentMessage,
-            onProgress,
-            phaseTimeoutMs,
-          )
+        //
+        // Skip it entirely when this depth added no new claims: distillation
+        // with no new material is a full subagent round-trip that can only
+        // restate the existing state, and its adaptive directions would point
+        // at sources the run has already read.
+        if (addedThisDepth > 0) {
+          try {
+            const distillResult = await runDistillation(
+              workDir,
+              state,
+              d,
+              context,
+              canUseTool,
+              parentMessage,
+              onProgress,
+              phaseTimeoutMs,
+            )
 
-          // Inject adaptive directions for next depth
-          for (const nd of distillResult.newDirections) {
-            if (!state.directions.find(x => x.id === nd.id)) {
-              state.directions.push(nd)
-              state.pendingDirectionIds.push(nd.id)
+            // Inject adaptive directions for next depth
+            for (const nd of distillResult.newDirections) {
+              if (!state.directions.find(x => x.id === nd.id)) {
+                state.directions.push(nd)
+                state.pendingDirectionIds.push(nd.id)
+              }
             }
+          } catch (e) {
+            if (isAbortError(e)) throw e
+            state.directionFailures ??= []
+            state.directionFailures.push({
+              directionId: `distillation@d${d}`,
+              depth: d,
+              error: describeError(e),
+              timestamp: Date.now(),
+            })
           }
-        } catch (e) {
-          if (isAbortError(e)) throw e
-          state.directionFailures ??= []
-          state.directionFailures.push({
-            directionId: `distillation@d${d}`,
-            depth: d,
-            error: describeError(e),
-            timestamp: Date.now(),
-          })
         }
 
         state.claimCountByDepth[String(d)] = state.claims.length
