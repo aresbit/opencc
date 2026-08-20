@@ -15,6 +15,8 @@ const inputSchema = lazySchema(() =>
   }),
 )
 
+type InputSchema = ReturnType<typeof inputSchema>
+
 const outputSchema = lazySchema(() =>
   z.object({
     success: z.boolean(),
@@ -78,7 +80,7 @@ export const McpFsExecTool = buildTool({
       content: parts.join('\n') || `Code executed with exit code ${out.exitCode}`,
     }
   },
-} satisfies ToolDef<typeof inputSchema, { success: boolean; stdout: string; stderr: string; exitCode: number }>)
+} satisfies ToolDef<InputSchema, { success: boolean; stdout: string; stderr: string; exitCode: number }>)
 
 function toCamelCase(s: string): string {
   return s.replace(/[-_]([a-z])/g, (_, c) => (c as string).toUpperCase())

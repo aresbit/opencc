@@ -15,6 +15,8 @@ const inputSchema = lazySchema(() =>
   }),
 )
 
+type InputSchema = ReturnType<typeof inputSchema>
+
 const outputSchema = lazySchema(() =>
   z.object({
     success: z.boolean(),
@@ -66,4 +68,4 @@ export const McpFsTool = buildTool({
     }
     return { tool_use_id: toolUseID, type: 'tool_result', content: `${out.tool} failed (exit ${out.exitCode})\n${out.stderr}` }
   },
-} satisfies ToolDef<typeof inputSchema, { success: boolean; tool: string; stdout: string; stderr: string; exitCode: number }>)
+} satisfies ToolDef<InputSchema, { success: boolean; tool: string; stdout: string; stderr: string; exitCode: number }>)

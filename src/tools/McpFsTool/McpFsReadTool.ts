@@ -17,6 +17,8 @@ const inputSchema = lazySchema(() =>
   }),
 )
 
+type InputSchema = ReturnType<typeof inputSchema>
+
 const outputSchema = lazySchema(() =>
   z.object({
     found: z.boolean(),
@@ -85,4 +87,4 @@ export const McpFsReadTool = buildTool({
       content: `## ${out.tool}${out.readOnly ? ' [readonly]' : ''}\n\n${out.description}\n\n\`\`\`typescript\n${out.source}\n\`\`\`\n\nImport this tool in mcpfs_exec:\n\`\`\`typescript\nimport { ${out.tool.split('/')[1]} } from './servers/${out.server}/${out.tool.split('/')[1]}.js';\n\`\`\``,
     }
   },
-} satisfies ToolDef<typeof inputSchema, { found: boolean; tool: string; server: string; source: string; description: string; readOnly: boolean }>)
+} satisfies ToolDef<InputSchema, { found: boolean; tool: string; server: string; source: string; description: string; readOnly: boolean }>)

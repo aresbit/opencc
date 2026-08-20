@@ -17,6 +17,8 @@ const inputSchema = lazySchema(() =>
   }),
 )
 
+type InputSchema = ReturnType<typeof inputSchema>
+
 const outputSchema = lazySchema(() =>
   z.object({
     tools: z.array(z.object({
@@ -123,4 +125,4 @@ export const McpFsDiscoverTool = buildTool({
     ]
     return { tool_use_id: toolUseID, type: 'tool_result', content: lines.join('\n') }
   },
-} satisfies ToolDef<typeof inputSchema, { tools: Array<{ name: string; server: string; description: string; tsFile: string; readOnly: boolean }>; count: number; baseDir: string; filesGenerated?: number }>)
+} satisfies ToolDef<InputSchema, { tools: Array<{ name: string; server: string; description: string; tsFile: string; readOnly: boolean }>; count: number; baseDir: string; filesGenerated?: number }>)
