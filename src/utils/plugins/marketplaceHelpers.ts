@@ -39,6 +39,8 @@ export function getMarketplaceSourceDisplay(source: MarketplaceSource): string {
   switch (source.source) {
     case 'github':
       return source.repo
+    case 'github-user':
+      return `github.com/${source.owner}`
     case 'url':
       return source.url
     case 'git':
@@ -206,6 +208,11 @@ function areSourcesEqual(a: MarketplaceSource, b: MarketplaceSource): boolean {
         (a.ref || undefined) === ((b as typeof a).ref || undefined) &&
         (a.path || undefined) === ((b as typeof a).path || undefined)
       )
+    case 'github-user':
+      return (
+        a.owner === (b as typeof a).owner &&
+        (a.name || undefined) === ((b as typeof a).name || undefined)
+      )
     case 'npm':
       return a.package === (b as typeof a).package
     case 'file':
@@ -237,6 +244,7 @@ export function extractHostFromSource(
 ): string | null {
   switch (source.source) {
     case 'github':
+    case 'github-user':
       // GitHub shorthand always means github.com
       return 'github.com'
 
@@ -413,6 +421,9 @@ function areSourcesEquivalentForBlocklist(
       }
       case 'url':
         return source.url === (blocked as typeof source).url
+      case 'github-user':
+        // Blocking an account blocks it under any registered name
+        return source.owner === (blocked as typeof source).owner
       case 'npm':
         return source.package === (blocked as typeof source).package
       case 'file':
@@ -511,6 +522,8 @@ export function formatSourceForDisplay(source: MarketplaceSource): string {
   switch (source.source) {
     case 'github':
       return `github:${source.repo}${source.ref ? `@${source.ref}` : ''}`
+    case 'github-user':
+      return `github-user:${source.owner}`
     case 'url':
       return source.url
     case 'git':

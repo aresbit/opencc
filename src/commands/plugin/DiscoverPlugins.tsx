@@ -16,6 +16,8 @@ import { openBrowser } from '../../utils/browser.js';
 import { logForDebugging } from '../../utils/debug.js';
 import { errorMessage } from '../../utils/errors.js';
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';
+import { ensureDefaultSkillMarketplace, hasRegisteredDefaultSkillMarketplace } from '../../utils/plugins/defaultSkillMarketplace.js';
+import { DEFAULT_SKILL_MARKETPLACE_OWNER } from '../../utils/plugins/githubUserMarketplace.js';
 import { formatInstallCount, getInstallCounts } from '../../utils/plugins/installCounts.js';
 import { isPluginGloballyInstalled } from '../../utils/plugins/installedPluginsManager.js';
 import { createPluginId, detectEmptyMarketplaceReason, type EmptyMarketplaceReason, formatFailureDetails, formatMarketplaceLoadingErrors, loadMarketplacesWithGracefulDegradation } from '../../utils/plugins/marketplaceHelpers.js';
@@ -119,10 +121,25 @@ export function DiscoverPlugins({
   // Empty state reason
   const [emptyReason, setEmptyReason] = useState<EmptyMarketplaceReason | null>(null);
 
+  // Progress text shown while the default skill marketplace is being registered
+  const [loadingMessage, setLoadingMessage] = useState<string | null>(null);
+
   // Load all plugins from all marketplaces
   useEffect(() => {
     async function loadAllPlugins() {
       try {
+        // First open registers the default skill marketplace (a GitHub
+        // account's skill repos) so there is something to install out of the
+        // box. Once-per-owner and best-effort — a failure here just means the
+        // list is whatever else is configured.
+        if (!hasRegisteredDefaultSkillMarketplace()) {
+          setLoadingMessage(`Discovering skills from github.com/${DEFAULT_SKILL_MARKETPLACE_OWNER}…`);
+        }
+        const defaultMarketplace = await ensureDefaultSkillMarketplace();
+        if (defaultMarketplace.status === 'failed') {
+          setWarning(`Could not reach github.com/${DEFAULT_SKILL_MARKETPLACE_OWNER}: ${defaultMarketplace.error}`);
+        }
+        setLoadingMessage(null);
         const config = await loadKnownMarketplacesConfig();
 
         // Load marketplaces with graceful degradation
@@ -492,7 +509,7 @@ export function DiscoverPlugins({
 
   // Loading state
   if (loading) {
-    return <Text>Loading…</Text>;
+    return <Text>{loadingMessage ?? 'Loading…'}</Text>;
   }
 
   // Error state

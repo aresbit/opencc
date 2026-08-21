@@ -541,6 +541,7 @@ export async function marketplaceListHandler(options: {
           name,
           source: source?.source,
           ...(source?.source === 'github' && { repo: source.repo }),
+          ...(source?.source === 'github-user' && { owner: source.owner }),
           ...(source?.source === 'git' && { url: source.url }),
           ...(source?.source === 'url' && { url: source.url }),
           ...(source?.source === 'directory' && { path: source.path }),
@@ -567,6 +568,9 @@ export async function marketplaceListHandler(options: {
         if (src.source === 'github') {
           // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.log(`    Source: GitHub (${src.repo})`)
+        } else if (src.source === 'github-user') {
+          // biome-ignore lint/suspicious/noConsole:: intentional console output
+          console.log(`    Source: GitHub account (github.com/${src.owner})`)
         } else if (src.source === 'git') {
           // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.log(`    Source: Git (${src.url})`)

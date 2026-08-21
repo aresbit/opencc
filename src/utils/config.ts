@@ -491,6 +491,10 @@ export type GlobalConfig = {
   officialMarketplaceAutoInstallLastAttemptTime?: number // Timestamp of last attempt
   officialMarketplaceAutoInstallNextRetryTime?: number // Earliest time to retry again
 
+  // Default skill marketplace (a GitHub account's skill repos) auto-registration.
+  // Keyed by "<owner>" so changing the default owner re-registers once.
+  defaultSkillMarketplaceRegistered?: Record<string, boolean>
+
   // Claude in Chrome settings
   hasCompletedClaudeInChromeOnboarding?: boolean // Whether Claude in Chrome onboarding has been shown
   claudeInChromeDefaultEnabled?: boolean // Whether Claude in Chrome is enabled by default (undefined means platform default)

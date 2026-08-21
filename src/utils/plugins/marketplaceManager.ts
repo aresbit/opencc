@@ -48,12 +48,14 @@ import {
   jsonStringify,
   writeFileSync_DEPRECATED,
 } from '../slowOperations.js'
+import { plural } from '../stringUtils.js'
 import {
   getAddDirEnabledPlugins,
   getAddDirExtraMarketplaces,
 } from './addDirPluginSettings.js'
 import { markPluginVersionOrphaned } from './cacheUtils.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
+import { fetchGitHubUserMarketplace } from './githubUserMarketplace.js'
 import { removeAllPluginsForMarketplace } from './installedPluginsManager.js'
 import {
   extractHostFromSource,
@@ -1350,19 +1352,60 @@ async function cacheMarketplaceFromUrl(
 }
 
 /**
+ * Materialize a github-user marketplace into `installLocation`.
+ *
+ * There is nothing to clone: the manifest is built from the GitHub API and
+ * written as `.claude-plugin/marketplace.json` so the rest of the pipeline
+ * (validation, plugin install, refresh) sees a normal cached marketplace.
+ *
+ * Used by both loadAndCacheMarketplace and refreshMarketplace — for this
+ * source type "refresh" is just "build it again".
+ */
+async function cacheGitHubUserMarketplace(
+  source: Extract<MarketplaceSource, { source: 'github-user' }>,
+  installLocation: string,
+  onProgress?: MarketplaceProgressCallback,
+): Promise<void> {
+  const fs = getFsImplementation()
+  const name = source.name ?? source.owner
+
+  safeCallProgress(
+    onProgress,
+    `Listing repositories for github.com/${source.owner}…`,
+  )
+
+  const marketplace = await fetchGitHubUserMarketplace(source.owner, name)
+
+  safeCallProgress(
+    onProgress,
+    `Found ${marketplace.plugins.length} ${plural(marketplace.plugins.length, 'skill repository', 'skill repositories')}`,
+  )
+
+  const marketplacePath = join(
+    installLocation,
+    '.claude-plugin',
+    'marketplace.json',
+  )
+  await fs.mkdir(dirname(marketplacePath))
+  await writeFile(marketplacePath, jsonStringify(marketplace, null, 2))
+}
+
+/**
  * Generate a cache path for a marketplace source
  */
 function getCachePathForSource(source: MarketplaceSource): string {
   const tempName =
     source.source === 'github'
       ? source.repo.replace('/', '-')
-      : source.source === 'npm'
-        ? source.package.replace('@', '').replace('/', '-')
-        : source.source === 'file'
-          ? basename(source.path).replace('.json', '')
-          : source.source === 'directory'
-            ? basename(source.path)
-            : 'temp_' + Date.now()
+      : source.source === 'github-user'
+        ? (source.name ?? source.owner)
+        : source.source === 'npm'
+          ? source.package.replace('@', '').replace('/', '-')
+          : source.source === 'file'
+            ? basename(source.path).replace('.json', '')
+            : source.source === 'directory'
+              ? basename(source.path)
+              : 'temp_' + Date.now()
   return tempName
 }
 
@@ -1612,6 +1655,23 @@ async function loadAndCacheMarketplace(
           temporaryCachePath,
           source.path || '.claude-plugin/marketplace.json',
         )
+        break
+      }
+
+      case 'github-user': {
+        // No marketplace.json upstream — the manifest is synthesized from the
+        // account's repo list (see githubUserMarketplace.ts) and written here
+        // so every reader below this point works off a normal cached file.
+        // Written straight to the final name (like 'settings') so the rename
+        // below is a no-op.
+        temporaryCachePath = join(cacheDir, source.name ?? source.owner)
+        marketplacePath = join(
+          temporaryCachePath,
+          '.claude-plugin',
+          'marketplace.json',
+        )
+        cleanupNeeded = false
+        await cacheGitHubUserMarketplace(source, temporaryCachePath, onProgress)
         break
       }
 
@@ -2551,6 +2611,10 @@ export async function refreshMarketplace(
         source.headers,
         onProgress,
       )
+    } else if (source.source === 'github-user') {
+      // Nothing to pull — rebuild the synthesized manifest so repos the account
+      // added (or repos that grew a skills/ dir) show up.
+      await cacheGitHubUserMarketplace(source, installLocation, onProgress)
     } else if (isLocalMarketplaceSource(source)) {
       // Local sources: no remote to update from, but validate the file still exists and is valid
       safeCallProgress(onProgress, 'Validating local marketplace')

@@ -971,6 +971,22 @@ export const MarketplaceSourceSchema = lazySchema(() =>
         ),
     }),
     z.object({
+      source: z.literal('github-user'),
+      owner: z
+        .string()
+        .min(1)
+        .describe(
+          'GitHub account (user or org) whose source repositories form the marketplace. ' +
+            'Each repo carrying skills becomes one plugin entry; there is no ' +
+            'marketplace.json to fetch — the manifest is synthesized from the GitHub API.',
+        ),
+      name: MarketplaceNameSchema()
+        .optional()
+        .describe(
+          'Name to register the marketplace under. Defaults to the account name.',
+        ),
+    }),
+    z.object({
       source: z.literal('npm'),
       package: NpmPackageNameSchema().describe(
         'NPM package containing marketplace.json',

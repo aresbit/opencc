@@ -2,6 +2,7 @@ import { homedir } from 'os'
 import { resolve } from 'path'
 import { getErrnoCode } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
+import { parseGitHubUserInput } from './githubUserMarketplace.js'
 import type { MarketplaceSource } from './schemas.js'
 
 /**
@@ -25,6 +26,15 @@ export async function parseMarketplaceInput(
 ): Promise<MarketplaceSource | { error: string } | null> {
   const trimmed = input.trim()
   const fs = getFsImplementation()
+
+  // A GitHub *account* page (github.com/owner, ?tab=repositories&type=source,
+  // or @owner) is not a repo — the marketplace is synthesized from the
+  // account's skill repos. Checked before the URL/shorthand branches below,
+  // which would otherwise treat the profile URL as a raw marketplace.json.
+  const githubUser = parseGitHubUserInput(trimmed)
+  if (githubUser) {
+    return { source: 'github-user', owner: githubUser }
+  }
 
   // Handle git SSH URLs with any valid username (not just 'git')
   // Supports: user@host:path, user@host:path.git, and with #ref suffix

@@ -1,5 +1,5 @@
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { getInlinePlugins, getSessionId } from '../../bootstrap/state.js'
 import type { Command } from '../../types/command.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
@@ -723,7 +723,16 @@ async function loadSkillsFromDirectory(
         directSkillPath,
       )
 
-      const skillName = `${pluginName}:${basename(skillsPath)}`
+      // Normally the containing directory names the skill. When SKILL.md sits
+      // at the plugin root (a single-skill repo, `skills: ["."]`), that
+      // directory is the version-hash cache dir — meaningless to the user — so
+      // fall back to the skill's own frontmatter name, then the plugin name.
+      const isPluginRoot = resolve(skillsPath) === resolve(pluginPath)
+      const rootSkillName =
+        typeof frontmatter.name === 'string' && frontmatter.name.trim()
+          ? frontmatter.name.trim()
+          : pluginName
+      const skillName = `${pluginName}:${isPluginRoot ? rootSkillName : basename(skillsPath)}`
 
       const file: PluginMarkdownFile = {
         filePath: directSkillPath,
