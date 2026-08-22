@@ -31,6 +31,12 @@ process.env.ENABLE_TOOL_SEARCH ??= "true";
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.ENABLE_PROMPT_CACHING_1H ??= "true";
 
+// Default model responses to the largest broadly supported output budget.
+// An explicitly inherited environment value still takes precedence, and the
+// API layer clamps this value for models with a lower native limit.
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ??= "64000";
+
 // Set max heap size for child processes in CCR environments (containers have 16GB)
 // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level, custom-rules/safe-env-boolean-check
 if (process.env.CLAUDE_CODE_REMOTE === "true") {
