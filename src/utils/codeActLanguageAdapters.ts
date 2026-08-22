@@ -49,7 +49,7 @@ export interface CodeActLanguageAdapter {
   runtimeCandidates: readonly string[]
   installHint: string
   compile?: CompileFunction
-  interpreterArgs?: (scriptPath: string) => string[]
+  interpreterArgs?: (scriptPath: string, runtimeCommand?: string) => string[]
 }
 
 const TYPESCRIPT_HINT = `// ── Agent CodeAct sandbox (TypeScript) ──
@@ -110,7 +110,7 @@ open Codeact
 
 `
 
-const SCHEME_HINT = `;; ── Agent CodeAct sandbox (Scheme / Guile) ──
+const SCHEME_HINT = `;; ── Agent CodeAct sandbox (Scheme / Chez Scheme) ──
 ;; Prefer proper tail calls, higher-order functions, hygienic macros, and explicit continuations.
 (load "builtins_scheme/codeact.scm")
 
@@ -160,8 +160,14 @@ const ADAPTERS: Record<CodeActLanguage, CodeActLanguageAdapter> = {
   scheme: {
     id: 'scheme', extension: '.scm', importHint: SCHEME_HINT,
     builtinsDir: 'builtins_scheme', ensureBuiltins: ensureCodeActBuiltinsSchemeSync,
-    runtimeCandidates: ['guile'], installHint: 'Install Guile 3 for Scheme support.',
-    interpreterArgs: path => ['--no-auto-compile', '-s', path],
+    runtimeCandidates: ['chezscheme', 'scheme', 'guile'],
+    installHint: 'Install Chez Scheme (preferred) or Guile 3 for Scheme support.',
+    interpreterArgs: (path, runtimeCommand) => {
+      const executable = runtimeCommand?.split(/[\\/]/).pop() ?? ''
+      return executable.startsWith('guile')
+        ? ['--no-auto-compile', '-s', path]
+        : ['--script', path]
+    },
   },
 }
 

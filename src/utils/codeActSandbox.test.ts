@@ -4,6 +4,7 @@ import { executeCodeActCode } from './codeActSandbox.js'
 import { getCodeActPrompt } from '../tools/CodeActTool/prompt.js'
 import {
   CODEACT_LANGUAGES,
+  getCodeActLanguageAdapter,
   getCodeActRuntimeStatus,
 } from './codeActLanguageAdapters.js'
 
@@ -18,6 +19,17 @@ describe('CodeAct language adapters', () => {
       expect(status.language).toBe(language)
       expect(status.available ? status.command : status.installHint).toBeTruthy()
     }
+  })
+
+  test('prefers Chez Scheme while preserving Guile invocation compatibility', () => {
+    const adapter = getCodeActLanguageAdapter('scheme')
+    expect(adapter.runtimeCandidates).toEqual(['chezscheme', 'scheme', 'guile'])
+    expect(
+      adapter.interpreterArgs?.('/tmp/agent.scm', '/usr/bin/chezscheme'),
+    ).toEqual(['--script', '/tmp/agent.scm'])
+    expect(
+      adapter.interpreterArgs?.('/tmp/agent.scm', '/usr/bin/guile'),
+    ).toEqual(['--no-auto-compile', '-s', '/tmp/agent.scm'])
   })
 
   test('teaches control semantics instead of only listing syntax', () => {
@@ -258,8 +270,8 @@ let () = Printf.printf "%d\\n" (fold_left ( + ) 0 [1; 2; 3; 4])`,
 let yielded = ref []
 let run producer =
   Effect.Deep.try_with producer () {
-    effc = fun (type a) (effect : a Effect.t) ->
-      match effect with
+    effc = fun (type a) (eff : a Effect.t) ->
+      match eff with
       | Yield value -> Some (fun (k : (a, unit) Effect.Deep.continuation) ->
           yielded := value :: !yielded;
           Effect.Deep.continue k ())

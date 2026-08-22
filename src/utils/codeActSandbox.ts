@@ -197,7 +197,9 @@ export async function executeCodeActCode(
     ? join(sandboxDir, 'agent')
     : agentPath
   const execCommand = adapter.compile ? scriptToRun : runtime.command
-  const execArgs = adapter.compile ? [] : adapter.interpreterArgs!(agentPath)
+  const execArgs = adapter.compile
+    ? []
+    : adapter.interpreterArgs!(agentPath, runtime.command)
 
   // Execute
   const startedAt = Date.now()

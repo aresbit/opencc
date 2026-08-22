@@ -36,6 +36,26 @@ describe('Bash → CodeAct routing', () => {
     // Routing everything to CodeAct would be the opposite failure.
     expect(getSimplePrompt()).toMatch(/one command/)
   })
+
+  test('embeds the modern-bash semantic workflow', () => {
+    const prompt = getSimplePrompt()
+    expect(prompt).toContain('Modern Bash: commands as functions')
+    expect(prompt).toContain('static semantics')
+    expect(prompt).toContain('dynamic semantics')
+    expect(prompt).toContain('while IFS= read -r line')
+    expect(prompt).toContain('command substitution removes trailing newlines')
+    expect(prompt).toContain('local value; value=$(command)')
+    expect(prompt).toContain('bash -n')
+    expect(prompt).toContain('shellcheck')
+  })
+
+  test('keeps Bash-only helpers in the permission-visible CodeAct boundary', () => {
+    const prompt = getSimplePrompt()
+    expect(prompt).toContain('actual interactive shell may be bash or zsh')
+    expect(prompt).toContain('shell variables/functions do not persist')
+    expect(prompt).toContain('map_lines')
+    expect(prompt).toContain('run_cmd')
+  })
 })
 
 describe('CodeAct → Bash routing', () => {

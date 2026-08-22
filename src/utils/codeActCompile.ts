@@ -81,6 +81,7 @@ export async function compileOcaml(
   return runCompiler(
     compiler.path,
     [
+      '-I', '+unix',
       stdlib,
       '-I', 'builtins_ocaml',
       join('builtins_ocaml', 'codeact.ml'),

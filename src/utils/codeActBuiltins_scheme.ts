@@ -1,14 +1,14 @@
-/** CodeAct Scheme helper library generator (R7RS core, Guile runtime). */
+/** CodeAct Scheme helper library generator (portable Chez/Guile core). */
 
 import { join } from 'path'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { getCodeActBaseDir } from './codeActBuiltins.js'
 
-const VERSION = '1'
+const VERSION = '2'
 
 function source(): string {
   return `(define (codeact-workspace)
-  (or (getenv "CODEACT_WORKSPACE") (getcwd)))
+  (or (getenv "CODEACT_WORKSPACE") (getenv "PWD") "."))
 
 (define (read-file path)
   (call-with-input-file path
@@ -43,7 +43,8 @@ export function ensureCodeActBuiltinsSchemeSync(): string {
   const dir = join(getCodeActBaseDir(), 'builtins_scheme')
   mkdirSync(dir, { recursive: true })
   const versionPath = join(dir, '.version')
-  const stale = !existsSync(join(dir, 'codeact.scm')) ||
+  const stale =
+    !existsSync(join(dir, 'codeact.scm')) ||
     !existsSync(versionPath) ||
     readFileSync(versionPath, 'utf-8').trim() !== VERSION
   if (stale) {

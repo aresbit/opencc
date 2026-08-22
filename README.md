@@ -269,7 +269,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 
 | 工具 | 注册名 | 状态 / 依赖 | 说明 |
 |------|--------|-------------|------|
-| CodeActTool | `CodeAct` | ⚠️ 按本机运行时探测 | 执行 TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme；缺少编译器或解释器时返回安装提示，并支持错误行号映射 |
+| CodeActTool | `CodeAct` | ⚠️ 按本机运行时探测 | 执行 TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme；Scheme 优先使用 Chez 并兼容 Guile，缺少编译器或解释器时返回安装提示，并支持错误行号映射 |
 | ActionTool | `Action` | ⚠️ `~/.claude/action/` | 执行本地可复用的 Actions 脚本 |
 | MythosTool | `mythos` | ✅ | 六阶段深度研究：结构化 claim、证据、对抗性验证与运行完整性自检 |
 | AutoresearchTool | `autoresearch` | ✅ | verifier 锁定的自主研究循环：基线、数值目标、重复测量、噪声门槛、实验队列与证据审计 |
@@ -323,7 +323,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 
 | 工具 | 状态 | 说明 |
 |------|------|------|
-| BashTool | ✅ | Shell 执行，沙箱，权限检查 |
+| BashTool | ✅ | Shell 执行、沙箱与权限检查；内置 modern-bash“字符串 Lisp”语义、引用/作用域/副作用规范，并将严格模式和函数式流脚本安全路由到 CodeAct Bash |
 | FileReadTool | ✅ | 文件 / PDF / 图片 / Notebook 读取 |
 | FileEditTool | ✅ | 字符串替换式编辑 + diff 追踪 |
 | FileWriteTool | ✅ | 文件创建 / 覆写 + diff 生成 |

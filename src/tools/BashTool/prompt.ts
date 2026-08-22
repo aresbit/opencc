@@ -24,6 +24,7 @@ import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
 import { TodoWriteTool } from '../TodoWriteTool/TodoWriteTool.js'
 import { BASH_TOOL_NAME } from './toolName.js'
+import { getModernBashGuidance } from './modernBashGuidance.js'
 
 export function getDefaultTimeoutMs(): number {
   return getDefaultBashTimeoutMs()
@@ -368,6 +369,8 @@ export function getSimplePrompt(): string {
     '',
     '# Instructions',
     ...prependBullets(instructionItems),
+    '',
+    getModernBashGuidance(),
     getSimpleSandboxSection(),
     ...(getCommitAndPRInstructions() ? ['', getCommitAndPRInstructions()] : []),
   ].join('\n')
