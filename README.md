@@ -17,7 +17,7 @@ OPENCC_MATEBOT=1 bun run dev
 opencc --matebot
 ```
 
-三种方式都会启用 MateBot Coordinator、专家 Agent、持久任务图、可见 Actor 通信与独立评估流程。不带 `--matebot` 且未设置 `OPENCC_MATEBOT=1` 时，默认运行普通 OpenCC 单 Agent 模式。
+三种方式都会启用 MateBot Coordinator、专家 Agent、持久任务图、可见 Actor 通信与独立评估流程。Coordinator 拥有普通模式的完整工具集（shell、编辑、Notebook、浏览器、Web、Skill、MCP 等）并叠加协调工具，由主 Agent 自主判断直接完成还是委派专家 Agent，不通过工具白名单强制分工。不带 `--matebot` 且未设置 `OPENCC_MATEBOT=1` 时，默认运行普通 OpenCC 单 Agent 模式。
 
 架构、质量门禁和云端/HCI 接入边界见 [MateBot 群体智能 Harness](docs/matebot-swarm-harness.md)。
 

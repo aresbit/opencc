@@ -34,8 +34,6 @@ import {
 } from '../tools/ScheduleCronTool/prompt.js'
 import { EVAL_APPLY_TOOL_NAME } from '../tools/EvalApplyTool/constants.js'
 import { MEMORY_TOOL_NAME } from '../tools/MemoryTool/constants.js'
-import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
-import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
 import { ACTOR_TOOL_NAME } from '../tools/ActorTool/constants.js'
 import { SELF_IMPROVE_TOOL_NAME } from '../tools/SelfImproveTool/prompt.js'
 import { MANUSCRIPT_CHECK_TOOL_NAME } from '../tools/ManuscriptCheckTool/prompt.js'
@@ -135,38 +133,3 @@ export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
  * - ListMcpResourcesTool: TBD
  * - ReadMcpResourceTool: TBD
  */
-
-/**
- * Tools allowed in coordinator mode - only output and agent management tools for the coordinator
- */
-export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
-  AGENT_TOOL_NAME,
-  TASK_STOP_TOOL_NAME,
-  SEND_MESSAGE_TOOL_NAME,
-  SYNTHETIC_OUTPUT_TOOL_NAME,
-  EVAL_APPLY_TOOL_NAME,
-  GOAL_CREATE_TOOL_NAME,
-  GOAL_GET_TOOL_NAME,
-  GOAL_UPDATE_TOOL_NAME,
-  TASK_CREATE_TOOL_NAME,
-  TASK_GET_TOOL_NAME,
-  TASK_LIST_TOOL_NAME,
-  TASK_UPDATE_TOOL_NAME,
-  CRON_CREATE_TOOL_NAME,
-  CRON_DELETE_TOOL_NAME,
-  CRON_LIST_TOOL_NAME,
-  MEMORY_TOOL_NAME,
-  TEAM_CREATE_TOOL_NAME,
-  TEAM_DELETE_TOOL_NAME,
-  ACTOR_TOOL_NAME,
-  // Read-only investigation. A coordinator that cannot see the repository has
-  // to guess at task boundaries, and guessed boundaries are what produce
-  // overlapping workers. These three cannot author a change, so they do not
-  // reopen the two things this allowlist exists to prevent: a coordinator that
-  // quietly does the work itself instead of delegating, and a coordinator that
-  // both writes a candidate and records its verdict in the eval/apply ledger.
-  // Edit, Write and the shell stay out for exactly those reasons.
-  FILE_READ_TOOL_NAME,
-  GREP_TOOL_NAME,
-  GLOB_TOOL_NAME,
-])

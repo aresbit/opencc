@@ -343,7 +343,7 @@ export const AgentTool = buildTool({
     onProgress?,
   ) {
     const startTime = Date.now();
-    const model = isCoordinatorMode() ? undefined : modelParam;
+    const model = modelParam;
 
     // Get app state for permission mode and agent filtering
     const appState = toolUseContext.getAppState();
@@ -735,10 +735,6 @@ export const AgentTool = buildTool({
       isAsync: (run_in_background === true || selectedAgent.background === true) && !isBackgroundTasksDisabled,
     };
 
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = isCoordinatorMode();
-
     // Fork subagent experiment: force ALL spawns async for a unified
     // <task-notification> interaction model (not just fork spawns — all of them).
     const forceAsync = isForkSubagentEnabled();
@@ -754,7 +750,6 @@ export const AgentTool = buildTool({
     const shouldRunAsync =
       (run_in_background === true ||
         selectedAgent.background === true ||
-        isCoordinator ||
         forceAsync ||
         assistantForceAsync ||
         (proactiveModule?.isProactiveActive() ?? false)) &&

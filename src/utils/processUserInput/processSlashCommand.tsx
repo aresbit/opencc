@@ -19,7 +19,6 @@ import { renderToolUseProgressMessage } from '../../tools/AgentTool/UI.js';
 import type { CommandResultDisplay } from '../../types/command.js';
 import { createAbortController } from '../abortController.js';
 import { getAgentContext } from '../agentContext.js';
-import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js';
 import { createAttachmentMessage, getAttachmentMessages } from '../attachments.js';
 import { logForDebugging } from '../debug.js';
 import { isEnvTruthy } from '../envUtils.js';
@@ -826,47 +825,6 @@ export async function processPromptSlashCommand(commandName: string, args: strin
   return getMessagesForPromptSlashCommand(command, args, context, [], imageContentBlocks);
 }
 async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCommand, args: string, context: ToolUseContext, precedingInputBlocks: ContentBlockParam[] = [], imageContentBlocks: ContentBlockParam[] = [], uuid?: string): Promise<SlashCommandResult> {
-  // In coordinator mode (main thread only), skip loading the full skill content
-  // and permissions. The coordinator only has Agent + TaskStop tools, so the
-  // skill content and allowedTools are useless. Instead, send a brief summary
-  // telling the coordinator how to delegate this skill to a worker.
-  //
-  // Workers run in-process and inherit CLAUDE_CODE_COORDINATOR_MODE from the
-  // parent env, so we also check !context.agentId: agentId is only set for
-  // subagents, letting workers fall through to getPromptForCommand and receive
-  // the real skill content when they invoke the Skill tool.
-  if (isCoordinatorMode() && !context.agentId) {
-    const metadata = formatCommandLoadingMetadata(command, args);
-    const parts: string[] = [`Skill "/${command.name}" is available for workers.`];
-    if (command.description) {
-      parts.push(`Description: ${command.description}`);
-    }
-    if (command.whenToUse) {
-      parts.push(`When to use: ${command.whenToUse}`);
-    }
-    const skillAllowedTools = command.allowedTools ?? [];
-    if (skillAllowedTools.length > 0) {
-      parts.push(`This skill grants workers additional tool permissions: ${skillAllowedTools.join(', ')}`);
-    }
-    parts.push(`\nInstruct a worker to use this skill by including "Use the /${command.name} skill" in your Agent prompt. The worker has access to the Skill tool and will receive the skill's content and permissions when it invokes it.`);
-    const summaryContent: ContentBlockParam[] = [{
-      type: 'text',
-      text: parts.join('\n')
-    }];
-    return {
-      messages: [createUserMessage({
-        content: metadata,
-        uuid
-      }), createUserMessage({
-        content: summaryContent,
-        isMeta: true
-      })],
-      shouldQuery: true,
-      model: command.model,
-      effort: command.effort,
-      command
-    };
-  }
   const result = await command.getPromptForCommand(args, context);
 
   // Register skill hooks if defined. Under ["hooks"]-only (skills not locked),

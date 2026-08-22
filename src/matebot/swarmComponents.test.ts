@@ -3,13 +3,8 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { AppState } from '../state/AppStateStore.js'
-import { COORDINATOR_MODE_ALLOWED_TOOLS } from '../constants/tools.js'
 import { getCoordinatorAgents } from '../coordinator/workerAgent.js'
 import { inputSchema as agentInputSchema } from '../tools/AgentTool/AgentTool.js'
-import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
-import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
-import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
-import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
 import { spawnInProcessTeammate } from '../utils/swarm/spawnInProcess.js'
 import {
   markMessagesAsRead,
@@ -116,17 +111,6 @@ describe('MateBot swarm harness components', () => {
         isolation: 'remote',
       }).success,
     ).toBe(true)
-    expect(COORDINATOR_MODE_ALLOWED_TOOLS).toEqual(
-      expect.objectContaining({ size: expect.any(Number) }),
-    )
-    for (const tool of [
-      AGENT_TOOL_NAME,
-      SEND_MESSAGE_TOOL_NAME,
-      TEAM_CREATE_TOOL_NAME,
-      TEAM_DELETE_TOOL_NAME,
-    ]) {
-      expect(COORDINATOR_MODE_ALLOWED_TOOLS.has(tool)).toBe(true)
-    }
     expect(getCoordinatorAgents().map(agent => agent.agentType)).toEqual([
       'worker',
       'researcher',
