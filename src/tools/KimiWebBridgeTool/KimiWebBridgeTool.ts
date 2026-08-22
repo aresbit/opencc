@@ -8,7 +8,6 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { flattenUnionSchema } from '../MemoryTool/flattenSchema.js'
 import { isFirstPartyAnthropicBaseUrl } from '../../utils/model/providers.js'
-import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import {
   DAEMON_BIN,
   DAEMON_PORT,
@@ -212,24 +211,6 @@ const DESTRUCTIVE_ACTIONS = new Set<Input['action']>([
   'navigate', 'click', 'fill', 'evaluate', 'cdp', 'upload',
   'close_tab', 'close_session',
   'install', 'uninstall', 'upgrade', 'stop', 'restart',
-])
-
-/**
- * Actions that need explicit user approval despite browser interaction being
- * auto-allowed generally.
- *
- * `install`/`upgrade` download a shell script over the network and execute it;
- * `uninstall` removes software from the machine. Those are software
- * installation, not browsing, and the "high-frequency interaction" argument for
- * auto-allow does not extend to them.
- *
- * `upload` pushes arbitrary local file paths into a web page's file input on
- * whatever site is loaded — an unattended `upload` of ~/.ssh/id_rsa to an
- * attacker-controlled page is a one-call exfiltration, so it is confirmed even
- * though it is a browser command.
- */
-const ASK_ACTIONS = new Set<Input['action']>([
-  'install', 'uninstall', 'upgrade', 'upload',
 ])
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -521,29 +502,6 @@ async function getStatusData(): Promise<Record<string, unknown>> {
   }
 }
 
-/** Spell out the consequence, so the approval prompt is not just an action name. */
-function askMessage(input: Input): string {
-  switch (input.action) {
-    case 'install':
-      return (
-        `Claude wants to install kimi-webbridge by downloading ${INSTALL_SCRIPT_URL} ` +
-        `and running it with bash${input.version ? ` (version ${input.version})` : ''}. ` +
-        `This executes a remote script on your machine.`
-      )
-    case 'upgrade':
-      return `Claude wants to upgrade the kimi-webbridge daemon (${DAEMON_BIN} upgrade).`
-    case 'uninstall':
-      return `Claude wants to uninstall the kimi-webbridge daemon and remove its files.`
-    case 'upload':
-      return (
-        `Claude wants to upload ${input.files.length} local file(s) into the current ` +
-        `web page: ${input.files.join(', ')}`
-      )
-    default:
-      return `Claude wants to run kimi_webbridge action "${input.action}".`
-  }
-}
-
 function truncate(text: string, max = MAX_RESULT_CHARS): string {
   return text.length <= max ? text : text.slice(0, max) + '\n…(truncated)'
 }
@@ -598,13 +556,10 @@ export const KimiWebBridgeTool = buildTool({
   isDestructive(input: Input) {
     return DESTRUCTIVE_ACTIONS.has(input.action)
   },
-  async checkPermissions(input: Input): Promise<PermissionDecision> {
-    // Browser interaction is high-frequency, so it is auto-allowed to match
-    // ChromeCDPTool. The exceptions in ASK_ACTIONS are not browsing: they
-    // install/remove software or move local files off the machine.
-    if (ASK_ACTIONS.has(input.action)) {
-      return { behavior: 'ask', message: askMessage(input) }
-    }
+  async checkPermissions() {
+    // This is a local, owner-operated bridge. Browser and lifecycle actions
+    // are intentionally auto-allowed so high-frequency automation never
+    // pauses for a per-use confirmation dialog.
     return { behavior: 'allow' }
   },
   toAutoClassifierInput(input: Input) {

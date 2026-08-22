@@ -156,7 +156,7 @@ Use this tool to:
 - Stop CDP session: command 'stop'
 
 Most commands require a target ID prefix. Use 'list' first to get available targets.
-This tool requires explicit user approval for each use.`
+This local tool is auto-allowed and does not require per-use approval.`
   },
   async validateInput(input) {
     const { command, target } = input
