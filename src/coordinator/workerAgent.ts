@@ -3,7 +3,9 @@ import type {
   BuiltInAgentDefinition,
 } from '../tools/AgentTool/loadAgentsDir.js'
 
-const COMMON = `You are a MateBot swarm worker. Stay inside the assigned scope. Report concrete artifacts, evidence, blockers, and remaining uncertainty to the coordinator. Do not broaden the task or claim work you did not verify.`
+const COMMON = `You are a MateBot swarm worker. Stay inside the assigned scope. Report concrete artifacts, evidence, blockers, and remaining uncertainty to the coordinator. Do not broaden the task or claim work you did not verify.
+
+Use specialist tools when the task matches them: rsi for flaky/stochastic verification, manuscript_check after writing or revising Chinese fiction, kimi_webbridge for real-browser interaction, eval_apply for SICP-style persistent eval/apply composition, and ActorTool for visible cross-directory conversation or shared compute resource leases.`
 
 function agent(
   agentType: string,

@@ -24,6 +24,8 @@ export interface UnitOutcome {
   /** Why the unit failed. */
   error?: string
   agentId?: string
+  worktreePath?: string
+  worktreeBranch?: string
 }
 
 export interface AggregateOptions {
@@ -41,9 +43,13 @@ export interface Aggregate {
   okCount: number
   failedCount: number
   truncatedItems: string[]
+  worktrees: Array<{ item: string; path: string; branch?: string }>
 }
 
-function truncateTo(text: string, limit: number): { text: string; cut: boolean } {
+function truncateTo(
+  text: string,
+  limit: number,
+): { text: string; cut: boolean } {
   const trimmed = text.trim()
   if (trimmed.length <= limit) return { text: trimmed, cut: false }
   return {
@@ -76,7 +82,14 @@ export function aggregateOutcomes(
       `Failed (${failed.length}) — these items produced nothing, so any conclusion you draw does not cover them:`,
     )
     for (const unit of failed) {
-      header.push(`  ✗ ${unit.item}: ${truncateTo(unit.error ?? 'unknown error', 300).text}`)
+      header.push(
+        `  ✗ ${unit.item}: ${truncateTo(unit.error ?? 'unknown error', 300).text}`,
+      )
+      if (unit.worktreePath) {
+        header.push(
+          `    worktree: ${unit.worktreePath}${unit.worktreeBranch ? ` (branch: ${unit.worktreeBranch})` : ''}`,
+        )
+      }
     }
   }
   if (options.duplicates?.length) {
@@ -100,7 +113,15 @@ export function aggregateOutcomes(
     for (const unit of ok) {
       const { text, cut } = truncateTo(unit.result ?? '', perItem)
       if (cut) truncatedItems.push(unit.item)
-      body.push('', `── ${unit.item} ──`, text || '(no output)')
+      const worktree = unit.worktreePath
+        ? `worktree: ${unit.worktreePath}${unit.worktreeBranch ? ` (branch: ${unit.worktreeBranch})` : ''}`
+        : undefined
+      body.push(
+        '',
+        `── ${unit.item} ──`,
+        ...(worktree ? [worktree] : []),
+        text || '(no output)',
+      )
     }
   }
 
@@ -116,5 +137,16 @@ export function aggregateOutcomes(
     okCount: ok.length,
     failedCount: failed.length,
     truncatedItems,
+    worktrees: ordered.flatMap(unit =>
+      unit.worktreePath
+        ? [
+            {
+              item: unit.item,
+              path: unit.worktreePath,
+              ...(unit.worktreeBranch ? { branch: unit.worktreeBranch } : {}),
+            },
+          ]
+        : [],
+    ),
   }
 }

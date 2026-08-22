@@ -37,6 +37,9 @@ import { MEMORY_TOOL_NAME } from '../tools/MemoryTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
 import { ACTOR_TOOL_NAME } from '../tools/ActorTool/constants.js'
+import { SELF_IMPROVE_TOOL_NAME } from '../tools/SelfImproveTool/prompt.js'
+import { MANUSCRIPT_CHECK_TOOL_NAME } from '../tools/ManuscriptCheckTool/prompt.js'
+import { KIMI_WEBBRIDGE_TOOL_NAME } from '../tools/KimiWebBridgeTool/constants.js'
 import {
   GOAL_CREATE_TOOL_NAME,
   GOAL_GET_TOOL_NAME,
@@ -95,10 +98,10 @@ export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   CRON_LIST_TOOL_NAME,
   MEMORY_TOOL_NAME,
   ACTOR_TOOL_NAME,
-  // An `evaluator` runs as an async agent, so without this it cannot reach the
-  // ledger it exists to write to and the coordinator has to transcribe the
-  // verdict on its behalf — which is the opposite of independent evaluation.
   EVAL_APPLY_TOOL_NAME,
+  SELF_IMPROVE_TOOL_NAME,
+  MANUSCRIPT_CHECK_TOOL_NAME,
+  KIMI_WEBBRIDGE_TOOL_NAME,
 ])
 /**
  * Tools allowed only for in-process teammates (not general async agents).

@@ -141,9 +141,11 @@ const CHAPTER_FILE = /\.(md|markdown|txt)$/i
 
 export const ManuscriptCheckTool = buildTool({
   name: MANUSCRIPT_CHECK_TOOL_NAME,
+  aliases: ['ManuscriptCheckTool'],
   searchHint:
     'check a Chinese manuscript for AI tells, dialogue ratio, sensory coverage, character voice distinctiveness and foreshadowing payoff',
   maxResultSizeChars: 100_000,
+  shouldDefer: false,
   async description() {
     return DESCRIPTION
   },

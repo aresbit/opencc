@@ -54,6 +54,8 @@ export type TaskStateBase = {
   outputFile: string
   outputOffset: number
   notified: boolean
+  /** Internal tool that consumes this task's terminal result instead of the normal notification loop. */
+  completionOwner?: string
 }
 
 export type LocalShellSpawnInput = {

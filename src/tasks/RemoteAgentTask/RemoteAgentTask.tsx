@@ -235,7 +235,7 @@ function enqueueRemoteNotification(
 function markTaskNotified(taskId: string, setAppState: SetAppState): boolean {
   let shouldEnqueue = false;
   updateTaskState<RemoteAgentTaskState>(taskId, setAppState, task => {
-    if (task.notified) {
+    if (task.notified || task.completionOwner) {
       return task;
     }
     shouldEnqueue = true;
@@ -485,6 +485,7 @@ export function registerRemoteAgentTask(options: {
   remoteTaskMetadata?: RemoteTaskMetadata;
   remoteProvider?: 'anthropic' | 'matebot-ws';
   remoteSessionUrl?: string;
+  completionOwner?: string;
 }): {
   taskId: string;
   sessionId: string;
@@ -502,6 +503,7 @@ export function registerRemoteAgentTask(options: {
     remoteTaskMetadata,
     remoteProvider,
     remoteSessionUrl,
+    completionOwner,
   } = options;
   const taskId = generateTaskId('remote_agent');
 
@@ -526,6 +528,7 @@ export function registerRemoteAgentTask(options: {
     remoteTaskMetadata,
     remoteProvider,
     remoteSessionUrl,
+    completionOwner,
   };
   registerTask(taskState, context.setAppState);
 

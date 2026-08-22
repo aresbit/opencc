@@ -36,6 +36,10 @@ class Environment {
     if (this.parent) return this.parent.set(name, value)
     throw new Error(`Cannot set unbound Lisp symbol: ${name}`)
   }
+
+  ownBindings(): Array<{ name: string; value: LispValue }> {
+    return [...this.values.entries()].map(([name, value]) => ({ name, value }))
+  }
 }
 
 function symbol(name: string): LispSymbol {
@@ -159,6 +163,7 @@ export class LispMetaInterpreter {
   constructor(
     readonly actor: ActorRuntime,
     private readonly maxSteps = 10_000,
+    enableActorPrimitives = true,
   ) {
     const numeric =
       (fn: (...values: number[]) => number): LispFunction =>
@@ -193,28 +198,30 @@ export class LispMetaInterpreter {
     this.global.define('length', value => requireList(value).length)
     this.global.define('json', value => JSON.stringify(value))
     this.global.define('self', actor.self)
-    this.global.define('tx', async (to, payload, kind = 'message') => {
-      if (typeof to !== 'string' || typeof kind !== 'string') {
-        throw new Error('tx expects (tx address payload [kind])')
-      }
-      return (await actor.tx(to, quoted(payload), {
-        kind,
-      })) as unknown as Record<string, unknown>
-    })
-    this.global.define(
-      'rx',
-      async (timeoutMs = 0, limit = 1) =>
-        (await actor.rx({
-          // Clamped like ActorTool's own schema. The step limit bounds how many
-          // expressions run, not how long one of them blocks, so an unclamped
-          // (rx 86400000) would otherwise park the agent's turn for a day.
-          timeoutMs: Math.min(
-            Math.max(0, requireNumber(timeoutMs)),
-            MAX_RX_TIMEOUT_MS,
-          ),
-          limit: Math.min(Math.max(1, requireNumber(limit)), MAX_RX_LIMIT),
-        })) as unknown as LispValue,
-    )
+    if (enableActorPrimitives) {
+      this.global.define('tx', async (to, payload, kind = 'message') => {
+        if (typeof to !== 'string' || typeof kind !== 'string') {
+          throw new Error('tx expects (tx address payload [kind])')
+        }
+        return (await actor.tx(to, quoted(payload), {
+          kind,
+        })) as unknown as Record<string, unknown>
+      })
+      this.global.define(
+        'rx',
+        async (timeoutMs = 0, limit = 1) =>
+          (await actor.rx({
+            // Clamped like ActorTool's own schema. The step limit bounds how many
+            // expressions run, not how long one of them blocks, so an unclamped
+            // (rx 86400000) would otherwise park the agent's turn for a day.
+            timeoutMs: Math.min(
+              Math.max(0, requireNumber(timeoutMs)),
+              MAX_RX_TIMEOUT_MS,
+            ),
+            limit: Math.min(Math.max(1, requireNumber(limit)), MAX_RX_LIMIT),
+          })) as unknown as LispValue,
+      )
+    }
   }
 
   async evaluate(source: string): Promise<LispValue> {
@@ -224,6 +231,43 @@ export class LispMetaInterpreter {
       result = await this.evalExpression(expression, this.global)
     }
     return result
+  }
+
+  /**
+   * The APPLY half of SICP's eval/apply cycle. `procedureSource` is evaluated
+   * in the persistent global environment, then invoked with already-evaluated
+   * JSON values supplied by the caller.
+   */
+  async apply(
+    procedureSource: string,
+    args: LispValue[],
+  ): Promise<LispValue> {
+    this.steps = 0
+    const expressions = parseLisp(procedureSource)
+    if (expressions.length !== 1) {
+      throw new Error('apply expects exactly one procedure expression')
+    }
+    const procedure = await this.evalExpression(expressions[0]!, this.global)
+    if (typeof procedure !== 'function') {
+      throw new Error('apply target did not evaluate to a procedure')
+    }
+    this.steps++
+    if (this.steps > this.maxSteps) {
+      throw new Error('Lisp evaluation step limit exceeded')
+    }
+    return procedure(...args)
+  }
+
+  /** Visible names in the persistent top-level frame. */
+  bindings(): Array<{ name: string; kind: 'procedure' | 'value'; value?: LispValue }> {
+    return this.global
+      .ownBindings()
+      .map(({ name, value }) =>
+        typeof value === 'function'
+          ? { name, kind: 'procedure' as const }
+          : { name, kind: 'value' as const, value },
+      )
+      .sort((a, b) => a.name.localeCompare(b.name))
   }
 
   private async evalExpression(

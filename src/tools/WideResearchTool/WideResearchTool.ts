@@ -1,6 +1,17 @@
 import { z } from 'zod/v4'
+import { isTerminalTaskStatus } from '../../Task.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import {
+  isLocalAgentTask,
+  killAsyncAgent,
+} from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { RemoteAgentTask } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js'
+import type { TaskState } from '../../tasks/types.js'
+import { AbortError } from '../../utils/errors.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { extractTextContent } from '../../utils/messages.js'
+import { sleep } from '../../utils/sleep.js'
+import { flushTaskOutput, getTaskOutput } from '../../utils/task/diskOutput.js'
 import { AgentTool } from '../AgentTool/AgentTool.js'
 import { aggregateOutcomes, type UnitOutcome } from './aggregate.js'
 import {
@@ -25,6 +36,8 @@ import { DESCRIPTION, getPrompt, WIDE_RESEARCH_TOOL_NAME } from './prompt.js'
 const MAX_RESULT_CHARS = 100_000
 /** Report budget. Leaves room for the caller's own context around it. */
 const REPORT_BUDGET_CHARS = 40_000
+const COMPLETION_OWNER = WIDE_RESEARCH_TOOL_NAME
+const WORKTREE_FINALIZATION_TIMEOUT_MS = 30_000
 
 const inputSchema = lazySchema(() =>
   z.strictObject({
@@ -67,6 +80,15 @@ const outputSchema = lazySchema(() =>
     failed: z.number(),
     report: z.string(),
     truncated: z.array(z.string()).optional(),
+    worktrees: z
+      .array(
+        z.object({
+          item: z.string(),
+          path: z.string(),
+          branch: z.string().optional(),
+        }),
+      )
+      .optional(),
     error: z.string().optional(),
   }),
 )
@@ -95,6 +117,164 @@ function agentResultText(data: unknown): string {
     .map(b => b.text)
     .join('\n')
     .trim()
+}
+
+type AgentCallData = {
+  status?: string
+  agentId?: string
+  taskId?: string
+  content?: unknown
+  worktreePath?: string
+  worktreeBranch?: string
+}
+
+type ResolvedAgentResult = {
+  text: string
+  agentId?: string
+  worktreePath?: string
+  worktreeBranch?: string
+}
+
+class AgentTaskFailure extends Error {
+  constructor(
+    message: string,
+    readonly worktreePath?: string,
+    readonly worktreeBranch?: string,
+  ) {
+    super(message)
+    this.name = 'AgentTaskFailure'
+  }
+}
+
+function consumeOwnedTask(
+  taskId: string,
+  setAppState: Parameters<typeof AgentTool.call>[1]['setAppState'],
+): void {
+  setAppState(prev => {
+    const task = prev.tasks?.[taskId]
+    if (!task) return prev
+    return {
+      ...prev,
+      tasks: {
+        ...prev.tasks,
+        [taskId]: {
+          ...task,
+          completionOwner: undefined,
+          notified: true,
+        },
+      },
+    }
+  })
+}
+
+/** Wait for an AgentTool launched result and convert it to the same shape as a sync result. */
+async function waitForLaunchedAgent(
+  taskId: string,
+  toolUseContext: Parameters<typeof AgentTool.call>[1],
+): Promise<ResolvedAgentResult> {
+  let task: TaskState | undefined
+  let terminalSeenAt: number | undefined
+  for (;;) {
+    task = toolUseContext.getAppState().tasks?.[taskId] as TaskState | undefined
+    if (!task)
+      throw new Error(
+        `background agent task ${taskId} disappeared before aggregation`,
+      )
+    if (toolUseContext.abortController.signal.aborted) {
+      consumeOwnedTask(taskId, toolUseContext.setAppState)
+      if (isLocalAgentTask(task)) {
+        killAsyncAgent(taskId, toolUseContext.setAppState)
+      } else if (task.type === 'remote_agent') {
+        await RemoteAgentTask.kill(taskId, toolUseContext.setAppState)
+      }
+      throw new AbortError()
+    }
+    const worktreeReady =
+      !isLocalAgentTask(task) || task.worktreeFinalized !== false
+    if (isTerminalTaskStatus(task.status)) {
+      terminalSeenAt ??= Date.now()
+      // Cleanup normally finalizes immediately. A bounded fallback avoids
+      // hanging the whole fan-out if git worktree cleanup itself wedges; the
+      // initially registered path is still returned for manual recovery.
+      if (
+        worktreeReady ||
+        Date.now() - terminalSeenAt >= WORKTREE_FINALIZATION_TIMEOUT_MS
+      ) {
+        break
+      }
+    }
+    await sleep(100)
+  }
+
+  // Remote output is appended asynchronously. Flush before reading so the
+  // terminal state cannot race the last output chunk.
+  await flushTaskOutput(taskId)
+  const output =
+    isLocalAgentTask(task) && task.result
+      ? extractTextContent(task.result.content, '\n').trim()
+      : (await getTaskOutput(taskId)).trim()
+
+  consumeOwnedTask(taskId, toolUseContext.setAppState)
+
+  const worktreePath = isLocalAgentTask(task) ? task.worktreePath : undefined
+  const worktreeBranch = isLocalAgentTask(task)
+    ? task.worktreeBranch
+    : undefined
+  if (task.status !== 'completed') {
+    const detail = isLocalAgentTask(task) ? task.error : undefined
+    throw new AgentTaskFailure(
+      detail || output || `agent task ended with status ${task.status}`,
+      worktreePath,
+      worktreeBranch,
+    )
+  }
+  if (!output)
+    throw new AgentTaskFailure(
+      'agent returned no output',
+      worktreePath,
+      worktreeBranch,
+    )
+
+  return {
+    text: output,
+    agentId: isLocalAgentTask(task) ? task.agentId : taskId,
+    ...(worktreePath
+      ? {
+          worktreePath,
+          ...(worktreeBranch ? { worktreeBranch } : {}),
+        }
+      : {}),
+  }
+}
+
+export async function resolveAgentResult(
+  raw: unknown,
+  toolUseContext: Parameters<typeof AgentTool.call>[1],
+): Promise<ResolvedAgentResult> {
+  const data = (raw as { data?: AgentCallData } | undefined)?.data
+  if (!data) throw new Error('agent returned no result')
+
+  if (data.status === 'async_launched' && data.agentId) {
+    return waitForLaunchedAgent(data.agentId, toolUseContext)
+  }
+  if (data.status === 'remote_launched' && data.taskId) {
+    return waitForLaunchedAgent(data.taskId, toolUseContext)
+  }
+
+  const text = agentResultText(data)
+  if (!text) throw new Error('agent returned no output')
+  return {
+    text,
+    agentId: data.agentId,
+    ...(data.worktreePath
+      ? {
+          worktreePath: data.worktreePath,
+          ...(data.worktreeBranch
+            ? { worktreeBranch: data.worktreeBranch }
+            : {}),
+        }
+      : {}),
+  }
 }
 
 export const WideResearchTool = buildTool({
@@ -141,7 +321,7 @@ export const WideResearchTool = buildTool({
       concurrency: input.concurrency,
     })
 
-    if (!plan.ok) {
+    if ('error' in plan) {
       return {
         data: {
           success: false,
@@ -166,44 +346,42 @@ export const WideResearchTool = buildTool({
             description: `wide_research: ${unit.item}`.slice(0, 120),
             subagent_type: input.subagent_type ?? 'general-purpose',
             ...(input.isolation ? { isolation: input.isolation } : {}),
+            completionOwner: COMPLETION_OWNER,
           } as Parameters<typeof AgentTool.call>[0],
           toolUseContext,
           canUseTool,
           assistantMessage,
           onProgress,
         )
-        return result
+        return resolveAgentResult(result, toolUseContext)
       },
     )
 
     const outcomes: UnitOutcome[] = plan.units.map((unit, i) => {
       const entry = settled[i]!
       if (entry.status === 'rejected') {
+        const failure = entry.reason
         return {
           index: unit.index,
           item: unit.item,
           status: 'failed',
-          error: errorText(entry.reason),
-        }
-      }
-      const data = (entry.value as { data?: unknown })?.data
-      const text = agentResultText(data)
-      // An agent that returned nothing is not a success worth reporting as one;
-      // the caller would read an empty block as "checked, found nothing".
-      if (!text) {
-        return {
-          index: unit.index,
-          item: unit.item,
-          status: 'failed',
-          error: 'agent returned no output',
+          error: errorText(failure),
+          ...(failure instanceof AgentTaskFailure && failure.worktreePath
+            ? {
+                worktreePath: failure.worktreePath,
+                worktreeBranch: failure.worktreeBranch,
+              }
+            : {}),
         }
       }
       return {
         index: unit.index,
         item: unit.item,
         status: 'ok',
-        result: text,
-        agentId: (data as { agentId?: string } | undefined)?.agentId,
+        result: entry.value.text,
+        agentId: entry.value.agentId,
+        worktreePath: entry.value.worktreePath,
+        worktreeBranch: entry.value.worktreeBranch,
       }
     })
 
@@ -223,6 +401,9 @@ export const WideResearchTool = buildTool({
         report: aggregate.text,
         ...(aggregate.truncatedItems.length > 0
           ? { truncated: aggregate.truncatedItems }
+          : {}),
+        ...(aggregate.worktrees.length > 0
+          ? { worktrees: aggregate.worktrees }
           : {}),
       },
     }

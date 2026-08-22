@@ -13,7 +13,7 @@ describe("planFanOut validation", () => {
 	test("refuses a task with no item placeholder", () => {
 		const plan = planFanOut({ task: "Summarise it", items: ["a", "b"] });
 		expect(plan.ok).toBe(false);
-		if (!plan.ok) {
+		if ("error" in plan) {
 			// The whole point of the guard: without the placeholder every agent
 			// gets the same prompt and the fan-out pays N times for one answer.
 			expect(plan.error).toContain("identical prompt");
@@ -31,14 +31,14 @@ describe("planFanOut validation", () => {
 	test("refuses a single item and points at the Agent tool", () => {
 		const plan = planFanOut({ task: TASK, items: ["only-one"] });
 		expect(plan.ok).toBe(false);
-		if (!plan.ok) expect(plan.error).toContain("Agent tool");
+		if ("error" in plan) expect(plan.error).toContain("Agent tool");
 	});
 
 	test("refuses more items than the ceiling", () => {
 		const items = Array.from({ length: MAX_ITEMS + 1 }, (_, i) => `item-${i}`);
 		const plan = planFanOut({ task: TASK, items });
 		expect(plan.ok).toBe(false);
-		if (!plan.ok) expect(plan.error).toContain("batches");
+		if ("error" in plan) expect(plan.error).toContain("batches");
 	});
 
 	test("accepts exactly the ceiling", () => {

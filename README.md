@@ -4,7 +4,7 @@
 
 ## MateBot 群体智能模式
 
-OpenCC 现在可作为 MateBot 的多 Agent harness 运行：协调者将目标分解给 `researcher` / `planner` / `builder` / `evaluator` 等异构角色，通过持久化 `eval/apply` 门禁防止“实现完成”被误当作“产品交付”。
+OpenCC 现在可作为 MateBot 的多 Agent harness 运行：协调者将目标分解给 `researcher` / `planner` / `builder` / `evaluator` 等异构角色，通过独立 evaluator 和持久任务证据防止“实现完成”被误当作“产品交付”。
 
 ```bash
 # package.json 提供的 MateBot 启动命令（推荐）
@@ -17,7 +17,7 @@ OPENCC_MATEBOT=1 bun run dev
 opencc --matebot
 ```
 
-三种方式都会启用 MateBot Coordinator、专家 Agent、持久任务图、Actor 通信与 eval/apply 门禁。不带 `--matebot` 且未设置 `OPENCC_MATEBOT=1` 时，默认运行普通 OpenCC 单 Agent 模式。
+三种方式都会启用 MateBot Coordinator、专家 Agent、持久任务图、可见 Actor 通信与独立评估流程。不带 `--matebot` 且未设置 `OPENCC_MATEBOT=1` 时，默认运行普通 OpenCC 单 Agent 模式。
 
 架构、质量门禁和云端/HCI 接入边界见 [MateBot 群体智能 Harness](docs/matebot-swarm-harness.md)。
 
@@ -91,7 +91,7 @@ bun run build
 ## 近期能力概览
 
 - **浏览器自动化：** `KimiWebBridgeTool` 通过本机 daemon 与 Chrome/Edge 扩展复用真实登录态；`ChromeCDPTool` 可直接拉起 `scripts/cdp.mjs`，并以浏览器级常驻连接复用多个标签页。Chrome 144+ 的“允许远程调试”是浏览器原生安全提示，通常只在建立新 daemon 连接时出现一次，而不是每条命令或每个标签页都出现。
-- **远程开发与群体协作：** `SSHRemoteTool` 提供受工作区约束的远程文件和命令操作；`WideResearchTool` 可把研究问题并行分发给 Agent；MateBot 通过 `ActorTool` 和 `EvalApplyTool` 提供持久消息、评估与应用门禁。
+- **远程开发与群体协作：** `SSHRemoteTool` 提供受工作区约束的远程文件和命令操作；`WideResearchTool` 可把研究问题并行分发给 Agent；`ActorTool` 提供可见的跨目录 tx/rx 与共享计算资源租约，`EvalApplyTool` 提供 SICP 式持久元解释器。
 - **研究与验证：** `AutoresearchTool`、`SelfImproveTool`（`rsi`）和 `LearnTool` 组成“试验—比较—归因—沉淀”闭环；`Paper2CodeTool`、`SoftwareAnalysisTool`、`QuantOrientTool`、`QuantVerifyTool` 分别覆盖论文落地、软件分析、量化研究阶段判定与结果复核。
 - **AWR 工作流：** `AwrOpsTool` 提供部署、刷写与真机验证所需的指南/脚本资产；`AwrStRunTool` 负责把多机 ST 任务编排给 Agent。真正执行时仍依赖可访问的开发板、SSH 环境及人工安全步骤。
 
@@ -115,7 +115,7 @@ concurrency: 3
 - `items` 支持 2–50 项，`concurrency` 默认 5、最大 15。并发越高，API 消耗和限流压力越大。
 - 只读搜索/审查优先使用 `subagent_type: Explore`；复杂通用任务可省略该字段，默认使用 `general-purpose`。
 - 各条目必须互不依赖；需要共享中间结论或完整长报告时，应改用单个 Agent 或分阶段执行。
-- 当前可靠路径是普通模式下的本地同步 Agent。`isolation: remote` 以及会强制 Agent 后台化的运行模式尚不能等待并聚合最终结果；写入型 `worktree` 任务虽然能执行，但当前汇总不会保留每个 worktree 的路径/分支，因此不建议用于需要合并改动的交付任务。
+- 支持本地同步、后台和 `isolation: remote` Agent；调用会等待所有条目到达终态后统一聚合。写入型任务应使用 `isolation: worktree`，保留下来的 worktree 路径与分支会同时出现在逐项报告和结构化 `worktrees` 字段中，调用方仍需复核并合并这些分支。
 
 ## SSH Remote：在另一台电脑的目录中开发
 
@@ -273,7 +273,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | ActionTool | `Action` | ⚠️ `~/.claude/action/` | 执行本地可复用的 Actions 脚本 |
 | MythosTool | `mythos` | ✅ | 六阶段深度研究：结构化 claim、证据、对抗性验证与运行完整性自检 |
 | AutoresearchTool | `autoresearch` | ✅ | verifier 锁定的自主研究循环：基线、数值目标、重复测量、噪声门槛、实验队列与证据审计 |
-| WideResearchTool | `wide_research` | ⚠️ 本地同步 Agent | 将同一任务并行 fan-out 到 2–50 个独立条目并汇总结果；远程/后台聚合和写入型 worktree 交付仍有上述限制 |
+| WideResearchTool | `wide_research` | ⚠️ Agent/远程环境 | 将同一任务并行 fan-out 到 2–50 个独立条目，等待同步/后台/远程任务并聚合结果；保留写入型 worktree 的路径与分支 |
 | SelfImproveTool | `rsi` | ✅ | 运行可测量试验，比较、分配、归因和定位改进，并把验证通过的经验沉淀为仓库 Skill |
 | WikiTool | `wikitool` | ✅ | 三层个人 wiki：抓取归档、检索、提炼和比较 |
 | MemoryTool | `MemoryTool` | ✅ | 四层记忆系统（临时 / 工作 / 长期 / 主动），支持搜索、晋级、降级和合成 |
@@ -285,8 +285,8 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | SSHRemoteTool | `SSHRemoteTool` | ⚠️ 可用的 SSH 目标 | 命名会话和连接复用，以及远程 exec/read/write/edit/list/search 等工作区操作；见上文专章 |
 | PMTool | `pm-tool` | ✅ | 项目管理：任务依赖图、ready/blocked 推导、决策日志与防陷阱 |
 | SETool | `se-tool` | ✅ | 系统工程规划，与 PMTool 共享任务依赖图引擎 |
-| ActorTool | `ActorTool` | ✅ | MateBot 持久 Actor：支持本地/跨 IP tx/rx 邮箱和 Lisp meta-interpreter，为角色通信提供执行层 |
-| EvalApplyTool | `eval_apply` | ✅ | MateBot 持久化 eval/apply 门禁，区分“实现产出”和“验证后应用” |
+| ActorTool | `ActorTool` | ✅ | 可见的本地/跨 IP tx/rx；跨目录 Agent 可发布、查看、原子抢占和释放带 TTL 的共享计算资源租约，通信与资源事件进入正常 transcript |
+| EvalApplyTool | `eval_apply` | ✅ | SICP 式持久元解释器：显式 `eval` / `apply`、高阶过程、递归、持久 bindings 与 reset；按 Actor 地址隔离环境 |
 | Paper2CodeTool | `paper2code` | ⚠️ 网络与 PDF/Python 工具 | 将 arXiv 论文切成可引用产物，并对实现做结构、语法、引用、import 和冒烟验证 |
 | QuantOrientTool | `quant_orient` | ✅ | 读取研究说明和结果，识别当前研究阶段、证据缺口与下一道门禁 |
 | QuantVerifyTool | `quant_verify` | ✅ | 从收益序列重算风险收益指标，检查拆分、统计功效、测试集暴露和多重检验；同时验证定价结果，且在净/毛收益同时提供时核对成本差额 |

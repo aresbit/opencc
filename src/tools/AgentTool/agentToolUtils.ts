@@ -27,6 +27,7 @@ import {
   createProgressTracker,
   enqueueAgentNotification,
   failAgentTask as failAsyncAgent,
+  finalizeAgentTaskWorktree,
   getProgressUpdate,
   getTokenCountFromTracker,
   isLocalAgentTask,
@@ -621,6 +622,7 @@ export async function runAsyncAgentLifecycle({
     }
 
     const worktreeResult = await getWorktreeResult()
+    finalizeAgentTaskWorktree(taskId, worktreeResult, rootSetAppState)
 
     enqueueAgentNotification({
       taskId,
@@ -656,6 +658,7 @@ export async function runAsyncAgentLifecycle({
           'user_kill_async' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       const worktreeResult = await getWorktreeResult()
+      finalizeAgentTaskWorktree(taskId, worktreeResult, rootSetAppState)
       const partialResult = extractPartialResult(agentMessages)
       enqueueAgentNotification({
         taskId,
@@ -671,6 +674,7 @@ export async function runAsyncAgentLifecycle({
     const msg = errorMessage(error)
     failAsyncAgent(taskId, msg, rootSetAppState)
     const worktreeResult = await getWorktreeResult()
+    finalizeAgentTaskWorktree(taskId, worktreeResult, rootSetAppState)
     enqueueAgentNotification({
       taskId,
       description,

@@ -1,6 +1,6 @@
 # MateBot Actor 协议
 
-MateBot 把 Agent 的通信能力收敛为 Actor 模型。每个复杂 Agent 拥有稳定地址、持久 mailbox、原子 `tx/rx` 和一个与 Agent 生命周期一致的 Lisp 元解释器。
+MateBot 把 Agent 的通信能力收敛为 Actor 模型。每个复杂 Agent 拥有稳定地址、持久 mailbox、可见且原子的 `tx/rx`；`eval_apply` 另行提供与 Actor 地址一致的持久 Lisp 元解释器。
 
 模型提示词、终端 UI 和传输协议都不是状态的唯一来源。任务图、Actor 信封和 eval/apply ledger 可以独立恢复和审计。
 
@@ -47,17 +47,19 @@ MateBot 把 Agent 的通信能力收敛为 Actor 模型。每个复杂 Agent 拥
 {"v":1,"type":"error","request_id":"r2","error":"reason"}
 ```
 
+## 共享计算资源
+
+`ActorTool` 的 `resource_offer` / `resource_list` / `resource_acquire` / `resource_release` 使用配置目录下的共享注册表和文件锁。不同 checkout/worktree 的 Agent 可以发布 GPU、CPU-heavy slot 或其他命名资源，并用带 TTL 的租约原子抢占；容量不足时返回当前 holder，不会静默超卖。抢占和释放会向资源 owner 发送普通 Actor 信封，因此在双方 transcript 中都可见。
+
 ## Lisp 元解释器
 
-每个进程内 teammate 在创建时同时创建一个持久 `LispMetaInterpreter`。其他 Agent 在第一次调用 `ActorTool eval` 时按 Actor 地址创建并复用解释器。
+`eval_apply` 在第一次 `eval` / `apply` 时按 Actor 地址创建并复用 `LispMetaInterpreter`。`eval` 负责求值和持久定义，`apply` 显式把一个已求值过程应用到 JSON 参数；`bindings` 可检查顶层环境，`reset` 可清空。
 
-支持 `quote`、`if`、`begin`、`define`、`set!`、`lambda`、`let`、列表和基础算术；Actor 原语为：
+支持 `quote`、`if`、`begin`、`define`、`set!`、`lambda`、`let`、列表和基础算术。`eval_apply` 刻意不开放 `tx/rx`：程序先算出决策或 payload，再由 Agent 调用可见的 `ActorTool` 发送，避免持久 procedure 变成隐藏通信旁路。例如：
 
 ```lisp
-(define evaluator "ws://10.0.0.8:8787/ws#release/evaluator")
-(tx evaluator '(evaluate task-3 candidate-7) "task.command")
-(rx 5000 10)
-self
+(define choose-units (lambda (free requested) (if (< free requested) 0 requested)))
+(choose-units 2 1)
 ```
 
 解释器设有求值步数上限。它是编排 DSL，不提供任意文件或 shell 原语；需要副作用时仍由受权限体系约束的 OpenCC 工具执行。

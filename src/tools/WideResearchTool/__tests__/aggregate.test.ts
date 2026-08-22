@@ -84,6 +84,30 @@ describe("aggregateOutcomes", () => {
 		expect(out.text).toContain("appeared more than once");
 	});
 
+	test("preserves retained worktree metadata in the report and structured output", () => {
+		const outcome = ok(0, "auth", "implemented");
+		outcome.worktreePath = "/tmp/opencc-auth";
+		outcome.worktreeBranch = "agent-auth";
+		const out = aggregateOutcomes([outcome], { budgetChars: 5000 });
+
+		expect(out.text).toContain("worktree: /tmp/opencc-auth (branch: agent-auth)");
+		expect(out.worktrees).toEqual([
+			{ item: "auth", path: "/tmp/opencc-auth", branch: "agent-auth" },
+		]);
+	});
+
+	test("preserves worktrees from failed items for manual recovery", () => {
+		const outcome = failed(0, "billing", "tests failed");
+		outcome.worktreePath = "/tmp/opencc-billing";
+		outcome.worktreeBranch = "agent-billing";
+		const out = aggregateOutcomes([outcome], { budgetChars: 5000 });
+
+		expect(out.text).toContain("worktree: /tmp/opencc-billing (branch: agent-billing)");
+		expect(out.worktrees).toEqual([
+			{ item: "billing", path: "/tmp/opencc-billing", branch: "agent-billing" },
+		]);
+	});
+
 	test("handles a run where everything failed", () => {
 		const out = aggregateOutcomes(
 			[failed(0, "a", "boom"), failed(1, "b", "boom")],

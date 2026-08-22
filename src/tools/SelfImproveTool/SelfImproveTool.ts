@@ -266,8 +266,10 @@ function measurementFields(run: TrialRun) {
 
 export const SelfImproveTool = buildTool({
   name: SELF_IMPROVE_TOOL_NAME,
+  aliases: ['SelfImproveTool', 'self_improve'],
   searchHint:
     'measure whether a flaky verifier actually passes, compare a fix against a baseline, allocate retry budget, attribute a pipeline failure to a step',
+  shouldDefer: false,
   maxResultSizeChars: MAX_RESULT_CHARS,
   async description() {
     return DESCRIPTION
@@ -295,6 +297,9 @@ export const SelfImproveTool = buildTool({
   isConcurrencySafe() {
     return false
   },
+  interruptBehavior() {
+    return 'cancel'
+  },
   toAutoClassifierInput(input) {
     return `rsi ${input.action ?? ''} ${input.command ?? ''}`.trim()
   },
@@ -319,6 +324,12 @@ export const SelfImproveTool = buildTool({
           abortSignal,
           requiredLowerBound: input.required_lower_bound,
         })
+        if (run.aborted) {
+          return fail(
+            'measure',
+            `aborted after ${run.reading.attempts}/${input.trials ?? DEFAULT_TRIALS} trials; partial counts were not recorded`,
+          )
+        }
         await record(run, input.cwd)
         return {
           data: {
@@ -355,6 +366,12 @@ export const SelfImproveTool = buildTool({
           abortSignal,
           requiredLowerBound: input.required_lower_bound,
         })
+        if (run.aborted) {
+          return fail(
+            'compare',
+            `aborted after ${run.reading.attempts}/${input.trials ?? DEFAULT_TRIALS} trials; a partial sample cannot be compared`,
+          )
+        }
         if (run.reading.attempts === 0) {
           return fail('compare', 'no trials ran, so there is nothing to compare')
         }

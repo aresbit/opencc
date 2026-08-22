@@ -20,6 +20,7 @@ import {
   createProgressTracker,
   enqueueAgentNotification,
   failAgentTask as failAsyncAgent,
+  finalizeAgentTaskWorktree,
   getProgressUpdate,
   getTokenCountFromTracker,
   isLocalAgentTask,
@@ -220,6 +221,8 @@ type AgentToolInput = z.infer<ReturnType<typeof baseInputSchema>> & {
   mode?: z.infer<ReturnType<typeof permissionModeSchema>>;
   isolation?: 'worktree' | 'remote';
   cwd?: string;
+  /** Internal nested-tool consumer; deliberately absent from the public schema. */
+  completionOwner?: string;
 };
 
 // Output schema - multi-agent spawned schema added dynamically at runtime when enabled
@@ -332,6 +335,7 @@ export const AgentTool = buildTool({
       mode: spawnMode,
       isolation,
       cwd,
+      completionOwner,
     }: AgentToolInput,
     toolUseContext,
     canUseTool,
@@ -626,6 +630,7 @@ export const AgentTool = buildTool({
         toolUseId: toolUseContext.toolUseId,
         remoteProvider,
         remoteSessionUrl: remoteSession.url,
+        completionOwner,
       });
       logEvent('tengu_agent_tool_remote_launched', {
         agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -886,6 +891,9 @@ export const AgentTool = buildTool({
         // survive when the user presses ESC to cancel the main thread.
         // They are killed explicitly via chat:killAgents.
         toolUseId: toolUseContext.toolUseId,
+        completionOwner,
+        worktreePath: worktreeInfo?.worktreePath,
+        worktreeBranch: worktreeInfo?.worktreeBranch,
       });
 
       // Register name → agentId for SendMessage routing. Post-registerAsyncAgent
@@ -1026,6 +1034,9 @@ export const AgentTool = buildTool({
               selectedAgent,
               setAppState: rootSetAppState,
               toolUseId: toolUseContext.toolUseId,
+              completionOwner,
+              worktreePath: worktreeInfo?.worktreePath,
+              worktreeBranch: worktreeInfo?.worktreeBranch,
               autoBackgroundMs: getAutoBackgroundMs() || undefined,
             });
             foregroundTaskId = registration.taskId;
@@ -1201,6 +1212,7 @@ export const AgentTool = buildTool({
 
                       // Clean up worktree before notification so we can include it
                       const worktreeResult = await cleanupWorktreeIfNeeded();
+                      finalizeAgentTaskWorktree(backgroundedTaskId, worktreeResult, rootSetAppState);
                       enqueueAgentNotification({
                         taskId: backgroundedTaskId,
                         description,
@@ -1231,6 +1243,7 @@ export const AgentTool = buildTool({
                             'user_cancel_background' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                         });
                         const worktreeResult = await cleanupWorktreeIfNeeded();
+                        finalizeAgentTaskWorktree(backgroundedTaskId, worktreeResult, rootSetAppState);
                         const partialResult = extractPartialResult(agentMessages);
                         enqueueAgentNotification({
                           taskId: backgroundedTaskId,
@@ -1246,6 +1259,7 @@ export const AgentTool = buildTool({
                       const errMsg = errorMessage(error);
                       failAsyncAgent(backgroundedTaskId, errMsg, rootSetAppState);
                       const worktreeResult = await cleanupWorktreeIfNeeded();
+                      finalizeAgentTaskWorktree(backgroundedTaskId, worktreeResult, rootSetAppState);
                       enqueueAgentNotification({
                         taskId: backgroundedTaskId,
                         description,

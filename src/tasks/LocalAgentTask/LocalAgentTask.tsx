@@ -146,6 +146,11 @@ export type LocalAgentTaskState = TaskStateBase & {
   // timestamp = hide + GC-eligible after this time. Set at terminal transition
   // and on unselect; cleared on retain.
   evictAfter?: number;
+  /** Retained worktree metadata for callers that await a background agent. */
+  worktreePath?: string;
+  worktreeBranch?: string;
+  /** False while async worktree cleanup is still deciding whether the tree is retained. */
+  worktreeFinalized?: boolean;
 };
 export function isLocalAgentTask(task: unknown): task is LocalAgentTaskState {
   return typeof task === 'object' && task !== null && 'type' in task && task.type === 'local_agent';
@@ -227,7 +232,7 @@ export function enqueueAgentNotification({
   // enqueueing to avoid sending redundant messages to the model.
   let shouldEnqueue = false;
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    if (task.notified) {
+    if (task.notified || task.completionOwner) {
       return task;
     }
     shouldEnqueue = true;
@@ -432,6 +437,20 @@ export function completeAgentTask(result: AgentToolResult, setAppState: SetAppSt
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
 
+/** Persist the final retained-worktree decision for nested task consumers. */
+export function finalizeAgentTaskWorktree(
+  taskId: string,
+  worktree: { worktreePath?: string; worktreeBranch?: string },
+  setAppState: SetAppState,
+): void {
+  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
+    ...task,
+    worktreePath: worktree.worktreePath,
+    worktreeBranch: worktree.worktreeBranch,
+    worktreeFinalized: true,
+  }));
+}
+
 /**
  * Fail an agent task with error.
  */
@@ -471,7 +490,10 @@ export function registerAsyncAgent({
   selectedAgent,
   setAppState,
   parentAbortController,
-  toolUseId
+  toolUseId,
+  completionOwner,
+  worktreePath,
+  worktreeBranch,
 }: {
   agentId: string;
   description: string;
@@ -480,6 +502,9 @@ export function registerAsyncAgent({
   setAppState: SetAppState;
   parentAbortController?: AbortController;
   toolUseId?: string;
+  completionOwner?: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(agentId, getAgentTranscriptPath(asAgentId(agentId)));
 
@@ -501,7 +526,11 @@ export function registerAsyncAgent({
     // registerAsyncAgent immediately backgrounds
     pendingMessages: [],
     retain: false,
-    diskLoaded: false
+    diskLoaded: false,
+    completionOwner,
+    worktreePath,
+    worktreeBranch,
+    worktreeFinalized: !worktreePath,
   };
 
   // Register cleanup handler
@@ -531,7 +560,10 @@ export function registerAgentForeground({
   selectedAgent,
   setAppState,
   autoBackgroundMs,
-  toolUseId
+  toolUseId,
+  completionOwner,
+  worktreePath,
+  worktreeBranch,
 }: {
   agentId: string;
   description: string;
@@ -540,6 +572,9 @@ export function registerAgentForeground({
   setAppState: SetAppState;
   autoBackgroundMs?: number;
   toolUseId?: string;
+  completionOwner?: string;
+  worktreePath?: string;
+  worktreeBranch?: string;
 }): {
   taskId: string;
   backgroundSignal: Promise<void>;
@@ -567,7 +602,11 @@ export function registerAgentForeground({
     // Not yet backgrounded - running in foreground
     pendingMessages: [],
     retain: false,
-    diskLoaded: false
+    diskLoaded: false,
+    completionOwner,
+    worktreePath,
+    worktreeBranch,
+    worktreeFinalized: !worktreePath,
   };
 
   // Create background signal promise

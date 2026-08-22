@@ -76,6 +76,9 @@ async function runCDPCommand(
 export const ChromeCDPTool = buildTool({
   name: 'ChromeCDP',
   searchHint: 'interact with Chrome browser via DevTools Protocol',
+  // Keep the real-session bridge visible first. CDP remains discoverable as a
+  // fallback, but no longer competes with kimi_webbridge on every browser turn.
+  shouldDefer: true,
   maxResultSizeChars: 100_000,
   isEnabled() {
     // Only enable if the CDP script is available

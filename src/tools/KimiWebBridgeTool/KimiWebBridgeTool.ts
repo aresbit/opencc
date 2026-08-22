@@ -3,7 +3,11 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { spawn } from 'child_process'
 import { z } from 'zod/v4'
-import { buildTool, type ToolDef } from '../../Tool.js'
+import {
+  buildTool,
+  type ToolDef,
+  type ToolInputJSONSchema,
+} from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { flattenUnionSchema } from '../MemoryTool/flattenSchema.js'
@@ -514,7 +518,9 @@ function pretty(data: unknown): string {
 
 export const KimiWebBridgeTool = buildTool({
   name: KIMI_WEBBRIDGE_TOOL_NAME,
+  aliases: ['KimiWebBridgeTool'],
   searchHint: 'control the user real browser via a local kimi-webbridge daemon',
+  shouldDefer: false,
   maxResultSizeChars: MAX_RESULT_CHARS,
   async description() {
     return DESCRIPTION
@@ -538,11 +544,11 @@ export const KimiWebBridgeTool = buildTool({
     // is malformed. Send those a flattened object instead; runtime validation
     // is unchanged either way. Same fix as MemoryTool.
     if (!isFirstPartyAnthropicBaseUrl()) {
-      return flattenUnionSchema(schema, 'action')
+      return flattenUnionSchema(schema, 'action') as ToolInputJSONSchema
     }
 
     schema.type = 'object'
-    return schema
+    return schema as ToolInputJSONSchema
   },
   userFacingName() {
     return 'KimiWebBridge'
@@ -564,6 +570,13 @@ export const KimiWebBridgeTool = buildTool({
   },
   toAutoClassifierInput(input: Input) {
     return `kimi_webbridge:${input.action}`
+  },
+  renderToolUseMessage(input: Partial<Input>) {
+    if (!input.action) return null
+    if (input.action === 'navigate') {
+      return `kimi_webbridge navigate ${input.url ?? ''}`.trim()
+    }
+    return `kimi_webbridge ${input.action}`
   },
   async call(input: Input): Promise<{ data: Output }> {
     switch (input.action) {

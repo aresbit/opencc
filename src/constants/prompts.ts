@@ -418,10 +418,53 @@ function getSessionSpecificGuidanceSection(
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_hive_evidence', false)
       ? `The contract: when non-trivial implementation happens on your turn, independent adversarial verification must happen before you report completion \u2014 regardless of who did the implementing (you directly, a fork you spawned, or a subagent). You are the one reporting to the user; you own the gate. Non-trivial means: 3+ file edits, backend/API changes, or infrastructure changes. Spawn the ${AGENT_TOOL_NAME} tool with subagent_type="${VERIFICATION_AGENT_TYPE}". Your own checks, caveats, and a fork's self-checks do NOT substitute \u2014 only the verifier assigns a verdict; you cannot self-assign PARTIAL. Pass the original user request, all files changed (by anyone), the approach, and the plan file path if applicable. Flag concerns if you have them but do NOT share test results or claim things work. On FAIL: fix, resume the verifier with its findings plus your fix, repeat until PASS. On PASS: spot-check it \u2014 re-run 2-3 commands from its report, confirm every PASS has a Command run block with output that matches your re-run. If any PASS lacks a command block or diverges, resume the verifier with the specifics. On PARTIAL (from the verifier): report what passed and what could not be verified.`
       : null,
+    ...getSpecializedToolGuidance(enabledTools),
   ].filter(item => item !== null)
 
   if (items.length === 0) return null
   return ['# Session-specific guidance', ...prependBullets(items)].join('\n')
+}
+
+/**
+ * Trigger contracts for OpenCC's built-in specialist tools.
+ *
+ * A tool's API description explains its parameters only after the model has
+ * already considered it. These short routing rules live in the system prompt
+ * so ordinary user intent reliably reaches the specialist instead of being
+ * absorbed by a generic Bash/WebFetch/SendMessage fallback.
+ */
+export function getSpecializedToolGuidance(
+  enabledTools: ReadonlySet<string>,
+): string[] {
+  const guidance: string[] = []
+
+  if (enabledTools.has('rsi')) {
+    guidance.push(
+      'When a verifier is flaky, stochastic, intermittent, seed-dependent, timing-sensitive, or only "seems fixed", use rsi measure/compare. One Bash success is not evidence for those tasks. Recall rsi lessons before repeating a previously attempted approach.',
+    )
+  }
+  if (enabledTools.has('manuscript_check')) {
+    guidance.push(
+      'After writing or revising a Chinese fiction/manuscript chapter, run manuscript_check action="chapter" before reporting it complete; for a multi-chapter delivery also run action="manuscript" to check character voices and foreshadowing.',
+    )
+  }
+  if (enabledTools.has('kimi_webbridge')) {
+    guidance.push(
+      'When the user asks to open, read, click, fill, screenshot, scrape, or otherwise interact with a real website/browser session, use kimi_webbridge. It is the primary real-browser tool; use WebFetch only for non-interactive HTTP reading and ChromeCDP only when kimi_webbridge reports it is unavailable.',
+    )
+  }
+  if (enabledTools.has('eval_apply')) {
+    guidance.push(
+      'Use eval_apply as a SICP-style persistent meta-interpreter when recursion, higher-order procedures, reusable stateful definitions, or explicit eval/apply composition can express control logic that ordinary prose/tool-call chains cannot.',
+    )
+  }
+  if (enabledTools.has('ActorTool')) {
+    guidance.push(
+      'Use ActorTool for visible cross-directory/cross-IP agent conversations and shared compute coordination. Call peers when the destination is unknown; use resource_offer/list/acquire/release for atomic capacity leases. tx/rx payloads and resource events must remain visible in the transcript.',
+    )
+  }
+
+  return guidance
 }
 
 // @[MODEL LAUNCH]: Remove this section when we launch numbat.

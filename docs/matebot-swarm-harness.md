@@ -24,9 +24,10 @@ flowchart TB
     B1 --> A["Candidate artifacts"]
     B2 --> A
     A --> E
-    E --> Q["eval_apply ledger"]
-    Q -->|pass + policy| AP["Applied"]
+    E --> Q["Goal / Task evidence"]
+    Q -->|pass + policy| AP["Delivered"]
     Q -->|fail / partial| G
+    C --> X["eval_apply SICP interpreter"]
     T["Cron + Memory"] --> C
 ```
 
@@ -46,29 +47,17 @@ flowchart TB
 
 AgentTool、后台任务、teammate mailbox、工作树隔离和远程 session 继续作为执行 runtime，没有新造第二套 Agent 循环。
 
-## eval / apply 状态机
+## `eval_apply` 元解释器
 
-`eval_apply` 的账本位于 `.matebot/eval-apply/<run-id>.json`，保留 revision、评估证据和状态事件。
+这里的 eval/apply 指 SICP 求值器的两个核心过程，不是“评审/批准”的缩写。环境按 Actor 地址隔离并在进程内持久：
 
-```mermaid
-stateDiagram-v2
-    [*] --> candidate: propose
-    candidate --> evaluating: first evaluation
-    evaluating --> ready: required passes + score threshold
-    candidate --> rejected: failed evaluation
-    evaluating --> rejected: failed/partial/low score
-    rejected --> candidate: revise (revision + 1)
-    ready --> applied: policy gate
-    applied --> applied: idempotent apply
-```
+- `eval` 求值一到多个 Lisp 表达式，并保留 `define` / `set!`；
+- `apply` 将环境中的过程、primitive 或 lambda 显式应用到 JSON 参数；
+- `bindings` 让 Agent 和用户看到当前顶层 frame；
+- `reset` 显式丢弃 frame；
+- `self` 可读取当前作用域；`tx` / `rx` 不在解释器内开放，通信必须经过 transcript 可见的 `ActorTool`。解释器也没有 shell 或文件系统后门。
 
-规则：
-
-- low/medium risk 默认需要 1 份通过评估，high risk 默认需要 2 份；
-- 所有评估必须是 `pass`，平均分必须达到风险阈值；
-- 评估必须附带实际证据；
-- high-risk apply 必须有明确的人类批准证据；
-- revise 会提升 revision 并清空上一版评估，防止旧证据污染新候选。
+交付质量仍由独立 evaluator、Goal 成功标准和 Task 证据承担；不能把元解释器的一次成功求值当成交付通过。
 
 ## MateBot 四个产品维度的映射
 
@@ -77,7 +66,7 @@ stateDiagram-v2
 | 空间 | 进程无关的 CLI/print/server、远程 session 基础 | 容器化 worker pool、多租户状态库、飞书 HCI adapter |
 | 任务 | 专家路由 + 任务 DAG + Mythos wide research | 跨机队列、负载/成本路由、图可视化 |
 | 时间 | 持久 Cron 重进入 + Memory 长期事实 | 事件源触发、小书童助理策略、SLA/静默时段 |
-| 质量 | 独立 evaluator + 持久 eval/apply 门禁 | eval 数据集、回放、线上指标、策略签名 |
+| 质量 | 独立 evaluator + Goal/Task 持久证据 | eval 数据集、回放、线上指标、策略签名 |
 
 ## 运行方式
 

@@ -41,10 +41,11 @@ async function call(): Promise<string> {
   // where they will come looking for it.
   if (!isActorNetworkingEnabled()) {
     return [
-      'Actor networking is off for this session, so it neither announces',
-      'itself nor receives messages automatically.',
+      'Actor networking was explicitly disabled for this session, so it',
+      'neither announces itself nor receives messages automatically.',
       '',
-      'Turn it on by giving the session an address:',
+      'Remove OPENCC_ACTOR_NETWORKING=0 (or set it to 1) and restart OpenCC.',
+      'An explicit address is optional:',
       '  MATEBOT_ACTOR_ADDRESS=actor://local/<name> opencc',
       '',
       'Use a name unique per directory — two sessions sharing an address',
@@ -76,11 +77,10 @@ async function call(): Promise<string> {
     lines.push(
       'No other actors are active on this machine.',
       '',
-      'Another session joins the roster by running in a directory with a',
-      'different name — a git worktree or a separate checkout. Addresses come',
-      'from MATEBOT_ACTOR_ADDRESS, so two sessions in identically named',
-      "directories would otherwise share one mailbox and claim each other's",
-      'messages, since delivery is at-most-once.',
+      'Another session joins the roster automatically when it runs in a git',
+      'worktree or separate checkout. Default actor names include a digest of',
+      'the full directory path, so identically named directories do not share',
+      'one mailbox. MATEBOT_ACTOR_ADDRESS can still assign a stable name.',
     )
     return lines.join('\n')
   }

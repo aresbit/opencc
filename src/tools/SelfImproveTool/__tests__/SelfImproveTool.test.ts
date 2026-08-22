@@ -62,6 +62,22 @@ describe('rsi measure', () => {
     expect(out.ok).toBe(false)
     expect(out.report).toContain('command is required')
   })
+
+  test('does not report or record an aborted partial sample as success', async () => {
+    const abortController = new AbortController()
+    abortController.abort()
+    const result = await (
+      SelfImproveTool.call as unknown as (
+        i: unknown,
+        c: unknown,
+      ) => Promise<{ data: Output }>
+    )(
+      { action: 'measure', command: 'exit 0', trials: 5 },
+      { abortController },
+    )
+    expect(result.data.ok).toBe(false)
+    expect(result.data.report).toContain('partial counts were not recorded')
+  })
 })
 
 describe('rsi compare', () => {
@@ -337,7 +353,6 @@ describe('tool wiring', () => {
     expect(
       SelfImproveTool.renderToolUseMessage!(
         { action: 'measure', command: 'pytest', trials: 9 },
-        {} as never,
       ),
     ).toBe('measure pytest ×9')
   })
