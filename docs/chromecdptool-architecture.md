@@ -13,14 +13,14 @@ AI 模型 (Claude API)
   → tool_use: ChromeCDP(command, target, args)
     ↓
 ChromeCDPTool.ts (Tool 层)
-  → 参数校验 → 权限检查(始终ask) → runCDPCommand()
+  → 参数校验 → 本地工具自动放行 → runCDPCommand()
     ↓
-scripts/cdp.mjs (CLI 脚本层, 839 行)
+scripts/cdp.mjs (CLI 脚本层)
   → 纯 Node.js, 零依赖
   → WebSocket + Unix Socket IPC
-  → 守护进程模式 (per-tab daemon)
+  → 浏览器级单例守护进程，多路复用标签页 session
     ↓
-Chrome 浏览器 (--remote-debugging-port)
+Chrome 浏览器 (DevToolsActivePort)
 ```
 
 ### 1.2 CDP 命令全集 (12 个)
@@ -39,26 +39,27 @@ Chrome 浏览器 (--remote-debugging-port)
 | `type` | 写 | Input.insertText (支持跨域 iframe) |
 | `loadall` | 写 | 反复点击"加载更多"直到消失 (上限 5 分钟) |
 | `net` | 只读 | performance.getEntriesByType('resource') |
-| `stop` | 写 | 停止守护进程 |
+| `stop` | 写 | 停止共享守护进程 |
 
-### 1.3 守护进程设计 (Per-Tab Daemon)
+### 1.3 守护进程设计 (Browser-Wide Daemon)
 
 ```
-每个标签页一个守护进程
-  → Unix Socket: /tmp/cdp-<fullTargetId>.sock
+整个浏览器共用一个守护进程和一条 CDP WebSocket
+  → Unix Socket: /tmp/cdp-browser.sock
+  → 标签页按需 Target.attachToTarget，session 在同一连接内复用
   → 协议: NDJSON (每行一个 JSON)
-  → 请求: {"id":N, "cmd":"...", "args":[...]}
+  → 请求: {"id":N, "cmd":"...", "targetId":"...", "args":[...]}
   → 响应: {"id":N, "ok":true, "result":"..."}
   → 空闲超时: 7 天
-  → 连接重试: 20 次 (每 300ms)，给用户点弹窗时间
+  → IPC socket 在请求 Chrome 前先监听，并发命令排队复用同一连接
 ```
 
 ### 1.4 安全模型
 
-- **三层防护**：可用性门控 (cdp.mjs 存在) → 输入校验 → 强制用户批准 (checkPermissions 总是 ask)
+- **工具权限**：可用性门控 (cdp.mjs 存在) → 输入校验；OpenCC 不再逐次弹权限确认
 - **读写分类**：只读(list/snap/shot/html/net) vs 破坏性(nav/click/type/loadall)
 - **非并发安全**：`isConcurrencySafe: false`
-- **Chrome 自身弹窗**：每次 Target.attachToTarget 触发浏览器"Allow debugging"模态框
+- **Chrome 原生确认**：Chrome 144+ 对每条远程调试 WebSocket 强制确认；共享连接把确认限制为 daemon 首次连接一次，后续命令与标签页不再重复触发
 
 ---
 
