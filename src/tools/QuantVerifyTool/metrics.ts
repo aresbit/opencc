@@ -7,6 +7,8 @@
  * series wins.
  */
 
+import { excessKurtosis, skewness } from './stats.js'
+
 export interface ReturnSeriesMetrics {
   observations: number
   /** Compound annual growth rate implied by the series. */
@@ -34,6 +36,19 @@ export interface ReturnSeriesMetrics {
   tStat: number
   /** Length of the series in years, at the stated periods-per-year. */
   years: number
+  /**
+   * Third standardized moment. Negative means the losses are the large moves —
+   * the shape of a strategy that collects premium until it does not.
+   */
+  skewness: number
+  /**
+   * Fourth standardized moment less 3. Positive means tails fatter than a
+   * normal, so Sharpe (a two-moment statistic) is describing less of the risk
+   * than it appears to.
+   */
+  excessKurtosis: number
+  /** Per-period Sharpe, before the sqrt(periodsPerYear) scaling. */
+  periodSharpe: number
 }
 
 export function mean(xs: number[]): number {
@@ -98,8 +113,12 @@ export function computeMetrics(
   const cagr =
     years > 0 && finalEquity > 0 ? finalEquity ** (1 / years) - 1 : totalReturn
 
-  const sharpe =
-    periodStd > 0 ? (periodMean / periodStd) * Math.sqrt(periodsPerYear) : 0
+  // Per-period first, then scaled by sqrt(periodsPerYear): variance adds over
+  // independent periods, so the standard deviation grows with the square root
+  // while the mean grows linearly. The deflated-Sharpe machinery works in
+  // per-period units, so keep both.
+  const periodSharpe = periodStd > 0 ? periodMean / periodStd : 0
+  const sharpe = periodSharpe * Math.sqrt(periodsPerYear)
   const dd = downsideDeviation(returns)
   const sortino = dd > 0 ? (periodMean / dd) * Math.sqrt(periodsPerYear) : 0
   const mdd = maxDrawdown(returns)
@@ -124,6 +143,9 @@ export function computeMetrics(
     totalReturn,
     tStat: sharpe * Math.sqrt(Math.max(years, 0)),
     years,
+    skewness: skewness(returns),
+    excessKurtosis: excessKurtosis(returns),
+    periodSharpe,
   }
 }
 

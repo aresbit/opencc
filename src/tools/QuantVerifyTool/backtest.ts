@@ -5,6 +5,7 @@ import {
   withinTolerance,
   type ReturnSeriesMetrics,
 } from './metrics.js'
+import { deflatedSharpe, multipleTestingBar, sampleVariance } from './stats.js'
 
 /**
  * Verification of a backtest result artifact.
@@ -65,6 +66,18 @@ export interface BacktestArtifact {
   selectionIntegrity?: {
     testExposure?: 'test-blind' | 'test-guided'
     externalHoldout?: { net?: number[]; window?: DateRange }
+    /**
+     * How many strategy/parameter configurations were evaluated before this one
+     * was picked. The winner of N searches is not the same evidence as a single
+     * pre-registered run, and only the searcher knows N.
+     */
+    trials?: number
+    /**
+     * Annualized Sharpe of each evaluated configuration. With these the
+     * deflated Sharpe ratio is computable; with only `trials` the check falls
+     * back to the Šidák-corrected t bar.
+     */
+    trialSharpes?: number[]
   }
   /** The numbers the report states. Checked against the series. */
   claimed?: {
@@ -92,6 +105,12 @@ const MIN_TRADES = 30
 const MIN_T_STAT = 2.0
 /** A Sharpe claim at or above this needs the sample to support it. */
 const SHARPE_CLAIM_THRESHOLD = 1.0
+/**
+ * Deflated Sharpe below this and the result is indistinguishable from the best
+ * draw of the search that produced it. 0.95 is the convention in Bailey &
+ * López de Prado (2014).
+ */
+const DSR_THRESHOLD = 0.95
 
 function checkArtifactShape(artifact: BacktestArtifact): BacktestCheck {
   const missing: string[] = []
@@ -478,6 +497,115 @@ function checkTestExposure(artifact: BacktestArtifact): BacktestCheck {
   }
 }
 
+/**
+ * Selection bias: the best of N attempts beats the bar that one attempt has to
+ * clear, even when every attempt is noise. With the trials' Sharpe ratios this
+ * is the deflated Sharpe ratio; with only the count it is the Šidák-corrected
+ * t bar. Undeclared → skipped, since a genuinely pre-registered single run has
+ * nothing to correct and we cannot tell the two cases apart from the artifact.
+ */
+function checkMultipleTesting(
+  artifact: BacktestArtifact,
+  computed: ReturnSeriesMetrics,
+): BacktestCheck {
+  const si = artifact.selectionIntegrity
+  const declared = si?.trials
+  const trialSharpes = si?.trialSharpes
+  const trials = declared ?? trialSharpes?.length
+
+  if (trials === undefined) {
+    return {
+      id: 'multiple_testing',
+      title: 'Selection bias across trials',
+      status: 'skipped',
+      detail:
+        'selectionIntegrity.trials not declared. State how many configurations were evaluated before this one was chosen — searching 50 pure-noise strategies at a 5% false-positive rate finds a "significant" one with probability 1 - 0.95^50 ≈ 92%. Supply selectionIntegrity.trialSharpes as well to get the deflated Sharpe ratio instead of the cruder t bar.',
+    }
+  }
+
+  if (!Number.isFinite(trials) || trials < 1) {
+    return {
+      id: 'multiple_testing',
+      title: 'Selection bias across trials',
+      status: 'fail',
+      detail: `selectionIntegrity.trials is ${String(declared)}; it must be at least 1 (the run itself counts as one trial).`,
+    }
+  }
+
+  const periodsPerYear = artifact.periodsPerYear!
+  const scale = Math.sqrt(periodsPerYear)
+
+  // The deflated Sharpe needs the spread of the trials' Sharpes: that spread is
+  // what says how much of the winner's edge the search could have manufactured.
+  if (trialSharpes && trialSharpes.length >= 2) {
+    if (trialSharpes.some(s => !Number.isFinite(s))) {
+      return {
+        id: 'multiple_testing',
+        title: 'Selection bias across trials',
+        status: 'fail',
+        detail:
+          'selectionIntegrity.trialSharpes contains a non-finite value. Report the annualized Sharpe of every configuration evaluated, including the ones that failed.',
+      }
+    }
+    // Artifact Sharpes are annualized (as in `claimed`); the correction works
+    // per-period, so de-annualize before comparing.
+    const perPeriod = trialSharpes.map(s => s / scale)
+    const variance = sampleVariance(perPeriod)
+    const dsr = deflatedSharpe(
+      computed.periodSharpe,
+      artifact.returns!.test!.net!,
+      trialSharpes.length,
+      variance,
+    )
+
+    const shape = `skew ${formatMetric(dsr.skewness, 2)}, excess kurtosis ${formatMetric(dsr.excessKurtosis, 2)}`
+    const bar = `luck bar (expected best of ${trialSharpes.length}) = ${formatMetric(dsr.expectedMaxSharpe * scale, 3)} annualized`
+
+    if (!Number.isFinite(dsr.probability)) {
+      return {
+        id: 'multiple_testing',
+        title: 'Selection bias across trials',
+        status: 'fail',
+        detail: `Deflated Sharpe is undefined for this series (${shape}); the Sharpe estimator's variance is non-positive, so the sample cannot support a selection-corrected claim.`,
+      }
+    }
+
+    if (dsr.probability < DSR_THRESHOLD) {
+      return {
+        id: 'multiple_testing',
+        title: 'Selection bias across trials',
+        status: 'fail',
+        detail: `Deflated Sharpe = ${formatMetric(dsr.probability, 3)} (< ${DSR_THRESHOLD}). Against ${bar}, an observed ${formatMetric(computed.sharpe, 3)} with ${shape} is not distinguishable from the best draw of the search. Report it as a candidate, not as an edge: pre-register one configuration and score it on fresh data.`,
+      }
+    }
+    return {
+      id: 'multiple_testing',
+      title: 'Selection bias across trials',
+      status: 'pass',
+      detail: `Deflated Sharpe = ${formatMetric(dsr.probability, 3)} over ${trialSharpes.length} trials; ${bar}; ${shape}.`,
+    }
+  }
+
+  // Count only: no spread to work with, so fall back to the family-wise t bar.
+  const bar = multipleTestingBar(trials)
+  const detail = `${trials} trial(s); at a 5% per-trial false-positive rate the family-wise rate is ${formatPercent(bar.familywiseFalsePositiveRate, 1)}, so a single trial must clear t = ${formatMetric(bar.requiredTStat, 2)} (Šidák). Observed t = ${formatMetric(computed.tStat, 2)}.`
+
+  if (trials > 1 && computed.tStat < bar.requiredTStat) {
+    return {
+      id: 'multiple_testing',
+      title: 'Selection bias across trials',
+      status: 'fail',
+      detail: `${detail} The result does not survive the search that produced it. Supply selectionIntegrity.trialSharpes for the less conservative deflated-Sharpe test, or pre-register one configuration and score it on fresh data.`,
+    }
+  }
+  return {
+    id: 'multiple_testing',
+    title: 'Selection bias across trials',
+    status: 'pass',
+    detail,
+  }
+}
+
 export function verifyBacktest(artifact: BacktestArtifact): BacktestReport {
   const shape = checkArtifactShape(artifact)
   if (shape.status === 'fail') {
@@ -500,6 +628,7 @@ export function verifyBacktest(artifact: BacktestArtifact): BacktestReport {
     checkSplitDiscipline(artifact),
     checkTestExposure(artifact),
     checkStatisticalPower(artifact, computed),
+    checkMultipleTesting(artifact, computed),
     checkInSampleGap(artifact, computed),
   ]
 
@@ -539,6 +668,11 @@ export function formatBacktestReport(report: BacktestReport): string {
       `  Sharpe ${formatMetric(m.sharpe)} · Sortino ${formatMetric(m.sortino)} · Calmar ${formatMetric(m.calmar)}`,
       `  CAGR ${formatPercent(m.cagr)} · vol ${formatPercent(m.annualizedVolatility)} · MaxDD ${formatPercent(m.maxDrawdown)}`,
       `  hit rate ${formatPercent(m.hitRate, 1)} · ${m.observations} obs over ${formatMetric(m.years, 2)}y · t = ${formatMetric(m.tStat, 2)}`,
+      `  skew ${formatMetric(m.skewness, 2)} · excess kurtosis ${formatMetric(m.excessKurtosis, 2)}${
+        m.skewness < -0.5 || m.excessKurtosis > 3
+          ? ' — returns are visibly non-normal; Sharpe understates the tail'
+          : ''
+      }`,
     )
   }
 

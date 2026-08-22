@@ -70,6 +70,8 @@ const outputSchema = lazySchema(() =>
         hitRate: z.number(),
         totalReturn: z.number(),
         tStat: z.number(),
+        skewness: z.number(),
+        excessKurtosis: z.number(),
       })
       .optional(),
     error: z.string().optional(),
@@ -217,6 +219,8 @@ export const QuantVerifyTool = buildTool({
               hitRate: report.computed.hitRate,
               totalReturn: report.computed.totalReturn,
               tStat: report.computed.tStat,
+              skewness: report.computed.skewness,
+              excessKurtosis: report.computed.excessKurtosis,
             }
           : undefined,
       },

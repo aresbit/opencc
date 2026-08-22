@@ -9,6 +9,8 @@ A backtest report is a set of numeric assertions about a returns series, and a p
 - requires a non-zero cost model, and — when a gross series is supplied — that the net series actually differs from it
 - requires declared train/test windows that do not overlap, and a holdoutEvaluations count of 1; a test set scored repeatedly has been tuned on and its figures are in-sample
 - computes the t-statistic of the mean return and refuses a Sharpe ≥ 1.0 claim that the sample cannot distinguish from zero
+- corrects for selection bias when you declare how many configurations you searched: the deflated Sharpe ratio (Bailey & López de Prado 2014) when you supply the trials' Sharpes, the Šidák-corrected t bar when you supply only the count
+- reports skewness and excess kurtosis, because Sharpe is a two-moment statistic and financial returns are neither symmetric nor thin-tailed
 - compares in-sample to out-of-sample Sharpe and flags out-of-sample performance that implausibly exceeds in-sample
 
 **action: "pricing"** — reads a JSON artifact of priced cases and:
@@ -58,6 +60,18 @@ Declare test exposure honestly. Add \`"selectionIntegrity": {"testExposure": "te
   "externalHoldout": {"net": [...], "window": {"start": "2026-01-01", "end": "2026-06-30"}}
 }
 \`\`\`
+
+Declare the search too. The winner of 60 parameter sweeps is not the evidence a single pre-registered run would be, and only you know how many you ran — searching 50 pure-noise strategies at a 5% false-positive rate turns up a "significant" one with probability \`1 - 0.95^50 ≈ 92%\`. Add \`trials\`, and \`trialSharpes\` (annualized, one per configuration you evaluated, losers included) when you have them:
+
+\`\`\`json
+"selectionIntegrity": {
+  "testExposure": "test-blind",
+  "trials": 60,
+  "trialSharpes": [0.31, -0.12, 0.88, ...]
+}
+\`\`\`
+
+With \`trialSharpes\` the check computes the deflated Sharpe ratio — the probability the true Sharpe is positive once the spread of the search and the return distribution's skew and fat tails are priced in. With only \`trials\` it applies the cruder Šidák t bar. Omitting both skips the check; it does not pass it.
 
 **Pricing.** Emit the cases with their benchmarks:
 
