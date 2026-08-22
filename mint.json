@@ -38,6 +38,7 @@
         "docs/tools/what-are-tools",
         "docs/tools/file-operations",
         "docs/tools/shell-execution",
+        "docs/tools/ssh-remote",
         "docs/tools/search-and-navigation",
         "docs/tools/task-management"
       ]

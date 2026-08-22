@@ -36,6 +36,7 @@ import { AwrOpsTool } from './tools/AwrOpsTool/AwrOpsTool.js'
 import { AwrStRunTool } from './tools/AwrStRunTool/AwrStRunTool.js'
 import { EvalApplyTool } from './tools/EvalApplyTool/EvalApplyTool.js'
 import { ActorTool } from './tools/ActorTool/ActorTool.js'
+import { SSHRemoteTool } from './tools/SSHRemoteTool/SSHRemoteTool.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
@@ -268,6 +269,7 @@ export function getAllBaseTools(): Tools {
     AwrStRunTool,
     EvalApplyTool,
     ActorTool,
+    SSHRemoteTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),

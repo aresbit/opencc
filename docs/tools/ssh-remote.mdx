@@ -1,0 +1,456 @@
+---
+title: "SSH Remote 远程开发"
+description: "用 /ssh-remote 在另一台电脑的指定目录中安全地读代码、修改文件并运行测试"
+---
+
+## 一句话理解
+
+`/ssh-remote` 让 opencc 继续运行在你的电脑上，但把命令和文件操作发送到另一台可通过 SSH 登录的电脑。模型、对话和 API 凭据不会安装或复制到远端。
+
+最推荐的使用方式是先在本机 `~/.ssh/config` 配置一个好记的别名，然后直接告诉 opencc：
+
+```text
+/ssh-remote devbox:/srv/my-app 修复登录接口的测试并运行 bun test
+```
+
+如果暂时不知道项目目录，只写别名即可。opencc 会先进入远端登录用户的主目录：
+
+```text
+/ssh-remote devbox 帮我找一下 inventory 项目在哪个目录，找到后检查 git 状态
+```
+
+<Note>
+这里的命令不是 shell 命令，不需要机械地记参数顺序。你可以用自然语言提供用户名、IP、端口、目录和任务，opencc 会把它解析成连接目标。唯一不要提供的是密码和私钥。
+</Note>
+
+## 使用前需要满足什么
+
+本机需要：
+
+- 已安装系统 `ssh` 命令；
+- opencc 可以使用的 SSH 密钥或本机 SSH agent；
+- 已人工确认过远端主机指纹；
+- 知道远端主机地址，或已经配置 SSH 别名。
+
+远端需要：
+
+- SSH 服务正在运行；
+- 一个允许登录的用户；
+- POSIX shell 和常见基础命令；
+- 该用户对目标目录有相应的读写权限。
+
+远端不需要安装 opencc、Bun、Node.js 或额外守护进程。当前实现面向 Linux、macOS 等 POSIX 远端，不支持把 Windows PowerShell 主机当作远端工作区。
+
+## 我到底要提供哪些信息
+
+### 已经配置 SSH 别名
+
+通常只需要：
+
+| 信息 | 是否必须 | 示例 |
+|---|---:|---|
+| SSH 别名 | 是 | `devbox` |
+| 项目目录 | 否 | `/srv/my-app`；不写则使用远端主目录 |
+| 开发任务 | 是 | `修复测试并运行 bun test` |
+
+最短写法：
+
+```text
+/ssh-remote devbox 检查这个账号主目录里有哪些项目
+```
+
+指定目录：
+
+```text
+/ssh-remote devbox:/srv/my-app 修复 README 中的错误并运行测试
+```
+
+### 没有配置 SSH 别名
+
+可以直接提供：
+
+| 信息 | 是否必须 | 示例 |
+|---|---:|---|
+| 用户名 | 通常需要 | `dev` |
+| IP 或主机名 | 是 | `192.168.1.80` |
+| SSH 端口 | 否 | `2222`；默认使用 SSH 配置或 22 |
+| 绝对目录 | 否 | `/home/dev/project`；不写则使用远端主目录 |
+| 开发任务 | 是 | `定位构建失败并修复` |
+| 密码 | **不要提供** | 工具不会读取密码字段，也不会弹出密码输入框 |
+
+你可以使用结构化地址：
+
+```text
+/ssh-remote ssh://dev@192.168.1.80:2222/home/dev/project 定位构建错误并修复
+```
+
+也可以自然地说：
+
+```text
+/ssh-remote 用户名 dev，IP 192.168.1.80，端口 2222，目录 /home/dev/project。请检查未提交改动并修复测试。
+```
+
+opencc 会解析用户名、IP、端口、目录和任务，不要求你自己拼接工具参数。
+
+## 用户名、IP、密码是不是就够了
+
+**它们足够让你在终端里完成首次 SSH 配置，但不适合直接交给 `/ssh-remote`。**
+
+原因是 SSHRemoteTool 使用无交互模式：它不会在后台等待看不见的密码提示，也不会把密码写进命令、日志或模型上下文。正确流程是：
+
+1. 在本机终端用密码人工登录一次，确认服务器身份；
+2. 创建 SSH 密钥；
+3. 用密码把公钥安装到远端一次；
+4. 验证以后无需密码即可登录；
+5. 再使用 `/ssh-remote`。
+
+密码只在第 1、3 步由系统 `ssh` 或 `ssh-copy-id` 在终端里读取，不经过 opencc。
+
+<Warning>
+不要把登录密码、私钥正文、API Token 或一次性验证码粘贴进聊天。聊天记录、调试输出或审计链路可能保存这些内容。如果已经发出了真实密码，应停止使用该密码并尽快更换。
+</Warning>
+
+## 第一次配置：从密码登录迁移到 SSH 密钥
+
+以下命令都在运行 opencc 的本机终端执行。
+
+### 1. 人工登录并核对主机指纹
+
+```bash
+ssh dev@192.168.1.80
+```
+
+首次连接时，SSH 会显示主机指纹。应通过管理员、云控制台或可信渠道核对指纹，再输入 `yes`。不要为了省事使用 `StrictHostKeyChecking=no`。
+
+### 2. 创建密钥
+
+如果还没有专用密钥：
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -C "opencc remote development"
+```
+
+建议给私钥设置口令。开始 opencc 前，把它加载进本机 SSH agent：
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+```
+
+SSHRemoteTool 会使用本机 agent 完成登录，但强制 `ForwardAgent=no`，因此 agent socket 不会转发到远端。
+
+### 3. 安装公钥
+
+Linux/macOS 通常可以使用：
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub dev@192.168.1.80
+```
+
+这一步会要求输入一次远端密码。它只把 `.pub` 公钥追加到远端 `~/.ssh/authorized_keys`，不要复制不带 `.pub` 后缀的私钥。
+
+如果本机没有 `ssh-copy-id`，可以在确认命令和目标无误后使用：
+
+```bash
+ssh dev@192.168.1.80 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys' < ~/.ssh/id_ed25519.pub
+```
+
+### 4. 验证无交互登录
+
+```bash
+ssh -o BatchMode=yes dev@192.168.1.80 'pwd -P && uname -sm'
+```
+
+能直接输出目录和系统信息、且没有询问密码，才说明 `/ssh-remote` 已经可以使用。
+
+## 推荐配置：给电脑起一个 SSH 别名
+
+编辑本机 `~/.ssh/config`：
+
+```ssh-config
+Host devbox
+    HostName 192.168.1.80
+    User dev
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+```
+
+字段含义：
+
+| 字段 | 作用 |
+|---|---|
+| `Host devbox` | 你以后输入的短别名，可以换成 `build-box`、`staging` 等 |
+| `HostName` | 真实 IP 或 DNS 主机名 |
+| `User` | 远端登录用户名 |
+| `Port` | SSH 端口；标准端口是 22 |
+| `IdentityFile` | 本机私钥路径，绝不是远端路径 |
+| `IdentitiesOnly yes` | 只尝试指定密钥，避免密钥太多导致认证失败 |
+
+保护配置文件权限：
+
+```bash
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/config ~/.ssh/id_ed25519
+chmod 644 ~/.ssh/id_ed25519.pub
+```
+
+验证别名：
+
+```bash
+ssh devbox
+ssh -o BatchMode=yes devbox 'pwd -P'
+```
+
+验证成功后，opencc 里只需：
+
+```text
+/ssh-remote devbox:/srv/my-app 查看 git 状态，理解项目结构，然后修复当前测试
+```
+
+### 通过跳板机连接
+
+系统 SSH 配置会被完整复用。需要跳板机时可以这样配置：
+
+```ssh-config
+Host company-jump
+    HostName jump.example.com
+    User ops
+    IdentityFile ~/.ssh/company_jump_ed25519
+
+Host internal-dev
+    HostName 10.20.0.15
+    User dev
+    IdentityFile ~/.ssh/internal_dev_ed25519
+    IdentitiesOnly yes
+    ProxyJump company-jump
+```
+
+先在终端验证：
+
+```bash
+ssh -o BatchMode=yes internal-dev 'pwd -P'
+```
+
+再使用：
+
+```text
+/ssh-remote internal-dev:/opt/services/api 修复 API 服务并运行集成测试
+```
+
+## 如何选择远端目录
+
+目录必须是远端上的 **POSIX 绝对路径**，例如：
+
+- `/home/dev/project`
+- `/srv/my-app`
+- `/opt/services/api`
+
+不要写：
+
+- `~/project`：`~` 不是绝对路径；想使用主目录时直接省略目录；
+- `./project`：相对路径含义不明确；
+- 本机路径，例如 `/Users/me/project`，除非远端恰好也有这个目录。
+
+### 已知目录
+
+```text
+/ssh-remote devbox:/srv/my-app 检查这个项目
+```
+
+或：
+
+```text
+/ssh-remote ssh://dev@192.168.1.80/srv/my-app 检查这个项目
+```
+
+### 不知道目录
+
+先省略目录，连接远端主目录：
+
+```text
+/ssh-remote devbox 帮我找名为 my-app 的 Git 仓库，先只报告候选目录
+```
+
+确认候选目录后，再说：
+
+```text
+/ssh-remote 断开当前会话，然后连接 devbox:/srv/my-app，检查项目状态
+```
+
+你也可以先在终端查询：
+
+```bash
+ssh devbox 'pwd -P'
+ssh devbox 'find "$HOME" -maxdepth 3 -type d -name .git -print'
+```
+
+### 目录名包含空格
+
+自然语言写法最不容易出错：
+
+```text
+/ssh-remote 使用 devbox 上的目录 /home/dev/My Project，检查其中的 package.json
+```
+
+URL 写法需要把空格编码成 `%20`：
+
+```text
+/ssh-remote ssh://dev@devbox/home/dev/My%20Project 检查 package.json
+```
+
+## 日常使用方式
+
+### 开始一个开发任务
+
+```text
+/ssh-remote devbox:/srv/my-app 先查看 AGENTS.md 和 git 状态，然后修复用户注册接口的失败测试
+```
+
+opencc 会依次连接、检查目录、阅读文件、编辑代码，并在远端运行验证命令。不要再用本地文件路径描述远端文件。
+
+### 继续刚才的会话
+
+在同一个 opencc 进程里，可以直接继续对话：
+
+```text
+继续检查刚才远端项目的 lint 错误
+```
+
+也可以显式调用：
+
+```text
+/ssh-remote 继续刚才的任务，运行完整测试
+```
+
+### 查看状态或审计记录
+
+```text
+/ssh-remote status
+/ssh-remote 查看当前远程会话的操作日志
+```
+
+本地审计文件位于：
+
+```text
+~/.claude/ssh-remote/<session>.audit.jsonl
+```
+
+审计记录的是 opencc 请求执行的操作，不是远端主机的完整安全日志。
+
+### 断开连接
+
+```text
+/ssh-remote disconnect
+```
+
+或自然语言：
+
+```text
+/ssh-remote 结束并断开刚才的远程开发会话
+```
+
+会话状态保存在当前 opencc 进程内。重启 opencc 后，再次使用别名连接即可。
+
+## 它能做什么
+
+`/ssh-remote` 背后只有一个 `SSHRemoteTool`，包含以下操作：
+
+| 操作 | 用途 |
+|---|---|
+| `connect` | 验证主机和目录，建立可复用 SSH 连接 |
+| `status` | 查看当前进程内的远程会话 |
+| `exec` | 在工作区运行构建、测试、Git 等命令 |
+| `read` | 读取工作区文件 |
+| `write` | 原子写入文件，失败时避免留下半个文件 |
+| `edit` | 精确替换唯一文本，避免改错位置 |
+| `list` | 浏览目录 |
+| `search` | 使用远端 `rg`，没有时回退到 `grep` |
+| `mkdir` / `rename` / `remove` | 目录和文件管理 |
+| `log` | 查看本地审计记录 |
+| `disconnect` | 在没有共享会话时关闭 SSH ControlMaster |
+
+读写类路径会被限制在连接时选定的工作区内。`../` 或工作区外的绝对路径会被拒绝。
+
+<Warning>
+工作区限制不是操作系统沙箱。`exec` 运行的是任意远端 shell 命令，拥有该 SSH 用户本身的权限；目录中的符号链接也可能指向工作区之外。使用生产账号时应采用最小权限用户，并认真查看写入和危险命令的权限提示。
+</Warning>
+
+## 常见错误
+
+### `Permission denied (publickey)`
+
+SSH 没找到可用密钥。先在 opencc 外执行：
+
+```bash
+ssh -vvv devbox
+ssh-add -l
+```
+
+确认 `IdentityFile` 正确、私钥已加载、远端 `authorized_keys` 包含对应公钥。
+
+### `Host key verification failed`
+
+先人工运行 `ssh devbox`，通过可信渠道核对主机指纹并接受。不要关闭主机指纹校验。
+
+### `Too many authentication failures`
+
+本机 agent 中加载了太多密钥。在对应 `Host` 配置中加入：
+
+```ssh-config
+IdentityFile ~/.ssh/id_ed25519
+IdentitiesOnly yes
+```
+
+### `Remote workspace ... is not an accessible directory`
+
+目录不存在、不是目录，或 SSH 用户无权进入。检查：
+
+```bash
+ssh devbox 'test -d /srv/my-app && cd /srv/my-app && pwd -P'
+```
+
+### `No SSH remote session ... Call action="connect" first`
+
+当前 opencc 进程还没有连接，或者已经重启。重新执行带目标的 `/ssh-remote` 命令。
+
+### 命令超时
+
+工具停止等待不等于远端进程一定已经终止。安静运行的构建或脚本可能仍在远端继续执行。重新连接后用 `ps`、任务日志或项目自己的状态命令确认，不要直接重复执行可能产生副作用的命令。
+
+## 高级配置
+
+使用独立 SSH 配置文件：
+
+```bash
+export OPENCC_SSH_REMOTE_CONFIG="$HOME/.ssh/opencc_config"
+opencc
+```
+
+关闭本地审计：
+
+```bash
+export OPENCC_SSH_REMOTE_NO_AUDIT=1
+opencc
+```
+
+默认建议保留审计。只有命令中可能包含敏感内容、且你明确不希望在本机留下记录时才关闭。
+
+## 最实用的准备清单
+
+在开始前确认：
+
+- [ ] `ssh -o BatchMode=yes <别名> 'pwd -P'` 可以成功；
+- [ ] SSH config 中已经写好用户名、IP、端口和密钥；
+- [ ] 已确认目标绝对目录，或者决定先使用远端主目录；
+- [ ] SSH 用户对目录具有所需权限；
+- [ ] 没有把密码、私钥或 Token 放进聊天；
+- [ ] 已告诉 opencc 具体要完成的开发任务和验证方式。
+
+满足这些条件后，日常只需一句：
+
+```text
+/ssh-remote <别名>:/绝对/项目/目录 <要完成的任务>
+```

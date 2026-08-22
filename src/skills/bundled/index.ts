@@ -17,6 +17,7 @@ import { registerVerifySkill } from './verify.js'
 import { registerWikitoolSkill } from './wikitool.js'
 import { registerBrainstormSkill } from './brainstorm.js'
 import { registerHandoffSkill } from './handoff.js'
+import { registerSSHRemoteSkill } from './sshRemote.js'
 
 /**
  * Initialize all bundled skills.
@@ -44,6 +45,7 @@ export function initBundledSkills(): void {
   registerWikitoolSkill()
   registerBrainstormSkill()
   registerHandoffSkill()
+  registerSSHRemoteSkill()
   if (feature('KAIROS') || feature('KAIROS_DREAM')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { registerDreamSkill } = require('./dream.js')

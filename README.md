@@ -84,6 +84,31 @@ bun run build
 
 构建产物输出到 `dist/cli.js`（约 24 MB）。
 
+## SSH Remote：在另一台电脑的目录中开发
+
+`/ssh-remote` 把模型和 API 凭据保留在本机，通过系统 `ssh` 在远端工作区执行命令和文件操作。远端只需要可用的 SSH 服务与 POSIX shell，不需要安装 opencc、Bun 或守护进程。首次配置、SSH Config 别名、密钥认证、目录选择和故障排查参见 [SSH Remote 远程开发完整指南](docs/tools/ssh-remote.mdx)。
+该实现参考并以 TypeScript 重写了 AgentReach 的 SSH 传输、退出码哨兵、连接复用和本地审计设计；原项目的 MIT 许可证随工具源码保留。
+
+```text
+/ssh-remote ssh://dev@build-box/srv/app 修复测试失败并运行 bun test
+
+# 同样支持 ssh_config 中的 Host 别名和 scp 风格
+/ssh-remote build-box:/srv/app 检查当前分支并继续开发
+
+# 省略目录时使用远端登录用户的主目录
+/ssh-remote build-box 帮我找一下项目目录
+```
+
+内置 `SSHRemoteTool` 支持命名会话，以及 `connect`、`status`、`exec`、`read`、`write`、`edit`、`list`、`search`、`mkdir`、`rename`、`remove`、`log` 和 `disconnect` 操作。文件路径限制在连接时指定的工作区内；`exec` 以该目录为默认目录，但仍拥有远端 SSH 用户的正常系统权限，并不是操作系统沙箱。
+
+安全默认值：
+
+- 只使用系统 SSH 配置、密钥或本机 SSH agent 认证；不要把密码或私钥写进 slash 命令。
+- 强制 `ForwardAgent=no`，并使用 `BatchMode=yes` 避免不可见的密码提示卡住工具调用。
+- SSH 连接通过 `ControlMaster` 复用一小时，`disconnect` 会在没有共享会话时主动关闭。
+- 操作审计记录在 `~/.claude/ssh-remote/<session>.audit.jsonl`；设置 `OPENCC_SSH_REMOTE_NO_AUDIT=1` 可关闭。
+- 可用 `OPENCC_SSH_REMOTE_CONFIG=/path/to/ssh_config` 指定独立 SSH 配置文件。
+
 ## MCP-FS：基于文件系统的 MCP 工具桥接
 
 从 ChatWise 导入 MCP 工具到本地 mcp-fs 注册表，无需常驻进程，按需 bridge 执行。
