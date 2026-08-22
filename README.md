@@ -31,6 +31,10 @@ opencc --matebot
 | `make uninstall` / `make uninstall-local` | 卸载系统级 / 用户级安装 |
 | `make clean` / `make dev` / `make test` / `make lint` | 清理 / 开发 / 测试 / 检查 |
 
+> `make build` 只更新仓库中的 `dist/cli.js`，不会覆盖已经安装到
+> `~/.local/share/opencc/` 或 `/usr/local/share/opencc/` 的版本。拉取新代码并构建后，
+> 需要再次执行 `make install-local`（或 `sudo make install`），本机的 `opencc` 才会使用最新能力。
+
 ### 约定
 
 - 可执行文件名为 `opencc`（`Makefile` 中 `PROJECT_NAME := opencc`）。
@@ -82,7 +86,36 @@ echo "say hello" | bun run src/entrypoints/cli.tsx -p
 bun run build
 ```
 
-构建产物输出到 `dist/cli.js`（约 24 MB）。
+构建产物输出到 `dist/cli.js`。产物大小会随依赖和构建配置变化，不作为功能完整性的判断依据。
+
+## 近期能力概览
+
+- **浏览器自动化：** `KimiWebBridgeTool` 通过本机 daemon 与 Chrome/Edge 扩展复用真实登录态；`ChromeCDPTool` 可直接拉起 `scripts/cdp.mjs`，并以浏览器级常驻连接复用多个标签页。Chrome 144+ 的“允许远程调试”是浏览器原生安全提示，通常只在建立新 daemon 连接时出现一次，而不是每条命令或每个标签页都出现。
+- **远程开发与群体协作：** `SSHRemoteTool` 提供受工作区约束的远程文件和命令操作；`WideResearchTool` 可把研究问题并行分发给 Agent；MateBot 通过 `ActorTool` 和 `EvalApplyTool` 提供持久消息、评估与应用门禁。
+- **研究与验证：** `AutoresearchTool`、`SelfImproveTool`（`rsi`）和 `LearnTool` 组成“试验—比较—归因—沉淀”闭环；`Paper2CodeTool`、`SoftwareAnalysisTool`、`QuantOrientTool`、`QuantVerifyTool` 分别覆盖论文落地、软件分析、量化研究阶段判定与结果复核。
+- **AWR 工作流：** `AwrOpsTool` 提供部署、刷写与真机验证所需的指南/脚本资产；`AwrStRunTool` 负责把多机 ST 任务编排给 Agent。真正执行时仍依赖可访问的开发板、SSH 环境及人工安全步骤。
+
+上面列出的是源码当前具备的能力。某项工具是否会出现在一次会话中，还取决于运行模式、feature flag、环境变量、外部服务和本机运行时；具体边界见下方能力清单。
+
+### 使用 `wide_research`
+
+`wide_research` 是模型可调用的工具，不是斜杠命令。直接用自然语言要求 OpenCC 对一组相互独立的条目执行同一个任务即可；为了让调用稳定，最好明确给出模板、条目、Agent 类型和并发数：
+
+```text
+请使用 wide_research：
+task: 审查 {{item}} 是否存在硬编码凭据；每个结论给出文件和行号，没有发现也要明确说明。
+items: [src/services/auth, src/services/billing, src/services/notify]
+subagent_type: Explore
+concurrency: 3
+```
+
+使用约束：
+
+- `task` 必须包含 `{{item}}`；每个 Agent 只看到替换后的当前条目。
+- `items` 支持 2–50 项，`concurrency` 默认 5、最大 15。并发越高，API 消耗和限流压力越大。
+- 只读搜索/审查优先使用 `subagent_type: Explore`；复杂通用任务可省略该字段，默认使用 `general-purpose`。
+- 各条目必须互不依赖；需要共享中间结论或完整长报告时，应改用单个 Agent 或分阶段执行。
+- 当前可靠路径是普通模式下的本地同步 Agent。`isolation: remote` 以及会强制 Agent 后台化的运行模式尚不能等待并聚合最终结果；写入型 `worktree` 任务虽然能执行，但当前汇总不会保留每个 worktree 的路径/分支，因此不建议用于需要合并改动的交付任务。
 
 ## SSH Remote：在另一台电脑的目录中开发
 
@@ -230,32 +263,43 @@ learn-tool action=plan_training trainingGoal=tool_use \
 
 > ✅ = 已实现  ⚠️ = 部分实现 / 条件启用  ❌ = stub / 移除 / feature flag 关闭
 
-### 自定义工具（本仓库新增，始终注册）
+### 自定义工具（本仓库新增）
 
-| 工具 | 注册名 | 说明 |
-|------|--------|------|
-| CodeActTool | `CodeAct` | 沙箱内八语言代码执行（TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme）；内置 TS/Python/C++23 函数式控制库、函数式 Bash、OCaml 5 effects 与 Scheme continuations，支持运行时探测及错误行号映射 |
-| ActionTool | `Action` | 执行 `~/.claude/action/` 下可复用的 Actions 脚本 |
-| MythosTool | `mythos` | 六阶段深度研究：结构化 claim + 证据 + 对抗性验证，带运行完整性自检 |
-| AutoresearchTool | `autoresearch` | verifier 锁定的自主研究循环：强制 measured baseline、近邻数值目标、重复测量中位数/MAD、假设与阶段化研究记忆，只保留通过正确性门禁且超过噪声阈值的改进；支持独立实验队列与证据审计 |
-| WikiTool | `wikitool` | 三层个人 wiki 知识库：`save` 抓取归档，`search` / `list` / `get` 检索，`distill` / `compare` 提炼 |
-| MemoryTool | `MemoryTool` | 四层记忆系统（临时 / 工作 / 长期 / 主动），支持搜索、晋级、降级、合成 |
-| KimiTool | `kimitool` | 免费 Kimi 对话 API，跨设备自动加载 refresh_token |
-| GeminiSubtitleTool | `geminisubtitle` | 经浏览器 Chrome CDP 调 Gemini 生成中文字幕 |
-| PMTool | `pm-tool` | 项目管理：任务依赖图 + ready/blocked 推导 + 决策日志与防陷阱 |
-| SETool | `se-tool` | 系统工程规划：与 PMTool 共享同一套任务依赖图引擎 |
-| LearnTool | `learn-tool` | 受控自我改进闭环，见上文专章 |
-| Paper2CodeTool | `paper2code` | `extract` 把 arXiv 论文切成可引用产物并裁定提取质量；`verify` 对写出的实现跑确定性检查（结构 / 语法 / 引用锚定 / UNSPECIFIED 审计 / import / 冒烟） |
-| QuantVerifyTool | `quant_verify` | 量化结果硬门禁：从收益序列重算 Sharpe/MaxDD/Calmar 并核对报告数字，检查成本是否真扣、留出集是否被反复评分、样本是否撑得起结论；定价侧核对 NPV/Greeks 与基准偏差 |
-| SoftwareAnalysisTool | `software_analysis` | 软件分析方法选择与可复算内核：按约束规划测试/模糊测试/静态分析/符号执行等方法，求解 GEN/KILL 数据流不动点，并以 Tarantula/Ochiai/DStar 定位可疑代码；明确假阳性/假阴性与证据边界 |
-| ManuscriptCheckTool | `manuscript_check` | 中文稿件硬检查：AI 痕迹模式扫描（带行号与改法）、对话占比、五感覆盖、角色声音辨识度（字符二元组分布比对）、伏笔回收台账 |
-| RedTeamSkill | `RedTeamSkill` / `redteam` | 授权 CTF/靶场安全模式：固化 ELF/ABI、内存破坏、NX/ASLR/PIE、ROP、canary/RELRO/FORTIFY 与盲 oracle 方法；生成证据驱动的 binary plan 和 hardening audit，且不提升权限或关闭沙箱 |
-| RedoTool | `redotool` | 重放仓库早期提交历史，生成可发布的教学讲解 |
-| GoalTool | `create_goal` 等 | 长期目标追踪：成功标准 + 证据门禁的完成裁定、人类闸门、停滞检测、token / 轮次 / 时限预算 |
-| McpFsTool | `mcpfs` 等 | MCP 工具桥接：本地注册表按需 bridge 执行，见上文 MCP-FS 节 |
-| ChromeCDPTool | `ChromeCDP` | 控制本机 Chrome：导航、截图、点击、执行 JS、抓取网络请求 |
-| ContentAnalystTool | `ContentAnalyst` | 爆款内容结构 / 标题公式 / 情绪触发分析 |
-| StrategyDBTool | `StrategyDB` | 内容策略知识库：模板、头条模式、竞品情报归档 |
+这些工具都已接入 `src/tools.ts`；“条件”表示工具本身已实现，但完整效果需要对应的本机运行时、服务、硬件或会话模式。
+
+| 工具 | 注册名 | 状态 / 依赖 | 说明 |
+|------|--------|-------------|------|
+| CodeActTool | `CodeAct` | ⚠️ 按本机运行时探测 | 执行 TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme；缺少编译器或解释器时返回安装提示，并支持错误行号映射 |
+| ActionTool | `Action` | ⚠️ `~/.claude/action/` | 执行本地可复用的 Actions 脚本 |
+| MythosTool | `mythos` | ✅ | 六阶段深度研究：结构化 claim、证据、对抗性验证与运行完整性自检 |
+| AutoresearchTool | `autoresearch` | ✅ | verifier 锁定的自主研究循环：基线、数值目标、重复测量、噪声门槛、实验队列与证据审计 |
+| WideResearchTool | `wide_research` | ⚠️ 本地同步 Agent | 将同一任务并行 fan-out 到 2–50 个独立条目并汇总结果；远程/后台聚合和写入型 worktree 交付仍有上述限制 |
+| SelfImproveTool | `rsi` | ✅ | 运行可测量试验，比较、分配、归因和定位改进，并把验证通过的经验沉淀为仓库 Skill |
+| WikiTool | `wikitool` | ✅ | 三层个人 wiki：抓取归档、检索、提炼和比较 |
+| MemoryTool | `MemoryTool` | ✅ | 四层记忆系统（临时 / 工作 / 长期 / 主动），支持搜索、晋级、降级和合成 |
+| LearnTool | `learn-tool` | ✅ | 有证据门禁、审计和回滚能力的受控自我改进闭环，见上文专章 |
+| KimiTool | `kimitool` | ⚠️ Kimi 凭据与网络 | 调用 Kimi 对话能力，并从本机配置加载 refresh token |
+| KimiWebBridgeTool | `kimi_webbridge` | ⚠️ daemon + 浏览器扩展 | 控制真实 Chrome/Edge 会话，支持导航、读取、点击、输入、截图及连接状态诊断 |
+| ChromeCDPTool | `ChromeCDP` | ⚠️ `scripts/cdp.mjs` + Chrome | 直接拉起浏览器级 CDP daemon，以一条远程调试连接复用导航、截图、点击、JS 和网络请求操作 |
+| GeminiSubtitleTool | `geminisubtitle` | ⚠️ Gemini 登录态 + CDP | 通过真实浏览器会话调用 Gemini 生成中文字幕 |
+| SSHRemoteTool | `SSHRemoteTool` | ⚠️ 可用的 SSH 目标 | 命名会话和连接复用，以及远程 exec/read/write/edit/list/search 等工作区操作；见上文专章 |
+| PMTool | `pm-tool` | ✅ | 项目管理：任务依赖图、ready/blocked 推导、决策日志与防陷阱 |
+| SETool | `se-tool` | ✅ | 系统工程规划，与 PMTool 共享任务依赖图引擎 |
+| ActorTool | `ActorTool` | ✅ | MateBot 持久 Actor：支持本地/跨 IP tx/rx 邮箱和 Lisp meta-interpreter，为角色通信提供执行层 |
+| EvalApplyTool | `eval_apply` | ✅ | MateBot 持久化 eval/apply 门禁，区分“实现产出”和“验证后应用” |
+| Paper2CodeTool | `paper2code` | ⚠️ 网络与 PDF/Python 工具 | 将 arXiv 论文切成可引用产物，并对实现做结构、语法、引用、import 和冒烟验证 |
+| QuantOrientTool | `quant_orient` | ✅ | 读取研究说明和结果，识别当前研究阶段、证据缺口与下一道门禁 |
+| QuantVerifyTool | `quant_verify` | ✅ | 从收益序列重算风险收益指标，检查拆分、统计功效、测试集暴露和多重检验；同时验证定价结果，且在净/毛收益同时提供时核对成本差额 |
+| SoftwareAnalysisTool | `software_analysis` | ✅ | 选择测试/模糊测试/静态分析/符号执行方法，并提供可复算的数据流与故障定位内核；外部分析器仍需另行运行 |
+| ManuscriptCheckTool | `manuscript_check` | ✅ | 中文稿件的 AI 痕迹、对话占比、五感覆盖、角色声音和伏笔回收检查 |
+| AwrOpsTool | `awr-ops` | ✅ | 返回 AWR 部署、刷写、传输和真机验证所需的指南、参考与脚本资产，不直接替代现场执行 |
+| AwrStRunTool | `awr-st-run` | ⚠️ Agent/SSH/硬件环境 | 编排多机 ST 运行、Gate-1 检查和人工安全步骤 |
+| RedTeamSkill | `RedTeamSkill` / `redteam` | ⚠️ 授权场景 | 为授权 CTF/靶场生成证据驱动的二进制分析和加固计划；不提升权限或关闭沙箱 |
+| RedoTool | `redotool` | ⚠️ Git 仓库 | 重放仓库早期提交历史，生成可发布的教学讲解 |
+| GoalTool | `create_goal` 等 | ✅ | 长期目标追踪：成功标准、证据门禁、人类闸门、停滞检测及预算 |
+| McpFsTool | `mcpfs` 等 | ⚠️ 已导入的 manifest | 本地注册表按需 bridge 执行 MCP 工具，见上文 MCP-FS 节 |
+| ContentAnalystTool | `ContentAnalyst` | ✅ | 爆款内容结构、标题公式和情绪触发分析 |
+| StrategyDBTool | `StrategyDB` | ✅ | 内容策略知识库：模板、头条模式和竞品情报归档 |
 
 ### 核心系统
 
@@ -275,7 +319,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | Doctor 诊断 (`/doctor`) | ✅ | 版本、API、插件、沙箱检查 |
 | 自动压缩 (compaction) | ✅ | auto-compact / micro-compact / API compact |
 
-### 工具 — 始终可用
+### 工具 — 默认会话可用
 
 | 工具 | 状态 | 说明 |
 |------|------|------|
@@ -288,17 +332,12 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | WebFetchTool | ✅ | URL 抓取 → Markdown → AI 摘要 |
 | WebSearchTool | ✅ | 网页搜索 + 域名过滤 |
 | AskUserQuestionTool | ✅ | 多问题交互提示 + 预览 |
-| SendMessageTool | ✅ | 消息发送（peers / teammates / mailbox） |
 | SkillTool | ✅ | 斜杠命令 / Skill 调用 |
 | EnterPlanModeTool | ✅ | 进入计划模式 |
 | ExitPlanModeTool (V2) | ✅ | 退出计划模式 |
 | TodoWriteTool | ✅ | Todo 列表 v1 |
-| BriefTool | ✅ | 简短消息 + 附件发送 |
 | TaskOutputTool | ✅ | 后台任务输出读取 |
 | TaskStopTool | ✅ | 后台任务停止 |
-| ListMcpResourcesTool | ✅ | MCP 资源列表 |
-| ReadMcpResourceTool | ✅ | MCP 资源读取 |
-| SyntheticOutputTool | ✅ | 非交互会话结构化输出 |
 
 ### 工具 — 条件启用
 
@@ -314,9 +353,12 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | ExitWorktreeTool | ⚠️ | 同上 |
 | TeamCreateTool | ⚠️ | `isAgentSwarmsEnabled()` |
 | TeamDeleteTool | ⚠️ | 同上 |
+| SendMessageTool | ⚠️ | `isAgentSwarmsEnabled()`；Agent 队友 / mailbox 通信 |
 | ToolSearchTool | ⚠️ | `isToolSearchEnabledOptimistic()` |
 | PowerShellTool | ⚠️ | Windows 平台检测 |
 | LSPTool | ⚠️ | `ENABLE_LSP_TOOL` 环境变量 |
+| ListMcpResourcesTool / ReadMcpResourceTool | ⚠️ | 会话存在可用 MCP 资源时按需注入 |
+| SyntheticOutputTool (`StructuredOutput`) | ⚠️ | 非交互会话请求 JSON Schema 结构化输出时动态创建 |
 | ConfigTool | ❌ | `USER_TYPE === 'ant'`（永远为 false） |
 
 ### 工具 — Feature Flag 关闭（全部不可用）
@@ -328,6 +370,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | RemoteTriggerTool | `AGENT_TRIGGERS_REMOTE` |
 | MonitorTool | `MONITOR_TOOL` |
 | SendUserFileTool | `KAIROS` |
+| BriefTool | `KAIROS` / `KAIROS_BRIEF`，并受 entitlement 和用户 opt-in 控制 |
 | OverflowTestTool | `OVERFLOW_TEST_TOOL` |
 | TerminalCaptureTool | `TERMINAL_PANEL` |
 | WebBrowserTool | `WEB_BROWSER_TOOL` |
@@ -409,6 +452,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | `/security-review` | ✅ | 安全审查 |
 | `/session` | ✅ | 会话信息 |
 | `/skills` | ✅ | Skill 管理 |
+| `/ssh-remote` (`remote-dev` / `ssh-dev`) | ✅ | 通过 `SSHRemoteTool` 在远端工作区开发 |
 | `/stats` | ✅ | 会话统计 |
 | `/status` | ✅ | 状态信息 |
 | `/statusline` | ✅ | 状态栏 UI |
