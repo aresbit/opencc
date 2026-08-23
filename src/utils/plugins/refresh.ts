@@ -27,8 +27,9 @@ import type { PluginError } from '../../types/plugin.js'
 import { logForDebugging } from '../debug.js'
 import { errorMessage } from '../errors.js'
 import { logError } from '../log.js'
+import uniqBy from 'lodash-es/uniqBy.js'
 import { clearAllCaches } from './cacheUtils.js'
-import { getPluginCommands } from './loadPluginCommands.js'
+import { getPluginCommands, getPluginSkills } from './loadPluginCommands.js'
 import { loadPluginHooks } from './loadPluginHooks.js'
 import { loadPluginLspServers } from './lspPluginIntegration.js'
 import { loadPluginMcpServers } from './mcpPluginIntegration.js'
@@ -41,6 +42,10 @@ export type RefreshActivePluginsResult = {
   enabled_count: number
   disabled_count: number
   command_count: number
+  /** Plugin skills (SKILL.md from skills/ dirs or root SKILL.md) surfaced in
+   * the skill list. Distinct from command_count: getPluginCommands() and
+   * getPluginSkills() load separate plugin directories. */
+  skill_count: number
   agent_count: number
   hook_count: number
   mcp_count: number
@@ -86,10 +91,20 @@ export async function refreshActivePlugins(
   // the plugin, returning plugin-cache-miss. loadAllPlugins warms the
   // cache-only memoize on completion, so the awaits below are ~free.
   const pluginResult = await loadAllPlugins()
-  const [pluginCommands, agentDefinitions] = await Promise.all([
+  const [pluginCommands, pluginSkills, agentDefinitions] = await Promise.all([
     getPluginCommands(),
+    getPluginSkills(),
     getAgentDefinitionsWithOverrides(getOriginalCwd()),
   ])
+  // Plugin skills must reach the REPL /-menu, which is fed by
+  // AppState.plugins.commands (merged with localCommands in REPL.tsx). The
+  // model skill list separately includes pluginSkills via getCommands(), so
+  // merging here does not double-count anywhere — plugins.commands has exactly
+  // one consumer (REPL.tsx:845).
+  const mergedPluginCommands = uniqBy(
+    [...pluginCommands, ...pluginSkills],
+    'name',
+  )
 
   const { enabled, disabled, errors } = pluginResult
 
@@ -126,7 +141,7 @@ export async function refreshActivePlugins(
       ...prev.plugins,
       enabled,
       disabled,
-      commands: pluginCommands,
+      commands: mergedPluginCommands,
       errors: mergePluginErrors(prev.plugins.errors, errors),
       needsRefresh: false,
     },
@@ -173,20 +188,21 @@ export async function refreshActivePlugins(
   }, 0)
 
   logForDebugging(
-    `refreshActivePlugins: ${enabled.length} enabled, ${pluginCommands.length} commands, ${agentDefinitions.allAgents.length} agents, ${hook_count} hooks, ${mcp_count} MCP, ${lsp_count} LSP`,
+    `refreshActivePlugins: ${enabled.length} enabled, ${pluginCommands.length} commands, ${pluginSkills.length} skills, ${agentDefinitions.allAgents.length} agents, ${hook_count} hooks, ${mcp_count} MCP, ${lsp_count} LSP`,
   )
 
   return {
     enabled_count: enabled.length,
     disabled_count: disabled.length,
     command_count: pluginCommands.length,
+    skill_count: pluginSkills.length,
     agent_count: agentDefinitions.allAgents.length,
     hook_count,
     mcp_count,
     lsp_count,
     error_count: errors.length + (hook_load_failed ? 1 : 0),
     agentDefinitions,
-    pluginCommands,
+    pluginCommands: mergedPluginCommands,
   }
 }
 
