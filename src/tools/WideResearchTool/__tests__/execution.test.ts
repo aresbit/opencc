@@ -8,7 +8,10 @@ import {
   cleanupTaskOutput,
   initTaskOutput,
 } from '../../../utils/task/diskOutput.js'
-import { resolveAgentResult } from '../WideResearchTool.js'
+import {
+  resolveAgentResult,
+  resolveWideResearchAgentType,
+} from '../WideResearchTool.js'
 
 const taskFiles: string[] = []
 
@@ -216,5 +219,36 @@ describe('resolveAgentResult', () => {
         worktreeBranch: 'agent-failed',
       })
     }
+  })
+})
+
+describe('resolveWideResearchAgentType', () => {
+  const normal = [{ agentType: 'general-purpose' }, { agentType: 'researcher' }]
+  const coordinator = [
+    { agentType: 'worker' },
+    { agentType: 'researcher' },
+    { agentType: 'builder' },
+  ]
+
+  test('uses general-purpose when normal sessions expose it', () => {
+    expect(resolveWideResearchAgentType(undefined, normal)).toBe(
+      'general-purpose',
+    )
+  })
+
+  test('falls back to worker in coordinator and goal environments', () => {
+    expect(resolveWideResearchAgentType(undefined, coordinator)).toBe('worker')
+    expect(resolveWideResearchAgentType('general-purpose', coordinator)).toBe(
+      'worker',
+    )
+  })
+
+  test('does not silently replace a requested specialised agent', () => {
+    expect(resolveWideResearchAgentType('researcher', coordinator)).toBe(
+      'researcher',
+    )
+    expect(
+      resolveWideResearchAgentType('missing-specialist', coordinator),
+    ).toBe('missing-specialist')
   })
 })

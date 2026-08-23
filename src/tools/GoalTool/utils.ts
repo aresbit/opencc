@@ -1301,6 +1301,10 @@ Budget:
 
 Avoid repeating work that is already done. Choose the next concrete action toward the objective.
 
+Goal-loop operating rules:
+- Track multi-step work with TaskCreate, TaskUpdate, and TaskList. Do not call TodoWrite: it is not part of the goal continuation tool contract, and stale Todo plans must not drive current progress.
+- Before downloading a GitHub branch archive, resolve the repository's default_branch (or remote HEAD) instead of assuming main/master. Make HTTP failures fatal and validate the archive before extracting it.
+
 Completion is gated on declared success criteria, not on your own narrative:
 - Every explicit requirement, numbered item, named file, command, test, and deliverable in the objective must exist as a success criterion. If criteria are missing or incomplete, add them now with update_goal({criteria_add: [...]}).
 - A criterion is satisfied only by calling update_goal({criterion_meet: {...}}) with concrete evidence: the command you ran and what it printed, the test that passed, the file path that now exists, or the URL you checked. File evidence is verified against the filesystem, so point at real paths.

@@ -52,7 +52,9 @@ const inputSchema = lazySchema(() =>
     subagent_type: z
       .string()
       .optional()
-      .describe('Agent type to run each item. Defaults to general-purpose.'),
+      .describe(
+        'Agent type to run each item. Defaults to an available general-purpose agent; coordinator/goal environments fall back to worker.',
+      ),
     concurrency: z
       .number()
       .int()
@@ -144,6 +146,26 @@ class AgentTaskFailure extends Error {
     super(message)
     this.name = 'AgentTaskFailure'
   }
+}
+
+export function resolveWideResearchAgentType(
+  requested: string | undefined,
+  activeAgents: readonly { agentType: string }[],
+): string {
+  const available = new Set(activeAgents.map(agent => agent.agentType))
+  if (requested && available.has(requested)) return requested
+
+  // `general-purpose` is the historical default, while coordinator/goal
+  // sessions expose `worker` as their general executor. Treat an explicit old
+  // default like an omitted value so saved prompts continue to work.
+  if (!requested || requested === 'general-purpose') {
+    if (available.has('general-purpose')) return 'general-purpose'
+    if (available.has('worker')) return 'worker'
+  }
+
+  // Preserve AgentTool's useful validation error for genuinely unknown or
+  // unavailable specialised agent names.
+  return requested ?? 'general-purpose'
 }
 
 function consumeOwnedTask(
@@ -340,11 +362,15 @@ export const WideResearchTool = buildTool({
       async unit => {
         // Each unit is an ordinary Agent call. Failures are caught per unit by
         // runWithConcurrency so one bad item cannot sink the batch.
+        const subagentType = resolveWideResearchAgentType(
+          input.subagent_type,
+          toolUseContext.options.agentDefinitions.activeAgents,
+        )
         const result = await AgentTool.call(
           {
             prompt: unit.prompt,
             description: `wide_research: ${unit.item}`.slice(0, 120),
-            subagent_type: input.subagent_type ?? 'general-purpose',
+            subagent_type: subagentType,
             ...(input.isolation ? { isolation: input.isolation } : {}),
             completionOwner: COMPLETION_OWNER,
           } as Parameters<typeof AgentTool.call>[0],

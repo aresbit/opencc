@@ -56,6 +56,13 @@ describe('Bash → CodeAct routing', () => {
     expect(prompt).toContain('map_lines')
     expect(prompt).toContain('run_cmd')
   })
+
+  test('does not assume GitHub repositories use main', () => {
+    const prompt = getSimplePrompt()
+    expect(prompt).toContain('default_branch')
+    expect(prompt).toContain('curl --fail --location')
+    expect(prompt).toContain('tar -tzf')
+  })
 })
 
 describe('CodeAct → Bash routing', () => {

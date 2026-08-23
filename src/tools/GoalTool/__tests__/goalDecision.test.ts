@@ -76,6 +76,10 @@ describe("decideGoalTurn", () => {
 		const decision = await decideGoalTurn();
 		expect(decision.decision).toBe("run");
 		expect(decision.promptBlocks?.[0]).toMatchObject({ type: "text" });
+		const text = (decision.promptBlocks?.[0] as { text: string }).text;
+		expect(text).toContain("TaskCreate, TaskUpdate, and TaskList");
+		expect(text).toContain("Do not call TodoWrite");
+		expect(text).toContain("default_branch");
 	});
 
 	test("does not re-run the same unchanged goal state twice", async () => {

@@ -44,6 +44,7 @@ import {
 } from './services/api/errors.js'
 import { logAntError, logForDebugging } from './utils/debug.js'
 import { applyTodoRecitation } from './utils/todoRecitation.js'
+import { isTodoV2Enabled } from './utils/tasks.js'
 import { applyRepeatedFailureNotice } from './utils/repeatedFailure.js'
 import {
   createUserMessage,
@@ -433,7 +434,9 @@ async function* queryLoop(
     // cached prefix intact. Self-replacing — a prior recitation is stripped
     // before the current one goes on, so this cannot accumulate.
     {
-      const recitation = applyTodoRecitation(messagesForQuery)
+      const recitation = applyTodoRecitation(messagesForQuery, {
+        disabled: isTodoV2Enabled(),
+      })
       messagesForQuery = recitation.messages
     }
 

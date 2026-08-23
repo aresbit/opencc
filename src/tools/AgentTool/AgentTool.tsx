@@ -344,6 +344,7 @@ export const AgentTool = buildTool({
   ) {
     const startTime = Date.now();
     const model = modelParam;
+    const coordinatorAtLaunch = isCoordinatorMode();
 
     // Get app state for permission mode and agent filtering
     const appState = toolUseContext.getAppState();
@@ -944,7 +945,10 @@ export const AgentTool = buildTool({
             toolUseContext,
             rootSetAppState,
             agentIdForCleanup: asyncAgentId,
-            enableSummarization: isCoordinator || isForkSubagentEnabled() || getSdkAgentProgressSummariesEnabled(),
+            enableSummarization:
+              coordinatorAtLaunch ||
+              isForkSubagentEnabled() ||
+              getSdkAgentProgressSummariesEnabled(),
             getWorktreeResult: cleanupWorktreeIfNeeded,
           }),
         ),

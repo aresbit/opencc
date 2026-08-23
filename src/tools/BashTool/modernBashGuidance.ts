@@ -23,6 +23,7 @@ export function getModernBashGuidance(): string {
     "- In functions, declare locals explicitly. Split declaration from command substitution (`local value; value=$(command)`) so the command's failure status is not masked.",
     '- Propagate meaningful non-zero statuses. Do not assume every non-zero status is an error: predicates and tools such as grep/diff use status to represent ordinary outcomes.',
     '- When creating or reviewing a standalone `.sh` script, validate it with `bash -n`; use `shellcheck` when it is installed, then exercise empty input, spaces, glob characters, missing final newlines and command failures.',
+    '- For GitHub archive downloads, never assume the branch is `main` or `master`. Resolve `default_branch` with `gh api repos/OWNER/REPO --jq .default_branch` or the GitHub API, use `curl --fail --location`, and validate with `tar -tzf` before extraction.',
     '',
     'Execution boundary:',
     '- Use BashTool for one command or a short dependency chain. Its actual interactive shell may be bash or zsh, and shell variables/functions do not persist between calls, so keep commands portable and self-contained.',

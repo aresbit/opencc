@@ -113,7 +113,7 @@ concurrency: 3
 
 - `task` 必须包含 `{{item}}`；每个 Agent 只看到替换后的当前条目。
 - `items` 支持 2–50 项，`concurrency` 默认 5、最大 15。并发越高，API 消耗和限流压力越大。
-- 只读搜索/审查优先使用 `subagent_type: Explore`；复杂通用任务可省略该字段，默认使用 `general-purpose`。
+- 显式指定 `subagent_type` 时必须选当前会话列出的可用 Agent；复杂通用任务可省略该字段，普通会话会选 `general-purpose`，coordinator/goal 会话会自动回退到 `worker`。
 - 各条目必须互不依赖；需要共享中间结论或完整长报告时，应改用单个 Agent 或分阶段执行。
 - 支持本地同步、后台和 `isolation: remote` Agent；调用会等待所有条目到达终态后统一聚合。写入型任务应使用 `isolation: worktree`，保留下来的 worktree 路径与分支会同时出现在逐项报告和结构化 `worktrees` 字段中，调用方仍需复核并合并这些分支。
 
@@ -273,7 +273,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | ActionTool | `Action` | ⚠️ `~/.claude/action/` | 执行本地可复用的 Actions 脚本；编译型 Action 与 CodeAct 共用宿主工具链，不创建沙箱专属 compiler/opam/Cargo 环境 |
 | MythosTool | `mythos` | ✅ | 六阶段深度研究：结构化 claim、证据、对抗性验证与运行完整性自检 |
 | AutoresearchTool | `autoresearch` | ✅ | verifier 锁定的自主研究循环：基线、数值目标、重复测量、噪声门槛、实验队列与证据审计 |
-| WideResearchTool | `wide_research` | ⚠️ Agent/远程环境 | 将同一任务并行 fan-out 到 2–50 个独立条目，等待同步/后台/远程任务并聚合结果；保留写入型 worktree 的路径与分支 |
+| WideResearchTool | `wide_research` | ⚠️ Agent/远程环境 | 将同一任务并行 fan-out 到 2–50 个独立条目，按会话选择 `general-purpose` 或 `worker`，等待同步/后台/远程任务并聚合结果；保留写入型 worktree 的路径与分支 |
 | SelfImproveTool | `rsi` | ✅ | 运行可测量试验，比较、分配、归因和定位改进，并把验证通过的经验沉淀为仓库 Skill |
 | WikiTool | `wikitool` | ✅ | 三层个人 wiki：抓取归档、检索、提炼和比较 |
 | MemoryTool | `MemoryTool` | ✅ | 四层记忆系统（临时 / 工作 / 长期 / 主动），支持搜索、晋级、降级和合成 |
@@ -335,7 +335,7 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | SkillTool | ✅ | 斜杠命令 / Skill 调用 |
 | EnterPlanModeTool | ✅ | 进入计划模式 |
 | ExitPlanModeTool (V2) | ✅ | 退出计划模式 |
-| TodoWriteTool | ✅ | Todo 列表 v1 |
+| TodoWriteTool | ✅ | 旧版 Todo 列表；goal/task-v2 续跑不会再调用或复诵它 |
 | TaskOutputTool | ✅ | 后台任务输出读取 |
 | TaskStopTool | ✅ | 后台任务停止 |
 
@@ -360,6 +360,8 @@ learn-tool action=plan_training trainingGoal=tool_use \
 | ListMcpResourcesTool / ReadMcpResourceTool | ⚠️ | 会话存在可用 MCP 资源时按需注入 |
 | SyntheticOutputTool (`StructuredOutput`) | ⚠️ | 非交互会话请求 JSON Schema 结构化输出时动态创建 |
 | ConfigTool | ❌ | `USER_TYPE === 'ant'`（永远为 false） |
+
+goal 循环使用 `TaskCreate`、`TaskUpdate` 和 `TaskList` 管理进度；启用 task-v2 后，查询层会主动移除旧的 TodoWrite 复诵消息，避免自动续跑再次请求不存在的 `TodoWrite`。
 
 ### 工具 — Feature Flag 关闭（全部不可用）
 

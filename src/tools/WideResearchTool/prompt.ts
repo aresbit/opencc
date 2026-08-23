@@ -7,7 +7,7 @@ Use this when the same question has to be asked of a list — audit twenty repos
 Inputs:
 - \`task\`: the prompt, containing \`{{item}}\` where the item goes. This is required — without it every agent receives an identical prompt and the run does the same work N times.
 - \`items\`: the list, 2 to 50 entries.
-- \`subagent_type\`: which agent runs each item (default: general-purpose).
+- \`subagent_type\`: which agent runs each item. By default the tool selects an available general executor: \`general-purpose\` in normal sessions or \`worker\` in coordinator/goal sessions.
 - \`concurrency\`: agents in flight at once (default 5, max 15).
 - \`isolation\`: pass \`"worktree"\` when the agents will write to the repository, so they cannot overwrite each other; \`"remote"\` to run each item off this machine (MateBot remote transport).
 

@@ -118,6 +118,22 @@ describe("buildRecitationText", () => {
 });
 
 describe("applyTodoRecitation", () => {
+	test("removes legacy Todo recitation when Task tools own progress", () => {
+		const base = [
+			userTurn(),
+			todoWriteStep(PLAN),
+			assistantStep(),
+			assistantStep(),
+			assistantStep(),
+		];
+		const withRecitation = applyTodoRecitation(base).messages;
+		const result = applyTodoRecitation(withRecitation, { disabled: true });
+
+		expect(result.recited).toBe(false);
+		expect(result.openCount).toBe(0);
+		expect(result.messages.filter(isRecitationMessage)).toHaveLength(0);
+	});
+
 	test("recites once the plan has been out of view for enough steps", () => {
 		const messages = [
 			userTurn(),

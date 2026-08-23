@@ -150,6 +150,8 @@ export function buildRecitationText(todos: RecitedTodo[]): string | null {
 export interface RecitationOptions {
   /** Steps without a TodoWrite before reciting. Default 3. */
   reciteAfterSteps?: number
+  /** TaskCreate/TaskUpdate owns progress; remove legacy Todo recitations. */
+  disabled?: boolean
 }
 
 export interface RecitationResult {
@@ -174,6 +176,14 @@ export function applyTodoRecitation(
 
   const hadRecitation = messages.some(isRecitationMessage)
   const base = hadRecitation ? messages.filter(m => !isRecitationMessage(m)) : messages
+
+  if (options.disabled) {
+    return {
+      messages: hadRecitation ? base : messages,
+      recited: false,
+      openCount: 0,
+    }
+  }
 
   const plan = readPlanFromTranscript(base)
   if (!plan) {
