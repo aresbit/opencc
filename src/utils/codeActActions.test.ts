@@ -58,4 +58,31 @@ fn main() {
       })
     })
   }
+
+  if (getCodeActRuntimeStatus('ocaml').available) {
+    test('compiles an OCaml Action with the active host opam switch', async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'codeact-actions-'))
+      cleanup.push(directory)
+      const filePath = join(directory, 'host-ocaml.ml')
+      await writeFile(filePath, `---
+name: host-ocaml
+description: prove that Actions reuse host ocamlopt
+language: ocaml
+---
+let () = print_endline (Sys.getenv "ACTION_ARGS")`)
+
+      const result = await executeActionDef({
+        name: 'host-ocaml',
+        description: 'prove that Actions reuse host ocamlopt',
+        language: 'ocaml',
+        filePath,
+      }, { compiler: 'host-opam' })
+
+      expect(result).toMatchObject({
+        success: true,
+        stdout: '{"compiler":"host-opam"}',
+        exitCode: 0,
+      })
+    })
+  }
 })

@@ -76,13 +76,15 @@ describe('CodeAct prompt scope', () => {
     // choose CodeAct, and the first ModuleNotFoundError taught the opposite.
     const text = prompt()
     expect(text).not.toMatch(/You need Python's data science ecosystem/)
-    expect(text).toMatch(/standard library only/)
+    expect(text).toMatch(/exactly the packages already importable/)
   })
 
-  test('says how to actually get the packages', () => {
+  test('reuses host dependencies instead of installing into sandboxes', () => {
     const text = prompt()
-    expect(text).toMatch(/pip install/)
-    expect(text).toMatch(/persist for later CodeAct calls/)
+    expect(text).toMatch(/host runtimes directly/)
+    expect(text).toMatch(/active host opam switch's/)
+    expect(text).toMatch(/Do not run `pip install`/)
+    expect(text).not.toMatch(/subprocess\.run.*pip.*install/)
   })
 
   test('raises the ceiling past glue scripts', () => {

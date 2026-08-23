@@ -12,7 +12,10 @@ import { ensureCodeActBuiltinsCSync } from './codeActBuiltins_c.js'
 import { ensureCodeActBuiltinsRustSync } from './codeActBuiltins_rust.js'
 import { ensureCodeActBuiltinsOcamlSync } from './codeActBuiltins_ocaml.js'
 import { ensureCodeActBuiltinsSchemeSync } from './codeActBuiltins_scheme.js'
-import { firstAvailableCommand } from './codeActRuntime.js'
+import {
+  firstAvailableCommand,
+  type RuntimeSource,
+} from './codeActRuntime.js'
 
 export const CODEACT_LANGUAGES = [
   'typescript',
@@ -30,6 +33,7 @@ export type CodeActLanguage = typeof CODEACT_LANGUAGES[number]
 export type CompileFunction = (
   sourcePath: string,
   outputPath: string,
+  runtimeCommand: string,
   signal?: AbortSignal,
 ) => Promise<CompileResult>
 
@@ -37,6 +41,7 @@ export interface RuntimeStatus {
   language: CodeActLanguage
   available: boolean
   command?: string
+  source?: RuntimeSource
   installHint?: string
 }
 
@@ -181,7 +186,12 @@ export function getCodeActRuntimeStatus(language: CodeActLanguage): RuntimeStatu
   const adapter = getCodeActLanguageAdapter(language)
   const runtime = firstAvailableCommand(adapter.runtimeCandidates)
   return runtime
-    ? { language, available: true, command: runtime.path }
+    ? {
+        language,
+        available: true,
+        command: runtime.path,
+        source: runtime.source,
+      }
     : { language, available: false, installHint: adapter.installHint }
 }
 

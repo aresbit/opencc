@@ -18,7 +18,7 @@ export function getCodeActPrompt(statuses: RuntimeStatus[] = []): string {
   const runtimeSummary = statuses.length === 0
     ? 'Runtime availability has not been probed.'
     : statuses.map(status =>
-        `- ${status.language}: ${status.available ? `available (${status.command})` : `unavailable — ${status.installHint}`}`,
+        `- ${status.language}: ${status.available ? `host runtime via ${status.source ?? 'path'} (${status.command})` : `unavailable — ${status.installHint}`}`,
       ).join('\n')
 
   return `## CodeAct — Solve problems by writing code
@@ -34,6 +34,12 @@ ${runtimeSummary}
 Never repeatedly retry a language whose runtime is unavailable. Use another
 available language or explain which toolchain is required.
 
+CodeAct reuses these host runtimes directly. A sandbox contains source code,
+small built-in helper modules, Actions, and produced artifacts — never a fresh
+compiler, interpreter, opam switch, virtualenv, Cargo home, or package install.
+Do not bootstrap a toolchain inside code. If a dependency is absent, report it
+or choose an available host language unless the user explicitly asks to install it.
+
 ### Language selection
 
 | Language | Runtime | Best for |
@@ -45,11 +51,11 @@ available language or explain which toolchain is required.
 | **cpp** | g++/clang++ → C++23 binary | Zero-cost ranges, variant/expected state machines, simulation |
 | **rust** | rustc (edition 2024) | **First choice for compute** — hot loops, simulation, solvers, long unattended runs; safe by construction, ~40x a Python loop |
 | **ocaml** | ocamlopt/ocamlc | Algebraic data types, exhaustive matching, modules, OCaml 5 effects |
-| **scheme** | Guile 3 | Symbolic code, proper tail calls, hygienic macros, continuations |
+| **scheme** | Chez Scheme (Guile fallback) | Symbolic code, proper tail calls, hygienic macros, continuations |
 
 Rust CodeAct is std-only: do not import external crates. Scheme targets a
-portable core plus Guile control operators. OCaml effect-handler code requires
-an installed OCaml 5 compiler.
+portable Chez/Guile core. OCaml is compiled by the active host opam switch's
+\`ocamlopt\` (with \`ocamlc\` fallback), not by a sandbox-local installation.
 
 ${CONTROL_STRUCTURE_GUIDE}
 
@@ -150,22 +156,13 @@ prototyping in Python before porting a hot loop to Rust is a reasonable path —
 just do not leave a numeric kernel in Python because it was the first thing
 written.
 
-### Python packages
+### Host dependencies
 
-The sandbox starts with the **standard library only** — no NumPy, pandas,
-matplotlib, scikit-learn or torch preinstalled. Do not assume they are there.
-
-\`pip install\` works and the network is reachable, so install what you need:
-
-\`\`\`python
-import subprocess, sys
-subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'numpy', 'matplotlib'], check=True)
-import numpy as np
-\`\`\`
-
-Installs go into the interpreter, so they persist for later CodeAct calls in
-this session — install once, then import directly. Guard with a try/except
-ImportError so a rerun does not pay for it twice.
+Python uses the host \`python3\` and exactly the packages already importable by
+that interpreter. Do not run \`pip install\` from a CodeAct sandbox. TypeScript
+likewise uses the host Bun runtime, and C/C++/Rust/OCaml use the resolved host
+compiler path. This keeps every call deterministic and prevents ephemeral
+sandboxes from becoming accidental environment installers.
 
 The standard library is further than it looks, though. \`random\`, \`math\`,
 \`statistics\`, \`itertools\`, \`array\`, \`fractions\` and \`decimal\` cover a great deal
@@ -266,6 +263,10 @@ import { download } from './actions/ytdlp.js'
    - Move the agent script to ~/.claude/action/<name>.<ext>
    - Add YAML frontmatter describing inputs/outputs; .rs, .ml, and .scm are supported
    - It becomes callable via the Action tool
+
+Compiled Actions use the same host-toolchain path as ad-hoc CodeAct. For
+example, an OCaml Action is compiled with the active system opam switch's
+\`ocamlopt\`; it does not create or install a switch in its sandbox.
 
 ### Skills vs Actions
 

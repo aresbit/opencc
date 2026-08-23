@@ -114,7 +114,8 @@ export const CodeActTool = buildTool({
     return (
       'Write and execute code (TypeScript, Python, Bash, C, C++, Rust, OCaml, Scheme) to solve ' +
       'problems programmatically. The sandbox provides built-in filesystem, shell, ' +
-      'network, path, and OS utilities, a persistent workspace, and pip. Write ' +
+      'network, path, and OS utilities plus a persistent workspace. It reuses ' +
+      'host runtimes and never installs a toolchain per sandbox. Write ' +
       'real programs here, not just glue: models and training loops, autodiff, ' +
       'simulations, parameter sweeps, plots. Only stdout reaches the model, ' +
       'except a lone data:image/...;base64 URI, which returns as an image.'

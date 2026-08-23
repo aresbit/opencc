@@ -269,8 +269,8 @@ learn-tool action=plan_training trainingGoal=tool_use \
 
 | 工具 | 注册名 | 状态 / 依赖 | 说明 |
 |------|--------|-------------|------|
-| CodeActTool | `CodeAct` | ⚠️ 按本机运行时探测 | 执行 TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme；Scheme 优先使用 Chez 并兼容 Guile，缺少编译器或解释器时返回安装提示，并支持错误行号映射 |
-| ActionTool | `Action` | ⚠️ `~/.claude/action/` | 执行本地可复用的 Actions 脚本 |
+| CodeActTool | `CodeAct` | ⚠️ 按宿主运行时探测 | 执行 TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme；统一复用宿主绝对工具链路径，不在每个沙箱安装环境；OCaml 自动解析当前 opam switch 的 `ocamlopt`，Scheme 优先 Chez 并兼容 Guile |
+| ActionTool | `Action` | ⚠️ `~/.claude/action/` | 执行本地可复用的 Actions 脚本；编译型 Action 与 CodeAct 共用宿主工具链，不创建沙箱专属 compiler/opam/Cargo 环境 |
 | MythosTool | `mythos` | ✅ | 六阶段深度研究：结构化 claim、证据、对抗性验证与运行完整性自检 |
 | AutoresearchTool | `autoresearch` | ✅ | verifier 锁定的自主研究循环：基线、数值目标、重复测量、噪声门槛、实验队列与证据审计 |
 | WideResearchTool | `wide_research` | ⚠️ Agent/远程环境 | 将同一任务并行 fan-out 到 2–50 个独立条目，等待同步/后台/远程任务并聚合结果；保留写入型 worktree 的路径与分支 |

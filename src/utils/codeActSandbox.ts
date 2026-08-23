@@ -176,7 +176,12 @@ export async function executeCodeActCode(
   let compileStderr = ''
   if (adapter.compile) {
     const binPath = join(sandboxDir, 'agent')
-    const compResult = await adapter.compile(agentPath, binPath, options?.signal)
+    const compResult = await adapter.compile(
+      agentPath,
+      binPath,
+      runtime.command,
+      options?.signal,
+    )
     if (!compResult.success) {
       // Cleanup on compile failure (unless persisted)
       if (!persistKey) {

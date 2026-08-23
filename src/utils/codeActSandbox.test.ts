@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'child_process'
+import { isAbsolute } from 'path'
 import { executeCodeActCode } from './codeActSandbox.js'
 import { getCodeActPrompt } from '../tools/CodeActTool/prompt.js'
 import {
@@ -18,6 +19,25 @@ describe('CodeAct language adapters', () => {
       const status = getCodeActRuntimeStatus(language)
       expect(status.language).toBe(language)
       expect(status.available ? status.command : status.installHint).toBeTruthy()
+      if (status.command) {
+        expect(isAbsolute(status.command)).toBe(true)
+        expect(status.source).toMatch(/^(path|host|opam)$/)
+      }
+    }
+  })
+
+  test('finds the active opam compiler even when its bin directory is absent from PATH', () => {
+    const originalPath = process.env.PATH
+    try {
+      process.env.PATH = '/usr/bin:/bin'
+      const status = getCodeActRuntimeStatus('ocaml')
+      expect(status).toMatchObject({
+        available: true,
+        source: 'opam',
+      })
+      expect(status.command).toEndWith('/ocamlopt')
+    } finally {
+      process.env.PATH = originalPath
     }
   })
 

@@ -13,7 +13,6 @@ import { spawn } from 'child_process'
 import { StringDecoder } from 'string_decoder'
 import { basename, dirname, join } from 'path'
 import { ensureCodeActBuiltinsCSync } from './codeActBuiltins_c.js'
-import { firstAvailableCommand } from './codeActRuntime.js'
 
 export interface CompileResult {
   success: boolean
@@ -28,9 +27,10 @@ export interface CompileResult {
 export async function compileC(
   srcPath: string,
   outPath: string,
+  runtimeCommand: string,
   signal?: AbortSignal,
 ): Promise<CompileResult> {
-  return compile(srcPath, outPath, 'gcc', ['-Wall', '-O2'], signal)
+  return compile(srcPath, outPath, runtimeCommand, ['-Wall', '-O2'], signal)
 }
 
 /**
@@ -39,12 +39,13 @@ export async function compileC(
 export async function compileCpp(
   srcPath: string,
   outPath: string,
+  runtimeCommand: string,
   signal?: AbortSignal,
 ): Promise<CompileResult> {
   return compile(
     srcPath,
     outPath,
-    'g++',
+    runtimeCommand,
     ['-Wall', '-Wextra', '-Wpedantic', '-O2', '-std=c++23'],
     signal,
   )
@@ -54,12 +55,12 @@ export async function compileCpp(
 export async function compileRust(
   srcPath: string,
   outPath: string,
+  runtimeCommand: string,
   signal?: AbortSignal,
 ): Promise<CompileResult> {
-  const rustc = firstAvailableCommand(['rustc'])
-  if (!rustc) return missingCompiler('rustc')
+  if (!runtimeCommand) return missingCompiler('rustc')
   return runCompiler(
-    rustc.path,
+    runtimeCommand,
     [srcPath, '--edition=2024', '-C', 'opt-level=2', '-o', outPath],
     dirname(srcPath),
     outPath,
@@ -71,15 +72,16 @@ export async function compileRust(
 export async function compileOcaml(
   srcPath: string,
   outPath: string,
+  runtimeCommand: string,
   signal?: AbortSignal,
 ): Promise<CompileResult> {
-  const compiler = firstAvailableCommand(['ocamlopt', 'ocamlc'])
-  if (!compiler) return missingCompiler('ocamlopt or ocamlc')
+  if (!runtimeCommand) return missingCompiler('ocamlopt or ocamlc')
 
   const cwd = dirname(srcPath)
-  const stdlib = compiler.name === 'ocamlopt' ? 'unix.cmxa' : 'unix.cma'
+  const compilerName = basename(runtimeCommand)
+  const stdlib = compilerName.startsWith('ocamlopt') ? 'unix.cmxa' : 'unix.cma'
   return runCompiler(
-    compiler.path,
+    runtimeCommand,
     [
       '-I', '+unix',
       stdlib,
