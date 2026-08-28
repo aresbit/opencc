@@ -10,7 +10,7 @@ import { admitEvidence } from '../utils.js'
  * property under test is precisely that the model cannot.
  */
 
-type RsiData = { report: string; verdict?: string; attempts?: number }
+type RsiData = { report: string; verdict?: string; attempts?: number; ok?: boolean }
 
 async function rsiWithContext(
   input: Record<string, unknown>,
@@ -123,7 +123,12 @@ describe('rsi → goal completion gate', () => {
       { action: 'measure', command: 'exit 1', trials: 5 },
       { abortController: controller },
     )
-    expect(out.attempts).toBe(0)
+    // An aborted run reports the abort rather than a count. Asserting on
+    // `attempts` here would be asserting that a truncated run still looks like
+    // a measurement, which is the opposite of the property under test.
+    expect(out.ok).toBe(false)
+    expect(out.report).toMatch(/aborted after/)
+    expect(out.report).toMatch(/partial counts were not recorded/)
 
     const admission = await admitEvidence({
       kind: 'command',

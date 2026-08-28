@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'child_process'
-import { isAbsolute } from 'path'
+import { existsSync } from 'fs'
+import { homedir } from 'os'
+import { isAbsolute, join } from 'path'
 import { executeCodeActCode } from './codeActSandbox.js'
 import { getCodeActPrompt } from '../tools/CodeActTool/prompt.js'
 import {
@@ -27,15 +29,24 @@ describe('CodeAct language adapters', () => {
   })
 
   test('finds the active opam compiler even when its bin directory is absent from PATH', () => {
+    // Guarded rather than assumed: this asserts a fact about the *host*, and
+    // asserting it unconditionally makes the whole suite red on any machine
+    // without OCaml installed — which is most of them. With opam present the
+    // discovery claim is checked as before; without it, the claim under test is
+    // that an absent toolchain is reported as absent with a usable hint, not
+    // that it is silently reported as something else.
+    const hasOpam = existsSync(join(homedir(), '.opam'))
     const originalPath = process.env.PATH
     try {
       process.env.PATH = '/usr/bin:/bin'
       const status = getCodeActRuntimeStatus('ocaml')
-      expect(status).toMatchObject({
-        available: true,
-        source: 'opam',
-      })
-      expect(status.command).toEndWith('/ocamlopt')
+      if (hasOpam) {
+        expect(status).toMatchObject({ available: true, source: 'opam' })
+        expect(status.command).toEndWith('/ocamlopt')
+      } else {
+        expect(status.available).toBe(false)
+        expect(status.installHint).toBeTruthy()
+      }
     } finally {
       process.env.PATH = originalPath
     }
