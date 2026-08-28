@@ -3029,7 +3029,6 @@ export function getContentText(
 export type StreamingToolUse = {
   index: number
   contentBlock: BetaToolUseBlock
-  unparsedToolInput: string
 }
 
 export type StreamingThinking = {
@@ -3140,14 +3139,7 @@ export function handleMessageFromStream(
           onSetStreamMode('tool-input')
           const contentBlock = streamMsg.event.content_block as BetaToolUseBlock
           const index = streamMsg.event.index
-          onStreamingToolUses(_ => [
-            ..._,
-            {
-              index,
-              contentBlock,
-              unparsedToolInput: '',
-            },
-          ])
+          onStreamingToolUses(_ => [..._, { index, contentBlock }])
           return
         }
         case 'server_tool_use':
@@ -3174,22 +3166,26 @@ export function handleMessageFromStream(
           return
         }
         case 'input_json_delta': {
-          const delta = streamMsg.event.delta.partial_json
-          const index = streamMsg.event.index
-          onUpdateLength(delta)
-          onStreamingToolUses(_ => {
-            const element = _.find(_ => _.index === index)
-            if (!element) {
-              return _
-            }
-            return [
-              ..._.filter(_ => _ !== element),
-              {
-                ...element,
-                unparsedToolInput: element.unparsedToolInput + delta,
-              },
-            ]
-          })
+          // Only the token counter needs the partial JSON. Deliberately no
+          // onStreamingToolUses dispatch here: the streaming tool-use list
+          // renders from `contentBlock`, and id and name are both settled at
+          // content_block_start, so a per-chunk dispatch hands Messages a new
+          // array for an unchanged value.
+          //
+          // Messages' React.memo comparator absorbs such an array when the
+          // blocks line up index for index, so one streaming tool call only
+          // cost the wasted allocations. But the update this replaced rebuilt
+          // the list as `[...others, updated]`, moving the updated block to
+          // the end: with two tool calls streaming concurrently every chunk
+          // permuted the list, the index-wise check failed, and the whole
+          // O(messages) transform chain — normalize, reorder, group, collapse,
+          // lookups — ran once per chunk. Two 8 KB inputs are ~400 chunks; at
+          // 1600 messages that was 4.7 s of recomputation for one turn.
+          // Parallel tool calls are the common case, not the exotic one.
+          //
+          // If partial input ever needs rendering, accumulate it somewhere the
+          // message list does not depend on, and never by permuting this list.
+          onUpdateLength(streamMsg.event.delta.partial_json)
           return
         }
         case 'thinking_delta':

@@ -444,6 +444,13 @@ const MessagesImpl = ({
   // stays stable — precompute the Set so the filter is O(k) not O(n×k) per chunk.
   const normalizedToolUseIDs = useMemo(() => getToolUseIDs(normalizedMessages), [normalizedMessages]);
   const streamingToolUsesWithoutInProgress = useMemo(() => streamingToolUses.filter(stu => !inProgressToolUseIDs.has(stu.contentBlock.id) && !normalizedToolUseIDs.has(stu.contentBlock.id)), [streamingToolUses, inProgressToolUseIDs, normalizedToolUseIDs]);
+  // Keyed on the block ids, not the array identity. The synthetic messages are
+  // built purely from `contentBlock`, so as long as the same blocks are
+  // streaming the result is the same value — but this memo feeds the O(messages)
+  // transform chain below, and any churn upstream (a new inProgressToolUseIDs
+  // set, a re-filtered list) would otherwise re-run that chain for an unchanged
+  // result.
+  const streamingToolUseIdsKey = useMemo(() => streamingToolUsesWithoutInProgress.map(stu_0 => stu_0.contentBlock.id).join('\u0000'), [streamingToolUsesWithoutInProgress]);
   const syntheticStreamingToolUseMessages = useMemo(() => streamingToolUsesWithoutInProgress.flatMap(streamingToolUse => {
     const msg_1 = createAssistantMessage({
       content: [streamingToolUse.contentBlock]
@@ -455,7 +462,9 @@ const MessagesImpl = ({
     // Ink rendering corruption (overlapping text from stale DOM nodes).
     msg_1.uuid = deriveUUID(streamingToolUse.contentBlock.id as UUID, 0);
     return normalizeMessages([msg_1]);
-  }), [streamingToolUsesWithoutInProgress]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the ids
+    // above; the list identity churns per render but its contents do not.
+  }), [streamingToolUseIdsKey]);
   const isTranscriptMode = screen === 'transcript';
   // Hoisted to mount-time — this component re-renders on every scroll.
   const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL), []);
