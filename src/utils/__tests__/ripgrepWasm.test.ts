@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { adaptArgsForWasm } from '../ripgrep.js'
 
 /**
@@ -81,13 +84,14 @@ describe('adaptArgsForWasm', () => {
  * environment, and a memoized choice cannot be un-made for the next suite.
  */
 async function rgIn(
-  mode: 'wasm' | 'default',
+  mode: 'wasm' | 'builtin' | 'default',
   body: string,
 ): Promise<string> {
   const proc = Bun.spawn(['bun', '-e', body], {
     env: {
       ...process.env,
       ...(mode === 'wasm' ? { USE_WASM_RIPGREP: '1' } : {}),
+      ...(mode === 'builtin' ? { USE_BUILTIN_RIPGREP: '1' } : {}),
     },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -136,42 +140,71 @@ describe('the wasm tier is a working ripgrep', () => {
 
 describe('falling back automatically', () => {
   test('a ripgrep that cannot execute switches the session to wasm', async () => {
-    // The case that motivated the tier. USE_BUILTIN_RIPGREP pins the vendored
-    // binary, which is present for exactly one platform and, in this repo, is
-    // linked against a Homebrew interpreter no other machine has — so it
-    // exists, passes every static check, and fails at execve. A user hitting
-    // that had no working search at all.
-    const proc = Bun.spawn(
-      [
-        'bun',
-        '-e',
-        `
-        const { ripGrep, ripgrepCommand } = await import('${process.cwd()}/src/utils/ripgrep.js')
-        const before = ripgrepCommand().rgPath
-        const lines = await ripGrep(['--hidden', '-l', 'adaptArgsForWasm'], '${process.cwd()}/src', new AbortController().signal)
-        console.log(JSON.stringify({ before, n: lines.length, after: ripgrepCommand().rgPath, args: ripgrepCommand().rgArgs }))
-      `,
-      ],
-      {
-        env: { ...process.env, USE_BUILTIN_RIPGREP: '1' },
-        stdout: 'pipe',
-        stderr: 'pipe',
-        cwd: process.cwd(),
-      },
-    )
-    const [out, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      proc.exited,
-    ])
-    if (code !== 0) {
-      // No vendored binary for this platform at all — then the config never
-      // selected it and there is nothing to fall back from. Not a failure.
-      return
+    if (process.platform === 'win32') return
+    // The case the tier exists for. A binary can be present, on PATH, and
+    // still fail at execve — the tree this replaced held one that was
+    // dynamically linked against a Homebrew interpreter no other machine has.
+    // `existsSync` cannot see that, so the recovery has to happen at the point
+    // the spawn fails. Standing in for it here: an `rg` that is not
+    // executable, placed first on PATH so the system tier picks it.
+    const dir = mkdtempSync(join(tmpdir(), 'rg-unrunnable-'))
+    try {
+      // Executable, and fails at execve because the interpreter is not there.
+      // It has to be the *only* rg on PATH: execvp keeps searching after a
+      // failed candidate, so with the real one still reachable this would
+      // silently test nothing.
+      writeFileSync(join(dir, 'rg'), '#!/nonexistent/interpreter\n', { mode: 0o755 })
+      const proc = Bun.spawn(
+        [
+          // Absolute: the child's PATH holds nothing but the broken rg.
+          process.execPath,
+          '-e',
+          `
+          const { ripGrep, ripgrepCommand } = await import('${process.cwd()}/src/utils/ripgrep.js')
+          const before = ripgrepCommand().rgPath
+          const lines = await ripGrep(['--hidden', '-l', 'adaptArgsForWasm'], '${process.cwd()}/src', new AbortController().signal)
+          console.log(JSON.stringify({ before, n: lines.length, args: ripgrepCommand().rgArgs }))
+        `,
+        ],
+        {
+          env: { ...process.env, PATH: dir },
+          stdout: 'pipe',
+          stderr: 'pipe',
+          cwd: process.cwd(),
+        },
+      )
+      const [out, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        proc.exited,
+      ])
+      expect(code).toBe(0)
+      const r = JSON.parse(out.trim())
+      // It picked the broken one...
+      expect(r.before).toBe('rg')
+      // ...and the search still answered, on wasm.
+      expect(r.n).toBeGreaterThan(0)
+      expect(r.args.some((a: string) => a.endsWith('rg.mjs'))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
-    const r = JSON.parse(out.trim())
-    if (!r.before.includes('vendor/ripgrep')) return
-    // The search still answered, and the tier moved.
-    expect(r.n).toBeGreaterThan(0)
-    expect(r.args.some((a: string) => a.endsWith('rg.mjs'))).toBe(true)
+  }, 120_000)
+})
+
+describe('the builtin tier', () => {
+  test('resolves to a runnable native binary and agrees with the others', async () => {
+    // What this replaced was 25 MB in git for a binary that ran nowhere. The
+    // property worth pinning is not that a file exists but that the tier
+    // answers, and answers the same — including --sort=modified, which is the
+    // one flag the wasm tier has to emulate.
+    const args = `['--files', '--glob', '**/*.tsx', '--sort=modified', '--hidden']`
+    const [builtin, system] = await Promise.all([
+      rgIn('builtin', script(args)).then(JSON.parse),
+      rgIn('default', script(args)).then(JSON.parse),
+    ])
+    expect(builtin.mode).toBe('builtin')
+    expect(builtin.n).toBeGreaterThan(0)
+    expect(builtin.n).toBe(system.n)
+    expect(builtin.first).toBe(system.first)
+    expect(builtin.last).toBe(system.last)
   }, 120_000)
 })

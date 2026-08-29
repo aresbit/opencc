@@ -53,6 +53,7 @@
   "dependencies": {
     "@firecrawl/anydoc": "^0.1.3",
     "@llamaindex/liteparse": "^2.0.3",
+    "@vscode/ripgrep": "1.18.0",
     "ripgrep": "0.3.1"
   },
   "devDependencies": {

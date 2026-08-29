@@ -48,6 +48,52 @@ type RipgrepConfig = {
  * dist/cli.js. `ripgrep` is a real dependency so it is installed next to the
  * shipped bundle.
  */
+/**
+ * The native ripgrep binary for this platform, from `@vscode/ripgrep`.
+ *
+ * That package declares one optional dependency per platform, each gated on
+ * `os`/`cpu`, so a install pulls exactly one ~5.5 MB statically-linked binary
+ * and npm skips the other eleven. There is no postinstall download.
+ *
+ * This replaces a tree checked into `src/utils/vendor/ripgrep/`, which held a
+ * binary for a single platform, was 25 MB of the repository's 29 MB, never
+ * reached published users (`files: ["dist"]`) and could not run in any case —
+ * it was dynamically linked against `/home/linuxbrew/.linuxbrew/lib/ld.so`.
+ * The replacement is `static-pie linked`, which is what makes a vendored
+ * binary portable at all.
+ *
+ * Resolved from inside the wrapper package, not from here: the platform
+ * packages are its dependencies, and under an isolated node_modules layout
+ * (Bun's default) they are not visible from the application root.
+ */
+const resolveVendoredRipgrep = memoize((): string | null => {
+  const binary = process.platform === 'win32' ? 'rg.exe' : 'rg'
+  try {
+    const require_ = createRequire(import.meta.url)
+    const wrapper = require_.resolve('@vscode/ripgrep/package.json')
+    const arch = process.env.npm_config_arch || process.arch
+    const found = createRequire(wrapper).resolve(
+      `@vscode/ripgrep-${process.platform}-${arch}/bin/${binary}`,
+    )
+    if (existsSync(found)) return found
+  } catch {
+    // No package, or no build for this platform. Both are ordinary.
+  }
+
+  // Legacy in-repo tree. Kept as a second look so a working binary placed
+  // there by hand still wins over wasm, but nothing ships one any more.
+  const legacy = path.resolve(
+    __dirname,
+    'vendor',
+    'ripgrep',
+    process.platform === 'win32'
+      ? `${process.arch}-win32`
+      : `${process.arch}-${process.platform}`,
+    binary,
+  )
+  return existsSync(legacy) ? legacy : null
+})
+
 const resolveWasmShim = memoize((): string | null => {
   try {
     const entry = createRequire(import.meta.url).resolve('ripgrep')
@@ -103,19 +149,12 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
-  const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
-  const command =
-    process.platform === 'win32'
-      ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
-      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
-
-  // The vendored tree only carries a binary for the platforms it was built
-  // for, and a binary that is present is not necessarily runnable — the
-  // x64-linux one in this repo is dynamically linked against a Homebrew
-  // interpreter that exists on no other machine. Checking here means the
-  // fallback below is reached instead of every search failing at spawn.
-  if (existsSync(command)) {
-    return { mode: 'builtin', command, args: [] }
+  // A native binary for this platform, if one is installed. Still preferred
+  // over wasm: it is the same ripgrep, 4-9x faster, and it supports
+  // --sort=modified, which the wasm build cannot.
+  const vendored = resolveVendoredRipgrep()
+  if (vendored) {
+    return { mode: 'builtin', command: vendored, args: [] }
   }
 
   // Last resort, and the one that needs nothing installed: ripgrep as wasm.
@@ -124,9 +163,9 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     return { mode: 'wasm', command: process.execPath, args: [shim] }
   }
 
-  // Nothing resolved. Return the vendored path anyway so the failure names a
-  // real path rather than an empty string.
-  return { mode: 'builtin', command, args: [] }
+  // Nothing resolved at all. Name `rg` so the failure reads as "not found on
+  // PATH" rather than pointing at a path that was never going to exist.
+  return { mode: 'builtin', command: 'rg', args: [] }
 })
 
 /**
