@@ -166,23 +166,28 @@ describe('scale', () => {
       }
       return out as never[]
     }
+    // Minimum, not median: this is a deterministic computation, so every
+    // sample is the true cost plus contention from whatever else the machine
+    // is doing, and the minimum is the sample carrying the least of it.
     const time = (msgs: never[]) => {
       normalizeMessagesForAPI(msgs, [])
-      const runs: number[] = []
-      for (let r = 0; r < 5; r++) {
+      let best = Number.POSITIVE_INFINITY
+      for (let r = 0; r < 7; r++) {
         const t0 = performance.now()
-        for (let i = 0; i < 5; i++) normalizeMessagesForAPI(msgs, [])
-        runs.push((performance.now() - t0) / 5)
+        for (let i = 0; i < 3; i++) normalizeMessagesForAPI(msgs, [])
+        best = Math.min(best, (performance.now() - t0) / 3)
       }
-      return runs.sort((a, b) => a - b)[2]!
+      return best
     }
 
+    // 16x the messages, not 4x. A wall-clock test on a shared machine is only
+    // as good as the gap between the two hypotheses, and at 4x that gap was
+    // 3.5x versus 8.6x — close enough that a loaded CPU decided the outcome
+    // (this failed when the suite gained tests that spawn subprocesses).
+    // At 16x it is 11.7x versus 307x measured, so the bound below is nowhere
+    // near either one and contention cannot reach it.
     const small = time(build(400))
-    const large = time(build(1600))
-    // Four times the messages should cost roughly four times, not sixteen.
-    // Measured: 3.47x with the early skip, 8.57x without it. The bound sits
-    // between those rather than at a guessed round number — a looser one (9)
-    // let the quadratic version pass, which is a test that proves nothing.
-    expect(large / small).toBeLessThan(6)
+    const large = time(build(6400))
+    expect(large / small).toBeLessThan(40)
   })
 })

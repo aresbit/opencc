@@ -1,5 +1,7 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
+import { existsSync, statSync } from 'fs'
+import { createRequire } from 'module'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -22,11 +24,39 @@ const __dirname = path.join(
 )
 
 type RipgrepConfig = {
-  mode: 'system' | 'builtin' | 'embedded'
+  mode: 'system' | 'builtin' | 'embedded' | 'wasm'
   command: string
   args: string[]
   argv0?: string
 }
+
+/**
+ * Path to the `ripgrep` package's CLI shim — ripgrep 15 compiled to
+ * wasm32-wasip1, driven by a JS entry that speaks the real rg command line and
+ * writes to real stdout.
+ *
+ * Spawned as a child process rather than called in-process on purpose. The
+ * wasm runs to completion synchronously: a search of this repo blocks the
+ * event loop for ~280 ms (measured: zero 10 ms timer ticks during a 281 ms
+ * call), which would freeze the Ink render loop, and an in-process call cannot
+ * be cancelled — GlobalSearchDialog aborts on every keystroke. As a subprocess
+ * it inherits the timeout, the AbortSignal and the streaming stdout that the
+ * three call paths below already implement for a native binary.
+ *
+ * Resolved at runtime instead of imported, because a static import would let
+ * the bundler inline the package and `rgPath` would then resolve relative to
+ * dist/cli.js. `ripgrep` is a real dependency so it is installed next to the
+ * shipped bundle.
+ */
+const resolveWasmShim = memoize((): string | null => {
+  try {
+    const entry = createRequire(import.meta.url).resolve('ripgrep')
+    const shim = path.join(path.dirname(entry), 'rg.mjs')
+    return existsSync(shim) ? shim : null
+  } catch {
+    return null
+  }
+})
 
 const getRipgrepConfig = memoize((): RipgrepConfig => {
   // Default: prefer a system-installed ripgrep when one is on PATH (no env var
@@ -36,6 +66,20 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
   // because env vars exported in shell rc files are not reliably inherited by
   // non-interactive launch paths (the failure mode that motivated this change).
   const forceBuiltin = isEnvTruthy(process.env.USE_BUILTIN_RIPGREP)
+
+  // USE_WASM_RIPGREP=1 pins the wasm tier. Worth having explicitly rather than
+  // only as a fallback: it is the one configuration that behaves the same on
+  // every machine, which is what makes a bug report about search reproducible.
+  if (isEnvTruthy(process.env.USE_WASM_RIPGREP)) {
+    const forced = resolveWasmShim()
+    if (forced) {
+      return { mode: 'wasm', command: process.execPath, args: [forced] }
+    }
+    logForDebugging(
+      'USE_WASM_RIPGREP is set but the ripgrep wasm package did not resolve; falling through',
+      { level: 'warn' },
+    )
+  }
 
   // Try system ripgrep first, unless the user explicitly forced the builtin
   if (!forceBuiltin) {
@@ -65,20 +109,151 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
       ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
       : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
 
+  // The vendored tree only carries a binary for the platforms it was built
+  // for, and a binary that is present is not necessarily runnable — the
+  // x64-linux one in this repo is dynamically linked against a Homebrew
+  // interpreter that exists on no other machine. Checking here means the
+  // fallback below is reached instead of every search failing at spawn.
+  if (existsSync(command)) {
+    return { mode: 'builtin', command, args: [] }
+  }
+
+  // Last resort, and the one that needs nothing installed: ripgrep as wasm.
+  const shim = resolveWasmShim()
+  if (shim) {
+    return { mode: 'wasm', command: process.execPath, args: [shim] }
+  }
+
+  // Nothing resolved. Return the vendored path anyway so the failure names a
+  // real path rather than an empty string.
   return { mode: 'builtin', command, args: [] }
 })
+
+/**
+ * ripgrep's own flags, minus the ones the wasm build cannot honour.
+ *
+ * `--sort=modified` needs filesystem mtime, which WASI preview1 does not
+ * expose: rg exits 2 with "operation not supported on this platform" and
+ * prints nothing. Left in place it would not degrade the Glob tool, it would
+ * empty it. So the flag is dropped here and the ordering is reapplied over the
+ * results, which is the only place the information still exists.
+ */
+export function adaptArgsForWasm(args: string[]): {
+  args: string[]
+  sortByMtime: 'asc' | 'desc' | null
+} {
+  let sortByMtime: 'asc' | 'desc' | null = null
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    const reverse = arg.startsWith('--sortr')
+    if (arg === '--sort' || arg === '--sortr') {
+      // Two-token form: `--sort modified`.
+      if (args[i + 1] === 'modified') {
+        sortByMtime = reverse ? 'desc' : 'asc'
+        i++
+        continue
+      }
+      out.push(arg)
+      continue
+    }
+    if (arg === '--sort=modified' || arg === '--sortr=modified') {
+      sortByMtime = reverse ? 'desc' : 'asc'
+      continue
+    }
+    out.push(arg)
+  }
+  return { args: out, sortByMtime }
+}
+
+/**
+ * Reorder `--files` output by mtime, for the wasm tier. Paths that cannot be
+ * stat'd (deleted between the walk and here, or unreadable) sort as oldest
+ * rather than dropping out — a search result that vanishes is worse than one
+ * in the wrong position.
+ */
+function sortPathsByMtime(
+  lines: string[],
+  target: string,
+  direction: 'asc' | 'desc',
+): string[] {
+  const times = new Map<string, number>()
+  for (const line of lines) {
+    let mtime = 0
+    try {
+      mtime = statSync(
+        path.isAbsolute(line) ? line : path.join(target, line),
+      ).mtimeMs
+    } catch {
+      mtime = 0
+    }
+    times.set(line, mtime)
+  }
+  const sign = direction === 'asc' ? 1 : -1
+  return [...lines].sort(
+    (a, b) => sign * ((times.get(a) ?? 0) - (times.get(b) ?? 0)),
+  )
+}
+
+/**
+ * Set when a spawn of the chosen ripgrep fails in a way that means the binary
+ * is not there or not runnable. A vendored binary that exists is not
+ * necessarily executable — the x64-linux one in this repo is linked against a
+ * Homebrew interpreter present on no other machine — and `existsSync` cannot
+ * see that. Rather than have every search fail for the rest of the session,
+ * the first such failure latches the wasm tier, which needs nothing installed.
+ */
+let latchedWasmFallback = false
+
+/**
+ * True when the failure means "this ripgrep cannot run", as opposed to
+ * anything about the search itself. Only these are worth switching tiers over:
+ * a usage error or a timeout would repeat identically on wasm.
+ */
+function isUnrunnable(code: unknown): boolean {
+  return code === 'ENOENT' || code === 'EACCES' || code === 'EPERM'
+}
+
+/** Returns true if the tier actually changed, so the caller can retry. */
+function latchWasmFallback(): boolean {
+  if (latchedWasmFallback) return false
+  const config = getRipgrepConfig()
+  if (config.mode === 'wasm') return false
+  if (!resolveWasmShim()) return false
+  latchedWasmFallback = true
+  logForDebugging(
+    `ripgrep (mode=${config.mode}, path=${config.command}) could not be executed; falling back to the wasm build for the rest of this session`,
+    { level: 'warn' },
+  )
+  logEvent('tengu_ripgrep_wasm_fallback', { from_mode: config.mode })
+  return true
+}
 
 export function ripgrepCommand(): {
   rgPath: string
   rgArgs: string[]
   argv0?: string
 } {
+  const shim = latchedWasmFallback ? resolveWasmShim() : null
+  if (shim) {
+    return { rgPath: process.execPath, rgArgs: [shim] }
+  }
   const config = getRipgrepConfig()
   return {
     rgPath: config.command,
     rgArgs: config.args,
     argv0: config.argv0,
   }
+}
+
+/** Whether searches are currently running on the wasm build. */
+function isWasmTier(): boolean {
+  return latchedWasmFallback || getRipgrepConfig().mode === 'wasm'
+}
+
+/** Test seam: forget a latched fallback so each case starts from the config. */
+export function resetRipgrepFallbackForTesting(): void {
+  latchedWasmFallback = false
 }
 
 const MAX_BUFFER_SIZE = 20_000_000 // 20MB; large monorepos can have 200k+ files
@@ -128,7 +303,9 @@ function ripGrepRaw(
 
   // Use single-threaded mode only if explicitly requested for this call's retry
   const threadArgs = singleThread ? ['-j', '1'] : []
-  const fullArgs = [...rgArgs, ...threadArgs, ...args, target]
+  const searchArgs =
+    isWasmTier() ? adaptArgsForWasm(args).args : args
+  const fullArgs = [...rgArgs, ...threadArgs, ...searchArgs, target]
   // Allow timeout to be configured via env var (in seconds), otherwise use platform defaults
   // WSL has severe performance penalty for file reads (3-5x slower on WSL2)
   const defaultTimeout = getPlatform() === 'wsl' ? 60_000 : 20_000
@@ -254,9 +431,11 @@ async function ripGrepFileCount(
 ): Promise<number> {
   await codesignRipgrepIfNecessary()
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
+  const adaptedArgs =
+    isWasmTier() ? adaptArgsForWasm(args).args : args
 
   return new Promise<number>((resolve, reject) => {
-    const child = spawn(rgPath, [...rgArgs, ...args, target], {
+    const child = spawn(rgPath, [...rgArgs, ...adaptedArgs, target], {
       argv0,
       signal: abortSignal,
       windowsHide: true,
@@ -304,9 +483,13 @@ export async function ripGrepStream(
 ): Promise<void> {
   await codesignRipgrepIfNecessary()
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
+  // Streaming has no ordering to reapply, so the flag is only dropped. No
+  // caller streams with --sort today; if one does, it gets walk order.
+  const adaptedArgs =
+    isWasmTier() ? adaptArgsForWasm(args).args : args
 
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(rgPath, [...rgArgs, ...args, target], {
+    const child = spawn(rgPath, [...rgArgs, ...adaptedArgs, target], {
       argv0,
       signal: abortSignal,
       windowsHide: true,
@@ -358,6 +541,15 @@ export async function ripGrep(
     logError(error)
   })
 
+  // On the wasm tier `--sort=modified` was dropped before spawning; this is
+  // the one call path that buffers the whole result, so it is the one that can
+  // put the ordering back. See adaptArgsForWasm.
+  const sortByMtime = isWasmTier()
+    ? adaptArgsForWasm(args).sortByMtime
+    : null
+  const finish = (lines: string[]): string[] =>
+    sortByMtime ? sortPathsByMtime(lines, target, sortByMtime) : lines
+
   return new Promise((resolve, reject) => {
     const handleResult = (
       error: ExecFileException | null,
@@ -368,11 +560,13 @@ export async function ripGrep(
       // Success case
       if (!error) {
         resolve(
-          stdout
-            .trim()
-            .split('\n')
-            .map(line => line.replace(/\r$/, ''))
-            .filter(Boolean),
+          finish(
+            stdout
+              .trim()
+              .split('\n')
+              .map(line => line.replace(/\r$/, ''))
+              .filter(Boolean),
+          ),
         )
         return
       }
@@ -383,10 +577,22 @@ export async function ripGrep(
         return
       }
 
-      // Critical errors that indicate ripgrep is broken, not "no matches"
-      // These should be surfaced to the user rather than silently returning empty results
-      const CRITICAL_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM']
-      if (CRITICAL_ERROR_CODES.includes(error.code as string)) {
+      // Critical errors mean ripgrep is broken, not that there were no
+      // matches. Before surfacing one, try the wasm build — "the binary is
+      // missing or won't execute" is exactly the case it exists for, and a
+      // search that quietly gets slower beats a search that fails.
+      if (isUnrunnable(error.code)) {
+        if (!isRetry && latchWasmFallback()) {
+          ripGrepRaw(
+            args,
+            target,
+            abortSignal,
+            (retryError, retryStdout, retryStderr) => {
+              handleResult(retryError, retryStdout, retryStderr, true)
+            },
+          )
+          return
+        }
         reject(error)
         return
       }
@@ -457,7 +663,7 @@ export async function ripGrep(
         return
       }
 
-      resolve(lines)
+      resolve(finish(lines))
     }
 
     ripGrepRaw(args, target, abortSignal, (error, stdout, stderr) => {
