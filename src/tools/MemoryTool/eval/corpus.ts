@@ -17,6 +17,8 @@ export type CorpusMemory = {
   description: string
   content: string
   tags?: string[]
+  /** ISO date after which the memory is stale. Exercises the demotion path. */
+  staleAfter?: string
 }
 
 export type EvalCase = {
@@ -126,6 +128,42 @@ export const CORPUS: CorpusMemory[] = [
       'Cache invalidation is now prefix-scoped: only the suffix after the first changed tool definition is dropped, so unrelated tool edits keep the cache warm.',
     tags: ['cache', 'evolved', 'overcomes:project_cache-strategy-old'],
   },
+  // A name whose identifier runs two words together. A query that also runs
+  // them together tokenizes as one term and matches nothing exactly — the one
+  // case the character n-gram soft match demonstrably rescues.
+  {
+    id: 'project_feishu-api-limit',
+    type: 'project',
+    name: 'feishu_api rate limit handling',
+    description: 'Backoff and retry policy for the feishu_api rate limiter',
+    content:
+      'The feishu_api rate limiter returns 429 with a Retry-After header. Honour it rather than backing off blindly, and never retry a non-idempotent call.',
+    tags: ['feishu', 'ratelimit'],
+  },
+  // A belief the user gave a finite lifetime, and the one that supersedes it.
+  // The stale one must stay findable and must not outrank the fresh one.
+  {
+    id: 'project_kafka-lag-incident',
+    type: 'project',
+    // Deliberately the better exact match for the query below: without the
+    // staleness demotion this outranks the permanent fix, which is the
+    // behaviour the demotion exists to correct.
+    name: 'Kafka consumer lag',
+    description: 'Temporary mitigation while the kafka consumer lag incident was open',
+    content:
+      'During the incident, consumer lag was mitigated by pausing the enrichment stage. This is a stopgap tied to the open incident.',
+    tags: ['kafka', 'incident'],
+    staleAfter: '2020-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'project_kafka-lag-fix',
+    type: 'project',
+    name: 'Partition rebalance for consumer lag',
+    description: 'Partition rebalance settled the kafka lag for good',
+    content:
+      'Consumer lag was resolved by raising the partition count and rebalancing. The enrichment stage no longer needs pausing.',
+    tags: ['kafka', 'resolved'],
+  },
 ]
 
 export const CASES: EvalCase[] = [
@@ -179,10 +217,32 @@ export const CASES: EvalCase[] = [
     query: 'chrome screenshot slow',
     expected: ['project_cdp-workflow'],
   },
+  // The query is the run-together token alone on purpose. With `rate limit`
+  // appended, those terms match exactly and the case passes either way —
+  // it would look like a test and assert nothing.
+  {
+    label: 'run-together query against an underscored identifier',
+    query: 'feishuapi',
+    expected: ['project_feishu-api-limit'],
+  },
+  {
+    label: 'a stale belief stays findable but loses to its replacement',
+    query: 'kafka consumer lag',
+    expected: ['project_kafka-lag-fix', 'project_kafka-lag-incident'],
+  },
   // Distractors — a ranker that returns anything here is over-matching.
   {
     label: 'distractor: unrelated domain',
     query: 'kubernetes ingress controller',
+    expected: [],
+    distractor: true,
+  },
+  // Guards the soft match specifically: lexically close to the hooks memory
+  // ("hoo", "ook" grams) and about something else entirely. A fuzzy signal
+  // that answers this is the over-matching failure the whole eval exists for.
+  {
+    label: 'distractor: string-similar to a real memory, unrelated meaning',
+    query: 'hookah lounge setup',
     expected: [],
     distractor: true,
   },

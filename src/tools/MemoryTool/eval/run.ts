@@ -38,9 +38,10 @@ function buildCorpusDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'memeval-'))
   for (const m of CORPUS) {
     const tags = m.tags?.length ? `tags: [${m.tags.join(', ')}]\n` : ''
+    const stale = m.staleAfter ? `stale_after: ${m.staleAfter}\n` : ''
     writeFileSync(
       join(dir, `${m.id}.md`),
-      `---\nname: ${m.name}\ndescription: ${m.description}\ntype: ${m.type}\n${tags}---\n\n${m.content}\n`,
+      `---\nname: ${m.name}\ndescription: ${m.description}\ntype: ${m.type}\n${tags}${stale}---\n\n${m.content}\n`,
       'utf-8',
     )
   }
@@ -68,6 +69,9 @@ const SWEEP: Array<{ key: keyof RankingConfig; values: unknown[] }> = [
   { key: 'overcomeFactor', values: [0.15, 0.35, 0.6, 1] },
   { key: 'minTermLength', values: [2, 3] },
   { key: 'cjkBigrams', values: [true, false] },
+  { key: 'softMatchWeight', values: [0, 1, 3, 6] },
+  { key: 'softMatchThreshold', values: [0.2, 0.3, 0.45] },
+  { key: 'staleFactor', values: [0.25, 0.5, 0.8, 1] },
 ]
 
 async function search(dir: string): Promise<void> {

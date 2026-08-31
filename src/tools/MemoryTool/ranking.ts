@@ -80,18 +80,41 @@ export const STOPWORDS = new Set([
   'can', 'should', 'would', 'will', 'have', 'has', 'had', 'not', 'use', 'using',
 ])
 
+/**
+ * `stale_after` as a timestamp, or +Infinity when it does not parse.
+ *
+ * Infinity rather than NaN so an unparseable value reads as "never stale" in
+ * every comparison, instead of depending on NaN's asymmetric behaviour being
+ * accidentally right in one place and wrong in another. Lives here rather than
+ * in MemoryStore so the dependency stays one-way: the store knows about the
+ * ranker, not the reverse.
+ */
+export function staleTimestamp(value: string): number {
+  const t = new Date(value).getTime()
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t
+}
+
 const CJK = /[㐀-鿿぀-ヿ]/
 const CJK_RUN = /[㐀-鿿぀-ヿ]+/gu
 
 /**
  * Character n-grams of a string, on the alphanumeric + Han/Kana alphabet only
- * (punctuation/whitespace stripped). Used for the soft match: a Dice overlap
- * of query grams against a field's grams catches partial and boundary-blurred
- * hits that exact `includes` on tokenized terms misses.
+ * (punctuation and whitespace stripped).
+ *
+ * This backs the soft match, which is a Latin-oriented signal in practice. CJK
+ * recall already comes from bigram tokenization above: measured against
+ * `鉴权`/`飞书鉴权流程`, `缓存失效`/`缓存无效化策略` and two more pairs, exact
+ * scoring returns 8-16 and the soft match adds exactly zero. Short CJK queries
+ * cannot produce a trigram at all (`缓存` yields none), so raising n here would
+ * be adding a knob for a case that is already handled.
+ *
+ * The character class matches CJK_RUN's range rather than starting at U+4E00,
+ * so an Extension A query is not tokenized as CJK by one function and stripped
+ * to nothing by the other.
  */
 export function charNgrams(s: string, n: number): Set<string> {
   const grams = new Set<string>()
-  const clean = s.toLowerCase().replace(/[^a-z0-9一-鿿぀-ヿ]/g, '')
+  const clean = s.toLowerCase().replace(/[^a-z0-9㐀-鿿぀-ヿ]/g, '')
   for (let i = 0; i + n <= clean.length; i++) {
     grams.add(clean.slice(i, i + n))
   }
@@ -150,11 +173,29 @@ export function tokenizeQuery(
  * Field-weighted term frequency. Name and tags are curated and short, so a hit
  * there is a much stronger signal than a hit somewhere in the body.
  */
+/**
+ * Query-side state that is the same for every candidate. Built once per search
+ * and passed down, because `scoreMemory` runs per memory and the grams of the
+ * query do not depend on which memory is being scored.
+ */
+export type QueryContext = {
+  grams: Set<string>
+}
+
+export function buildQueryContext(
+  query: string,
+  config: RankingConfig = RANKING,
+): QueryContext {
+  return {
+    grams: config.softMatchWeight > 0 ? charNgrams(query, 3) : new Set(),
+  }
+}
+
 export function scoreMemory(
   memory: Memory,
   terms: string[],
   config: RankingConfig = RANKING,
-  query: string = '',
+  queryContext?: QueryContext,
 ): number {
   const name = memory.name.toLowerCase()
   const description = memory.description.toLowerCase()
@@ -174,8 +215,8 @@ export function scoreMemory(
   // rescue a memory that otherwise scores zero (the whole point of a soft
   // signal). name counts more than description — it is the curated, dense
   // field.
-  if (query && config.softMatchWeight > 0) {
-    const qGrams = charNgrams(query, 3)
+  if (queryContext && config.softMatchWeight > 0) {
+    const qGrams = queryContext.grams
     if (qGrams.size > 0) {
       const nameDice = dice(qGrams, charNgrams(name, 3))
       if (nameDice >= config.softMatchThreshold) {
@@ -194,8 +235,9 @@ export function scoreMemory(
   // Stale memories: demote, don't filter — the belief stays reachable but no
   // longer competes at full weight with fresh ones.
   if (score > 0 && memory.staleAfter) {
-    const staleTime = new Date(memory.staleAfter).getTime()
-    if (!Number.isNaN(staleTime) && Date.now() > staleTime) {
+    // Unparseable reads as +Infinity, i.e. never stale — the same rule the
+    // archive path uses, so a hand-edited file cannot mean two things.
+    if (Date.now() > staleTimestamp(memory.staleAfter)) {
       score *= config.staleFactor
     }
   }

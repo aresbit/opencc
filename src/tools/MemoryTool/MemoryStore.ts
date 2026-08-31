@@ -3,7 +3,7 @@ import { join, basename, dirname, relative, resolve } from 'path'
 import { existsSync } from 'fs'
 import { MEMORY_TYPES, type MemoryType } from '../../memdir/memoryTypes.js'
 import { getAutoMemPath } from '../../memdir/paths.js'
-import { scoreMemory, tokenizeQuery, RANKING } from './ranking.js'
+import { scoreMemory, tokenizeQuery, RANKING, buildQueryContext, staleTimestamp } from './ranking.js'
 
 export interface Memory {
   id: string
@@ -358,8 +358,11 @@ ${memory.content}
         .slice(0, limit)
     }
 
+    // Built once, not once per candidate: the query's n-grams do not depend on
+    // which memory is being scored.
+    const queryContext = buildQueryContext(query ?? '', RANKING)
     return candidates
-      .map(memory => ({ memory, score: scoreMemory(memory, terms, RANKING, query ?? '') }))
+      .map(memory => ({ memory, score: scoreMemory(memory, terms, RANKING, queryContext) }))
       .filter(entry => entry.score > 0)
       .sort(
         (a, b) =>
@@ -929,6 +932,7 @@ ${keyPoints.map(p => `- ${p}`).join('\n')}
    */
   async archiveOldMemories(
     daysOld: number = 90,
+    { includeStale = false }: { includeStale?: boolean } = {},
   ): Promise<{ archived: number; archiveDir: string }> {
     await this.ensureMemoryDir()
 
@@ -945,14 +949,26 @@ ${keyPoints.map(p => `- ${p}`).join('\n')}
         try {
           const stats = await stat(filePath)
           const age = now - stats.mtime.getTime()
+
+          // The mtime check first, and the file read only if it might matter.
+          // Reading every memory up front to look at `stale_after` cost 30ms →
+          // 72ms over 400 fresh memories for a run that archives nothing.
+          if (age <= maxAge && !includeStale) continue
+
           const memory = await this.readMemory(filePath)
           if (!memory) continue
 
-          // 归档条件：时间久（mtime）OR 用户标记的 staleAfter 已过期。
-          // 后者让"已解决/已完成"的记忆不必等满 daysOld 天就归档。
-          const stalePassed = memory.staleAfter
-            ? new Date(memory.staleAfter).getTime() < now
-            : false
+          // `stale_after` demotes in search; it does not archive on its own.
+          // Archiving is a different, lossier action — it takes the memory out
+          // of the searchable set entirely — and the caller asked for "older
+          // than N days". Honouring it here as well meant a memory written
+          // today was archived by archiveOldMemories(365) merely because the
+          // model had flagged it, which is not what either the flag's own
+          // documentation or the caller's argument says. Opt in explicitly.
+          const stalePassed =
+            includeStale && memory.staleAfter
+              ? staleTimestamp(memory.staleAfter) < now
+              : false
 
           if (age > maxAge || stalePassed) {
 

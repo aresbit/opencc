@@ -17,6 +17,23 @@ import { isFirstPartyAnthropicBaseUrl } from '../../utils/model/providers.js'
 // "Unrecognized key", which the model cannot recover from because zod's
 // discriminated-union error does not name the valid shape. Plain z.object
 // strips the extra key and runs the call the model meant to make.
+/**
+ * `stale_after` has to parse as a date, or it silently means nothing: an
+ * unparseable value made the memory never stale in both the ranker and the
+ * archive path, so a memory the model intended to expire simply never did and
+ * nothing said so. Rejecting at the boundary turns that into a visible error
+ * the model can correct on the next call.
+ */
+const staleAfterSchema = z
+  .string()
+  .refine(v => !Number.isNaN(new Date(v).getTime()), {
+    message:
+      'stale_after must be a parseable date, e.g. 2026-12-31 or 2026-12-31T00:00:00Z',
+  })
+  .describe(
+    'Optional date after which the memory is demoted in search (e.g. for resolved incidents). Demotes only — it does not archive.',
+  )
+
 const saveInputSchema = z.object({
   action: z.literal('save'),
   type: z.enum(MEMORY_TYPES).describe('Type of memory: user, feedback, project, or reference'),
@@ -24,7 +41,7 @@ const saveInputSchema = z.object({
   description: z.string().describe('One-line description for relevance determination'),
   content: z.string().describe('Memory content (for feedback/project: structure as rule/fact, then Why: and How to apply:)'),
   tags: z.array(z.string()).optional().describe('Optional tags for categorization'),
-  stale_after: z.string().optional().describe('Optional ISO date after which the memory is demoted in search (e.g. for memories about resolved incidents)'),
+  stale_after: staleAfterSchema.optional(),
 })
 
 const searchInputSchema = z.object({
@@ -55,7 +72,7 @@ const updateInputSchema = z.object({
   description: z.string().optional().describe('Updated description'),
   content: z.string().optional().describe('Updated content'),
   tags: z.array(z.string()).optional().describe('Updated tags'),
-  stale_after: z.string().optional().describe('Optional ISO date after which the memory is demoted in search'),
+  stale_after: staleAfterSchema.optional(),
 })
 
 const deleteInputSchema = z.object({
@@ -128,6 +145,7 @@ const autoRehearseInputSchema = z.object({
 const archiveInputSchema = z.object({
   action: z.literal('archive'),
   daysOld: z.number().optional().default(90).describe('Archive memories older than this many days (default 90)'),
+  include_stale: z.boolean().optional().default(false).describe('Also archive memories whose stale_after has passed, regardless of age. Off by default: stale_after demotes in search, and archiving removes the memory from the searchable set entirely.'),
 })
 
 /**
@@ -668,7 +686,10 @@ export const MemoryTool = buildTool({
       // ── Archive (长期记忆) ──────────────────────────────
 
       case 'archive': {
-        const { archived, archiveDir } = await store.archiveOldMemories(input.daysOld)
+        const { archived, archiveDir } = await store.archiveOldMemories(
+          input.daysOld,
+          { includeStale: input.include_stale },
+        )
         return {
           data: {
             action: 'archive' as const,

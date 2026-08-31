@@ -54,3 +54,37 @@ baseline: score 0.9633  (recall 0.950 · mrr 0.944 · prec 1.000 · fpr 0.000)
 }
 ```
 
+
+## Review of 61bc109 — 2026-08-31
+
+Reviewing `feat: improve memory ranking and staleness`. The commit added a
+character n-gram soft match and a staleness demotion, and scored **0.9667 →
+0.9667, identical on all four axes** — the corpus had no case for either
+signal, so there was no evidence and no regression protection.
+
+Two cases added, and the first draft of both was wrong in the same way:
+
+- `feishuapi rate limit` → `feishuapi`. With `rate limit` appended those terms
+  matched exactly and the case passed with the soft match switched off. The
+  run-together token has to be the whole query or the case asserts nothing.
+- The kafka pair was rewritten so the *stale* memory is the better exact match
+  (`Kafka consumer lag` vs `Partition rebalance for consumer lag`). Before that
+  the fresh one won regardless and the demotion changed nothing.
+
+Baseline with the new cases: **0.9722** (recall 0.958 · mrr 0.963 · prec 1.000
+· fpr 0.000). Ablations against it:
+
+- `softMatchWeight`: 3 → 0 · score 0.9014 (-0.0708) · **the signal earns its place**
+- `staleFactor`: 0.5 → 1 · score 0.9722 (+0.0000) · **not visible to this metric**
+
+The second result is a limitation of the harness, not of the change. `score.ts`
+averages the reciprocal rank of every expected memory, so `[a, b]` and `[b, a]`
+score the same even though `EvalCase.expected` is documented as best-first.
+Staleness is purely an ordering property, so it is pinned in
+`__tests__/memoryRanking.test.ts` instead, where order can be asserted
+directly. Making MRR order-aware would be the better fix and would move every
+number in this file; not attempted here.
+
+A distractor was added for the soft match specifically (`hookah lounge setup`,
+string-close to the hooks memory and unrelated). It returns nothing, so the
+fuzzy signal is not buying recall with false positives.
