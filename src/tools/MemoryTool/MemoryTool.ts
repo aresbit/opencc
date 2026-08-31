@@ -24,6 +24,7 @@ const saveInputSchema = z.object({
   description: z.string().describe('One-line description for relevance determination'),
   content: z.string().describe('Memory content (for feedback/project: structure as rule/fact, then Why: and How to apply:)'),
   tags: z.array(z.string()).optional().describe('Optional tags for categorization'),
+  stale_after: z.string().optional().describe('Optional ISO date after which the memory is demoted in search (e.g. for memories about resolved incidents)'),
 })
 
 const searchInputSchema = z.object({
@@ -54,6 +55,7 @@ const updateInputSchema = z.object({
   description: z.string().optional().describe('Updated description'),
   content: z.string().optional().describe('Updated content'),
   tags: z.array(z.string()).optional().describe('Updated tags'),
+  stale_after: z.string().optional().describe('Optional ISO date after which the memory is demoted in search'),
 })
 
 const deleteInputSchema = z.object({
@@ -431,7 +433,8 @@ export const MemoryTool = buildTool({
           input.name,
           input.description,
           input.content,
-          input.tags
+          input.tags,
+          input.stale_after
         )
         return {
           data: {
@@ -494,12 +497,14 @@ export const MemoryTool = buildTool({
           description: string
           content: string
           tags: string[]
+          staleAfter: string
         }> = {}
 
         if (input.name !== undefined) updates.name = input.name
         if (input.description !== undefined) updates.description = input.description
         if (input.content !== undefined) updates.content = input.content
         if (input.tags !== undefined) updates.tags = input.tags
+        if (input.stale_after !== undefined) updates.staleAfter = input.stale_after
 
         const updatedMemory = await store.updateMemory(input.id, updates)
         if (!updatedMemory) {

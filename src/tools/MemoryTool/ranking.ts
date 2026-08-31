@@ -29,6 +29,22 @@ export type RankingConfig = {
   cjkBigrams: boolean
   /** Minimum length for a Latin term to count. */
   minTermLength: number
+  /**
+   * Weight of the character n-gram Dice soft-match. Exact term hits in a
+   * curated field dominate; the soft match is a weaker signal for partial /
+   * boundary-blurred matches that `includes` misses (e.g. `feishu` vs
+   * `feishu_api`).
+   */
+  softMatchWeight: number
+  /** Minimum Dice coefficient for the soft match to score at all. */
+  softMatchThreshold: number
+  /**
+   * Multiplier applied to memories whose `staleAfter` has passed — beliefs the
+   * user marked as having a finite lifetime. Demoted rather than filtered, so
+   * the memory stays reachable but no longer competes at full weight with
+   * fresh ones.
+   */
+  staleFactor: number
 }
 
 export const RANKING: RankingConfig = {
@@ -44,6 +60,12 @@ export const RANKING: RankingConfig = {
   overcomeFactor: 0.6,
   cjkBigrams: true,
   minTermLength: 2,
+  // Soft match and staleness are additive signals; the defaults below are
+  // deliberately conservative so exact term hits keep dominating. Tune via the
+  // eval harness (./eval) rather than by taste.
+  softMatchWeight: 3,
+  softMatchThreshold: 0.3,
+  staleFactor: 0.5,
 }
 
 /**
@@ -60,6 +82,29 @@ export const STOPWORDS = new Set([
 
 const CJK = /[㐀-鿿぀-ヿ]/
 const CJK_RUN = /[㐀-鿿぀-ヿ]+/gu
+
+/**
+ * Character n-grams of a string, on the alphanumeric + Han/Kana alphabet only
+ * (punctuation/whitespace stripped). Used for the soft match: a Dice overlap
+ * of query grams against a field's grams catches partial and boundary-blurred
+ * hits that exact `includes` on tokenized terms misses.
+ */
+export function charNgrams(s: string, n: number): Set<string> {
+  const grams = new Set<string>()
+  const clean = s.toLowerCase().replace(/[^a-z0-9一-鿿぀-ヿ]/g, '')
+  for (let i = 0; i + n <= clean.length; i++) {
+    grams.add(clean.slice(i, i + n))
+  }
+  return grams
+}
+
+/** Sørensen–Dice coefficient between two gram sets. */
+export function dice(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let inter = 0
+  for (const g of a) if (b.has(g)) inter++
+  return (2 * inter) / (a.size + b.size)
+}
 
 /**
  * Split a query into search terms.
@@ -109,6 +154,7 @@ export function scoreMemory(
   memory: Memory,
   terms: string[],
   config: RankingConfig = RANKING,
+  query: string = '',
 ): number {
   const name = memory.name.toLowerCase()
   const description = memory.description.toLowerCase()
@@ -123,8 +169,35 @@ export function scoreMemory(
     if (content.includes(term)) score += config.contentWeight
   }
 
+  // Soft match: character n-gram Dice against name/description. Catches
+  // partial and boundary-blurred hits that exact `includes` misses, and can
+  // rescue a memory that otherwise scores zero (the whole point of a soft
+  // signal). name counts more than description — it is the curated, dense
+  // field.
+  if (query && config.softMatchWeight > 0) {
+    const qGrams = charNgrams(query, 3)
+    if (qGrams.size > 0) {
+      const nameDice = dice(qGrams, charNgrams(name, 3))
+      if (nameDice >= config.softMatchThreshold) {
+        score += config.softMatchWeight * nameDice
+      }
+      const descDice = dice(qGrams, charNgrams(description, 3))
+      if (descDice >= config.softMatchThreshold) {
+        score += config.softMatchWeight * descDice * 0.5
+      }
+    }
+  }
+
   if (score > 0 && memory.tags?.includes('overcome')) {
     score *= config.overcomeFactor
+  }
+  // Stale memories: demote, don't filter — the belief stays reachable but no
+  // longer competes at full weight with fresh ones.
+  if (score > 0 && memory.staleAfter) {
+    const staleTime = new Date(memory.staleAfter).getTime()
+    if (!Number.isNaN(staleTime) && Date.now() > staleTime) {
+      score *= config.staleFactor
+    }
   }
   return score
 }

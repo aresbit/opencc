@@ -3,7 +3,7 @@ import { join, basename, dirname, relative, resolve } from 'path'
 import { existsSync } from 'fs'
 import { MEMORY_TYPES, type MemoryType } from '../../memdir/memoryTypes.js'
 import { getAutoMemPath } from '../../memdir/paths.js'
-import { scoreMemory, tokenizeQuery } from './ranking.js'
+import { scoreMemory, tokenizeQuery, RANKING } from './ranking.js'
 
 export interface Memory {
   id: string
@@ -12,6 +12,8 @@ export interface Memory {
   description: string
   content: string
   tags?: string[]
+  /** ISO date after which the memory is considered stale and demoted in search. */
+  staleAfter?: string
   createdAt: Date
   updatedAt: Date
   filePath: string
@@ -84,11 +86,14 @@ export class MemoryStore {
     const tagsLine = memory.tags && memory.tags.length > 0
       ? `tags: [${memory.tags.join(', ')}]\n`
       : ''
+    const staleLine = memory.staleAfter
+      ? `stale_after: ${memory.staleAfter}\n`
+      : ''
     const frontmatter = `---
 name: ${memory.name}
 description: ${memory.description}
 type: ${memory.type}
-${tagsLine}---
+${tagsLine}${staleLine}---
 
 ${memory.content}
 `
@@ -163,6 +168,7 @@ ${memory.content}
         description: frontmatter.description || '',
         content: memoryContent,
         tags,
+        staleAfter: frontmatter.stale_after || frontmatter.staleAfter || undefined,
         createdAt: times?.createdAt ?? now,
         updatedAt: times?.updatedAt ?? now,
         filePath
@@ -249,11 +255,12 @@ ${memory.content}
     name: string,
     description: string,
     content: string,
-    tags?: string[]
+    tags?: string[],
+    staleAfter?: string
   ): Promise<Memory> {
     await this.ensureMemoryDir()
 
-    const filename = this.generateFilename({ type, name, description, content, tags })
+    const filename = this.generateFilename({ type, name, description, content, tags, staleAfter })
     const filePath = join(this.memoryDir, filename)
     const id = this.generateMemoryId(type, name)
 
@@ -264,6 +271,7 @@ ${memory.content}
       description,
       content,
       tags,
+      staleAfter,
       createdAt: new Date(),
       updatedAt: new Date()
     }
@@ -351,7 +359,7 @@ ${memory.content}
     }
 
     return candidates
-      .map(memory => ({ memory, score: scoreMemory(memory, terms) }))
+      .map(memory => ({ memory, score: scoreMemory(memory, terms, RANKING, query ?? '') }))
       .filter(entry => entry.score > 0)
       .sort(
         (a, b) =>
@@ -529,6 +537,7 @@ ${memory.content}
       description: string
       content: string
       tags: string[]
+      staleAfter: string
     }>
   ): Promise<Memory | null> {
     await this.ensureMemoryDir()
@@ -552,6 +561,7 @@ ${memory.content}
         description: updates.description ?? existing.description,
         content: updates.content ?? existing.content,
         tags: updates.tags ?? existing.tags,
+        staleAfter: updates.staleAfter ?? existing.staleAfter,
         updatedAt: new Date(),
       }
 
@@ -935,10 +945,16 @@ ${keyPoints.map(p => `- ${p}`).join('\n')}
         try {
           const stats = await stat(filePath)
           const age = now - stats.mtime.getTime()
+          const memory = await this.readMemory(filePath)
+          if (!memory) continue
 
-          if (age > maxAge) {
-            const memory = await this.readMemory(filePath)
-            if (!memory) continue
+          // 归档条件：时间久（mtime）OR 用户标记的 staleAfter 已过期。
+          // 后者让"已解决/已完成"的记忆不必等满 daysOld 天就归档。
+          const stalePassed = memory.staleAfter
+            ? new Date(memory.staleAfter).getTime() < now
+            : false
+
+          if (age > maxAge || stalePassed) {
 
             // Ensure archive dir exists
             if (!existsSync(archiveDir)) {
