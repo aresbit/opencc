@@ -20,6 +20,7 @@ import { SoftwareAnalysisTool } from './tools/SoftwareAnalysisTool/SoftwareAnaly
 import { QuantOrientTool } from './tools/QuantOrientTool/QuantOrientTool.js'
 import { ManuscriptCheckTool } from './tools/ManuscriptCheckTool/ManuscriptCheckTool.js'
 import { WideResearchTool } from './tools/WideResearchTool/WideResearchTool.js'
+import { AstGrepTool } from './tools/AstGrepTool/AstGrepTool.js'
 import { SelfImproveTool } from './tools/SelfImproveTool/SelfImproveTool.js'
 import { WikiTool } from './tools/WikiTool/WikiTool.js'
 import { KimiTool } from './tools/KimiTool/KimiTool.js'
@@ -232,6 +233,9 @@ export function getAllBaseTools(): Tools {
     // trick as ripgrep). When available, find/grep in Claude's shell are aliased
     // to these fast tools, so the dedicated Glob/Grep tools are unnecessary.
     ...(hasEmbeddedSearchTools() ? [] : [GlobTool, GrepTool]),
+    // Structural search sits next to the textual one: same file enumeration,
+    // different question. Grep finds a string, this finds a shape.
+    AstGrepTool,
     ExitPlanModeV2Tool,
     FileReadTool,
     FileEditTool,
