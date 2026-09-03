@@ -69,8 +69,15 @@ export type EngineStatus = {
  * one field replaced.
  */
 export function withPlanFile(profile: PlanningProfile, planFile?: string): PlanningProfile {
-  const name = planFile?.trim()
+  let name = planFile?.trim()
   if (!name || name === profile.planFile) return profile
+
+  // Normalise the extension: the default planFile is `task_plan.md`, so a bare
+  // `foo` must mean `foo.md`. Without this, `init` scaffolds a file literally
+  // named `foo` (no suffix) while cross-plan refs write `foo.md#T3`, and the
+  // later lookup misses — the "planFile not found" failure mode.
+  if (!name.endsWith('.md')) name += '.md'
+  if (name === profile.planFile) return profile
 
   // The template keyed under the old plan name has to move with it. Renaming
   // only `planFile` left `init` writing the default `task_plan.md` while every
