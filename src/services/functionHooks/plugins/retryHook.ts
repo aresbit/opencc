@@ -52,7 +52,7 @@ export function register(on: OnRegistrar): void {
         if (!isTransient(err) || attempt === MAX_RETRIES) {
           throw err
         }
-        const delay = BASE_DELAY_MS * Math.pow(2, attempt)
+        const delay = BASE_DELAY_MS * 2 ** attempt
         await sleep(delay)
       }
     }
