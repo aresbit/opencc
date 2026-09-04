@@ -46,3 +46,14 @@ export {
   hasAlgebraicHooksForEvent,
   dispatchAlgebraicHooks,
 } from './bridge.js'
+
+// Built-in plugin utilities
+export { clearCache } from './plugins/cacheHook.js'
+export { isAutoPermitted, getApprovedCount, clearApproved } from './plugins/autoPermitHook.js'
+export {
+  queryFiles,
+  getRecentFiles,
+  getFileSymbols,
+  getStats as getKnowledgeStats,
+  clearKnowledge,
+} from './plugins/knowledgeHook.js'

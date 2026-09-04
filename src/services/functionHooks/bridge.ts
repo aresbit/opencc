@@ -16,6 +16,7 @@ import { dispatch } from './dispatcher.js'
 import { buildEngineInterface, buildCoreNouns } from './engine.js'
 import { registry } from './registry.js'
 import { REVERSE_ALIASES, isDenyResult, type EngineInterface, type FunctionHookEvent } from './types.js'
+import { registerBuiltinPlugins, resetBuiltinPlugins } from './plugins/index.js'
 
 let engineInterface: EngineInterface | null = null
 let engineInitPromise: Promise<EngineInterface> | null = null
@@ -23,10 +24,16 @@ let engineInitPromise: Promise<EngineInterface> | null = null
 /**
  * Initialize the engine interface ($). Safe to call multiple times —
  * the first call builds $, subsequent calls return the cached instance.
+ *
+ * Registers built-in plugins (cache, compress, writeGuard, retry,
+ * autoPermit, knowledge) before building the engine so their hooks
+ * are in the chain from the first dispatch.
  */
 export async function initEngine(): Promise<EngineInterface> {
   if (engineInterface) return engineInterface
   if (engineInitPromise) return engineInitPromise
+
+  registerBuiltinPlugins()
 
   engineInitPromise = buildEngineInterface(buildCoreNouns()).then(iface => {
     engineInterface = iface
@@ -49,6 +56,7 @@ export function getEngine(): EngineInterface | null {
 export function resetEngine(): void {
   engineInterface = null
   engineInitPromise = null
+  resetBuiltinPlugins()
   registry.clear()
 }
 
