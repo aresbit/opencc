@@ -3,7 +3,8 @@
  *
  * Registration order = nesting order (outermost first):
  *
- *   tuiView → plainLanguage → mount → ctxFork → select → replay → taintFirewall →
+ *   tuiView → plainLanguage → mount → sudo → ctxFork → ptrace → select →
+ *   scheduler → replay → taintFirewall → mprotect → ipc →
  *   transaction → retry → writeGuard → cache → compress → contextHandle →
  *   autoPermit → knowledge → jitSynthesis → adaptive → ⊥
  *
@@ -45,6 +46,11 @@ import { register as registerPlainLanguage } from './plainLanguageHook.js'
 import { register as registerCtxFork } from './ctxForkHook.js'
 import { register as registerSelect } from './selectHook.js'
 import { register as registerMount } from './mountHook.js'
+import { register as registerMprotect } from './mprotectHook.js'
+import { register as registerIpc } from './ipcHook.js'
+import { register as registerSudo } from './sudoHook.js'
+import { register as registerPtrace } from './ptraceHook.js'
+import { register as registerScheduler } from './schedulerHook.js'
 
 let registered = false
 
@@ -56,10 +62,15 @@ export function registerBuiltinPlugins(): void {
     { name: 'tuiView', id: 'builtin:tuiView', register: registerTuiView },
     { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
     { name: 'mount', id: 'builtin:mount', register: registerMount },
+    { name: 'sudo', id: 'builtin:sudo', register: registerSudo },
     { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
+    { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace },
     { name: 'select', id: 'builtin:select', register: registerSelect },
+    { name: 'scheduler', id: 'builtin:scheduler', register: registerScheduler },
     { name: 'replay', id: 'builtin:replay', register: registerReplay },
     { name: 'taintFirewall', id: 'builtin:taintFirewall', register: registerTaintFirewall },
+    { name: 'mprotect', id: 'builtin:mprotect', register: registerMprotect },
+    { name: 'ipc', id: 'builtin:ipc', register: registerIpc },
     { name: 'transaction', id: 'builtin:transaction', register: registerTransaction },
     { name: 'retry', id: 'builtin:retry', register: registerRetry },
     { name: 'writeGuard', id: 'builtin:writeGuard', register: registerWriteGuard },
@@ -84,10 +95,15 @@ export function resetBuiltinPlugins(): void {
     'builtin:tuiView',
     'builtin:plainLanguage',
     'builtin:mount',
+    'builtin:sudo',
     'builtin:ctxFork',
+    'builtin:ptrace',
     'builtin:select',
+    'builtin:scheduler',
     'builtin:replay',
     'builtin:taintFirewall',
+    'builtin:mprotect',
+    'builtin:ipc',
     'builtin:transaction',
     'builtin:retry',
     'builtin:writeGuard',
@@ -181,3 +197,78 @@ export {
   getStats as getMountStats,
   clearMounts,
 } from './mountHook.js'
+
+// mprotect — context memory protection
+export {
+  mprotect,
+  mprotectPattern,
+  munprotect,
+  mcheck,
+  mverify,
+  getSegments as getMprotectSegments,
+  getViolations as getMprotectViolations,
+  getStats as getMprotectStats,
+  clearProtections,
+} from './mprotectHook.js'
+
+// IPC — message passing + advisory file locks
+export {
+  send as ipcSend,
+  recv as ipcRecv,
+  subscribe as ipcSubscribe,
+  unsubscribe as ipcUnsubscribe,
+  listChannels,
+  peekChannel,
+  flock,
+  funlock,
+  releaseAll as flockReleaseAll,
+  listLocks,
+  isLocked,
+  getStats as getIpcStats,
+  clearIpc,
+} from './ipcHook.js'
+
+// sudo — privilege escalation policy
+export {
+  allow as sudoAllow,
+  deny as sudoDeny,
+  prompt as sudoPrompt,
+  revoke as sudoRevoke,
+  check as sudoCheck,
+  getPolicies as getSudoPolicies,
+  getElevationLog,
+  getStats as getSudoStats,
+  clearSudo,
+} from './sudoHook.js'
+
+// ptrace — agent debugging / inspection
+export {
+  attach as ptraceAttach,
+  detach as ptraceDetach,
+  setBreakpoint as ptraceBreakpoint,
+  removeBreakpoint as ptraceRemoveBreakpoint,
+  step as ptraceStep,
+  continueExecution as ptraceContinue,
+  inspect as ptraceInspect,
+  injectMessage as ptraceInject,
+  getCaptures as getPtraceCaptures,
+  listTraces,
+  getStats as getPtraceStats,
+  clearTraces,
+} from './ptraceHook.js'
+
+// scheduler — model routing + budget limits
+export {
+  route as schedulerRoute,
+  addRoute as schedulerAddRoute,
+  removeRoute as schedulerRemoveRoute,
+  getRoutes as getSchedulerRoutes,
+  setModelMap,
+  getModelMap,
+  getrlimit,
+  setrlimit,
+  getUsage as getBudgetUsage,
+  resetUsage as resetBudgetUsage,
+  getStats as getSchedulerStats,
+  clearScheduler,
+} from './schedulerHook.js'
