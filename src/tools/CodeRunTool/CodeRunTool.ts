@@ -485,6 +485,237 @@ export function createToolProxy(
     return _budgetProxy
   }
 
+  // Lazy-load RSI genome proxy
+  let _genomeProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getGenomeProxy() {
+    if (_genomeProxy) return _genomeProxy
+    _genomeProxy = {
+      async stats() {
+        const { getGenomeStats } = await import('../../services/functionHooks/plugins/rsiGenome.js')
+        return getGenomeStats()
+      },
+      async meta() {
+        const { getGenomeMeta } = await import('../../services/functionHooks/plugins/rsiGenome.js')
+        return getGenomeMeta()
+      },
+      async export() {
+        const { exportGenome } = await import('../../services/functionHooks/plugins/rsiGenome.js')
+        return { json: exportGenome() }
+      },
+      async import(json: unknown) {
+        const { importGenome } = await import('../../services/functionHooks/plugins/rsiGenome.js')
+        importGenome(String(json))
+        return { imported: true }
+      },
+      async merge(antibodies: unknown) {
+        const { mergeAntibodies } = await import('../../services/functionHooks/plugins/rsiGenome.js')
+        return { imported: mergeAntibodies(antibodies as any) }
+      },
+    }
+    return _genomeProxy
+  }
+
+  // Lazy-load RSI antibody proxy
+  let _antibodyProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getAntibodyProxy() {
+    if (_antibodyProxy) return _antibodyProxy
+    _antibodyProxy = {
+      async list() {
+        const { listAntibodies } = await import('../../services/functionHooks/plugins/rsiAntibodyHook.js')
+        return listAntibodies()
+      },
+      async compile(tool: unknown, errorPattern: unknown, guard: unknown) {
+        const { compileManual } = await import('../../services/functionHooks/plugins/rsiAntibodyHook.js')
+        return compileManual(String(tool), String(errorPattern), guard as any)
+      },
+      async retire(antibodyId: unknown) {
+        const { retire } = await import('../../services/functionHooks/plugins/rsiAntibodyHook.js')
+        return { retired: retire(String(antibodyId)) }
+      },
+      async candidates() {
+        const { getCandidates } = await import('../../services/functionHooks/plugins/rsiAntibodyHook.js')
+        return getCandidates()
+      },
+      async stats() {
+        const { getAntibodyStats } = await import('../../services/functionHooks/plugins/rsiAntibodyHook.js')
+        return getAntibodyStats()
+      },
+    }
+    return _antibodyProxy
+  }
+
+  // Lazy-load RSI crystal proxy
+  let _crystalProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getCrystalProxy() {
+    if (_crystalProxy) return _crystalProxy
+    _crystalProxy = {
+      async list() {
+        const { listCrystals } = await import('../../services/functionHooks/plugins/rsiCrystallizeHook.js')
+        return listCrystals()
+      },
+      async create(name: unknown, steps: unknown, paramConstraints?: unknown, prechecks?: unknown) {
+        const { crystallizeManual } = await import('../../services/functionHooks/plugins/rsiCrystallizeHook.js')
+        return crystallizeManual(String(name), steps as any, paramConstraints as any, prechecks as any)
+      },
+      async candidates() {
+        const { getCandidateSequences } = await import('../../services/functionHooks/plugins/rsiCrystallizeHook.js')
+        return getCandidateSequences()
+      },
+      async stats() {
+        const { getCrystallizeStats } = await import('../../services/functionHooks/plugins/rsiCrystallizeHook.js')
+        return getCrystallizeStats()
+      },
+    }
+    return _crystalProxy
+  }
+
+  // Lazy-load RSI experiment proxy
+  let _experimentProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getExperimentProxy() {
+    if (_experimentProxy) return _experimentProxy
+    _experimentProxy = {
+      async create(name: unknown, taskType: unknown, variants: unknown) {
+        const { createExperiment } = await import('../../services/functionHooks/plugins/rsiExperimentHook.js')
+        return createExperiment(String(name), String(taskType), variants as any)
+      },
+      async list() {
+        const { listExperiments } = await import('../../services/functionHooks/plugins/rsiExperimentHook.js')
+        return listExperiments()
+      },
+      async results(experimentId: unknown) {
+        const { getExperimentResults } = await import('../../services/functionHooks/plugins/rsiExperimentHook.js')
+        return getExperimentResults(String(experimentId))
+      },
+      async stats() {
+        const { getExperimentStats } = await import('../../services/functionHooks/plugins/rsiExperimentHook.js')
+        return getExperimentStats()
+      },
+    }
+    return _experimentProxy
+  }
+
+  // Lazy-load RSI critic proxy
+  let _criticProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getCriticProxy() {
+    if (_criticProxy) return _criticProxy
+    _criticProxy = {
+      async judge(tool: unknown, input: unknown, decision: unknown, reason: unknown) {
+        const { submitCriticJudgment } = await import('../../services/functionHooks/plugins/rsiExperimentHook.js')
+        submitCriticJudgment(String(tool), input, String(decision) as any, String(reason))
+        return { recorded: true }
+      },
+      async rules() {
+        const { listCriticRules } = await import('../../services/functionHooks/plugins/rsiExperimentHook.js')
+        return listCriticRules()
+      },
+      async coverage() {
+        const { getCriticCoverage } = await import('../../services/functionHooks/plugins/rsiExperimentHook.js')
+        return getCriticCoverage()
+      },
+    }
+    return _criticProxy
+  }
+
+  // Lazy-load RSI sleep proxy
+  let _sleepProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getSleepProxy() {
+    if (_sleepProxy) return _sleepProxy
+    _sleepProxy = {
+      async trigger() {
+        const { triggerSleep } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
+        return triggerSleep()
+      },
+      async lastReport() {
+        const { getLastSleepReport } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
+        return getLastSleepReport()
+      },
+      async history() {
+        const { getSleepHistory } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
+        return getSleepHistory()
+      },
+      async stats() {
+        const { getSleepStats } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
+        return getSleepStats()
+      },
+    }
+    return _sleepProxy
+  }
+
+  // Lazy-load RSI curriculum proxy
+  let _curriculumProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getCurriculumProxy() {
+    if (_curriculumProxy) return _curriculumProxy
+    _curriculumProxy = {
+      async profile() {
+        const { getCapabilityProfile } = await import('../../services/functionHooks/plugins/rsiCurriculumHook.js')
+        return getCapabilityProfile()
+      },
+      async sweetSpot() {
+        const { findSweetSpot } = await import('../../services/functionHooks/plugins/rsiCurriculumHook.js')
+        return findSweetSpot()
+      },
+      async train(taskType?: unknown, count?: unknown) {
+        const { generateTraining } = await import('../../services/functionHooks/plugins/rsiCurriculumHook.js')
+        return generateTraining(taskType ? String(taskType) : undefined, count as number | undefined)
+      },
+      async submit(exerciseId: unknown, success: unknown, score: unknown, feedback: unknown) {
+        const { submitExerciseResult } = await import('../../services/functionHooks/plugins/rsiCurriculumHook.js')
+        submitExerciseResult(String(exerciseId), Boolean(success), Number(score), String(feedback))
+        return { recorded: true }
+      },
+      async exercises() {
+        const { getExercises } = await import('../../services/functionHooks/plugins/rsiCurriculumHook.js')
+        return getExercises()
+      },
+      async stats() {
+        const { getCurriculumStats } = await import('../../services/functionHooks/plugins/rsiCurriculumHook.js')
+        return getCurriculumStats()
+      },
+    }
+    return _curriculumProxy
+  }
+
+  // Lazy-load RSI constitution proxy
+  let _constitutionProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getConstitutionProxy() {
+    if (_constitutionProxy) return _constitutionProxy
+    _constitutionProxy = {
+      async addInvariant(invariant: unknown, enforcement: unknown, description: unknown) {
+        const { addInvariant } = await import('../../services/functionHooks/plugins/rsiConstitutionHook.js')
+        return addInvariant(String(invariant), String(enforcement) as any, String(description))
+      },
+      async list() {
+        const { listInvariants } = await import('../../services/functionHooks/plugins/rsiConstitutionHook.js')
+        return listInvariants()
+      },
+      async validate(operation: unknown, target: unknown, detail?: unknown) {
+        const { validate } = await import('../../services/functionHooks/plugins/rsiConstitutionHook.js')
+        return validate(String(operation), String(target), detail ? String(detail) : undefined)
+      },
+      async addTest(name: unknown, assertion: unknown, source: unknown) {
+        const { addTest } = await import('../../services/functionHooks/plugins/rsiConstitutionHook.js')
+        return addTest(String(name), String(assertion), String(source))
+      },
+      async runTests() {
+        const { runTests } = await import('../../services/functionHooks/plugins/rsiConstitutionHook.js')
+        return runTests()
+      },
+      async metrics() {
+        const { getMetrics } = await import('../../services/functionHooks/plugins/rsiConstitutionHook.js')
+        return getMetrics()
+      },
+      async violations(limit?: unknown) {
+        const { getViolations } = await import('../../services/functionHooks/plugins/rsiConstitutionHook.js')
+        return getViolations(limit as number | undefined)
+      },
+      async stats() {
+        const { getConstitutionStats } = await import('../../services/functionHooks/plugins/rsiConstitutionHook.js')
+        return getConstitutionStats()
+      },
+    }
+    return _constitutionProxy
+  }
+
   return {
     tool: toolProxy,
     get recipe() { return getRecipeProxy() },
@@ -500,6 +731,14 @@ export function createToolProxy(
     get ptrace() { return getPtraceProxy() },
     get scheduler() { return getSchedulerProxy() },
     get budget() { return getBudgetProxy() },
+    get genome() { return getGenomeProxy() },
+    get antibody() { return getAntibodyProxy() },
+    get crystal() { return getCrystalProxy() },
+    get experiment() { return getExperimentProxy() },
+    get critic() { return getCriticProxy() },
+    get sleep() { return getSleepProxy() },
+    get curriculum() { return getCurriculumProxy() },
+    get constitution() { return getConstitutionProxy() },
     _callLog: callLog,
   }
 }
@@ -585,6 +824,53 @@ multi-tool sequence detected from your usage patterns).
 \`$.budget.setrlimit(agentId, resource, { soft?, hard? })\` — set limits.
 \`$.budget.usage(agentId)\` — get current usage counters.
 \`$.budget.reset(agentId)\` — reset usage counters.
+
+\`$.genome.stats()\` — get genome overview (antibodies, crystals, experiments, generation count).
+\`$.genome.meta()\` — get genome metadata (generation, timestamps, improvement counts).
+\`$.genome.export()\` — serialize entire genome to JSON for sharing (herd immunity).
+\`$.genome.import(json)\` — load a genome from JSON.
+\`$.genome.merge(antibodies)\` — merge foreign antibodies into local genome (Lamarckian inheritance).
+
+\`$.antibody.list()\` — list all compiled antibody guards.
+\`$.antibody.compile(tool, errorPattern, guard)\` — manually compile an antibody from a known failure pattern.
+\`$.antibody.retire(antibodyId)\` — remove an antibody that's no longer useful.
+\`$.antibody.candidates()\` — list failure patterns approaching compilation threshold.
+\`$.antibody.stats()\` — get antibody system stats (active, hits, blocks).
+
+\`$.crystal.list()\` — list all crystallized skills (compiled tool sequences).
+\`$.crystal.create(name, steps, paramConstraints?, prechecks?)\` — manually crystallize a skill.
+\`$.crystal.candidates()\` — list sequence candidates approaching crystallization threshold.
+\`$.crystal.stats()\` — get crystallization stats.
+
+\`$.experiment.create(name, taskType, variants)\` — start an A/B experiment with strategy variants.
+\`$.experiment.list()\` — list all experiments (active and concluded).
+\`$.experiment.results(experimentId)\` — get detailed variant results for an experiment.
+\`$.experiment.stats()\` — get experiment system stats.
+
+\`$.critic.judge(tool, input, decision, reason)\` — submit a critic judgment (approve/deny).
+\`$.critic.rules()\` — list distilled critic rules (compiled from judgment patterns).
+\`$.critic.coverage()\` — get critic distillation coverage stats.
+
+\`$.sleep.trigger()\` — manually trigger sleep consolidation (session analysis + genome mutation).
+\`$.sleep.lastReport()\` — get the most recent sleep consolidation report.
+\`$.sleep.history()\` — get all sleep reports from this session.
+\`$.sleep.stats()\` — get sleep system stats (generation, cycles, improvements).
+
+\`$.curriculum.profile()\` — get capability profile by task type (success rates, difficulty, trends).
+\`$.curriculum.sweetSpot()\` — find tasks in the zone of proximal development (40-70% success).
+\`$.curriculum.train(taskType?, count?)\` — generate training exercises at optimal difficulty.
+\`$.curriculum.submit(exerciseId, success, score, feedback)\` — record exercise results.
+\`$.curriculum.exercises()\` — list generated exercises.
+\`$.curriculum.stats()\` — get curriculum stats.
+
+\`$.constitution.addInvariant(invariant, enforcement, description)\` — add a safety invariant (structural or checked).
+\`$.constitution.list()\` — list all constitution entries.
+\`$.constitution.validate(operation, target, detail?)\` — validate a genome mutation against the constitution.
+\`$.constitution.addTest(name, assertion, source)\` — add a ratchet test (grow-only regression suite).
+\`$.constitution.runTests()\` — run all ratchet tests.
+\`$.constitution.metrics()\` — compute and return current metric snapshots (anti-Goodhart immutable metrics).
+\`$.constitution.violations(limit?)\` — get constitution violation log.
+\`$.constitution.stats()\` — get constitution system stats.
 
 ### When to use CodeRun
 

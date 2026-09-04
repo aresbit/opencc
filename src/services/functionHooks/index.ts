@@ -171,6 +171,87 @@ export {
   clearTraces,
 } from './plugins/ptraceHook.js'
 
+// RSI genome — shared state
+export {
+  getGenome,
+  getGenomeMeta,
+  getGenomeStats,
+  exportGenome,
+  importGenome,
+  mergeAntibodies,
+  resetGenome,
+} from './plugins/rsiGenome.js'
+
+// RSI antibody — failure-compiled guards
+export {
+  listAntibodies,
+  compileManual as compileAntibody,
+  retire as retireAntibody,
+  getCandidates as getAntibodyCandidates,
+  getAntibodyStats,
+  clearAntibodies,
+} from './plugins/rsiAntibodyHook.js'
+
+// RSI crystallize — skill crystallization
+export {
+  listCrystals,
+  crystallizeManual,
+  getCandidateSequences,
+  getCrystallizeStats,
+  clearCrystallize,
+} from './plugins/rsiCrystallizeHook.js'
+
+// RSI experiment — A/B testing + critic distillation
+export {
+  createExperiment,
+  listExperiments,
+  getExperimentResults,
+  submitCriticJudgment,
+  listCriticRules,
+  getCriticCoverage,
+  getExperimentStats,
+  clearExperiments,
+} from './plugins/rsiExperimentHook.js'
+
+// RSI sleep — session-end consolidation
+export {
+  triggerSleep,
+  getLastSleepReport,
+  getSleepHistory,
+  getSessionEventCount,
+  getSleepStats,
+  clearSleep,
+} from './plugins/rsiSleepHook.js'
+
+// RSI curriculum — self-generated training
+export {
+  getCapabilityProfile,
+  getTaskProfile,
+  findSweetSpot,
+  generateTraining,
+  submitExerciseResult,
+  getExercises as getCurriculumExercises,
+  getExerciseResults as getCurriculumResults,
+  getCurriculumStats,
+  clearCurriculum,
+} from './plugins/rsiCurriculumHook.js'
+
+// RSI constitution — immutable safety layer
+export {
+  addInvariant,
+  listInvariants,
+  addTest as addRatchetTest,
+  listTests as listRatchetTests,
+  runTests as runRatchetTests,
+  validate as validateMutation,
+  getMetrics as getRsiMetrics,
+  getMetricDefinitions,
+  getMetricHistory,
+  getViolations as getConstitutionViolations,
+  getConstitutionStats,
+  clearConstitution,
+} from './plugins/rsiConstitutionHook.js'
+
 // scheduler — model routing + budget limits
 export {
   route as schedulerRoute,
