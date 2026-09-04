@@ -6,7 +6,9 @@
  *   tuiView → plainLanguage → mount → sudo → ctxFork → ptrace → select →
  *   scheduler → replay → taintFirewall → mprotect → ipc →
  *   transaction → retry → writeGuard → cache → compress → contextHandle →
- *   autoPermit → knowledge → jitSynthesis → adaptive → ⊥
+ *   autoPermit → knowledge → jitSynthesis → adaptive →
+ *   rsiConstitution → rsiAntibody → rsiCrystallize → rsiExperiment →
+ *   rsiSleep → rsiCurriculum → ⊥
  *
  * Design rationale (following OS-kernel analogy):
  *
@@ -51,6 +53,12 @@ import { register as registerIpc } from './ipcHook.js'
 import { register as registerSudo } from './sudoHook.js'
 import { register as registerPtrace } from './ptraceHook.js'
 import { register as registerScheduler } from './schedulerHook.js'
+import { register as registerRsiConstitution } from './rsiConstitutionHook.js'
+import { register as registerRsiAntibody } from './rsiAntibodyHook.js'
+import { register as registerRsiCrystallize } from './rsiCrystallizeHook.js'
+import { register as registerRsiExperiment } from './rsiExperimentHook.js'
+import { register as registerRsiSleep } from './rsiSleepHook.js'
+import { register as registerRsiCurriculum } from './rsiCurriculumHook.js'
 
 let registered = false
 
@@ -81,6 +89,13 @@ export function registerBuiltinPlugins(): void {
     { name: 'knowledge', id: 'builtin:knowledge', register: registerKnowledge },
     { name: 'jitSynthesis', id: 'builtin:jitSynthesis', register: registerJitSynthesis },
     { name: 'adaptive', id: 'builtin:adaptive', register: registerAdaptive },
+    // RSI (Recursive Self-Improvement) — ring 0-2
+    { name: 'rsiConstitution', id: 'builtin:rsiConstitution', register: registerRsiConstitution },
+    { name: 'rsiAntibody', id: 'builtin:rsiAntibody', register: registerRsiAntibody },
+    { name: 'rsiCrystallize', id: 'builtin:rsiCrystallize', register: registerRsiCrystallize },
+    { name: 'rsiExperiment', id: 'builtin:rsiExperiment', register: registerRsiExperiment },
+    { name: 'rsiSleep', id: 'builtin:rsiSleep', register: registerRsiSleep },
+    { name: 'rsiCurriculum', id: 'builtin:rsiCurriculum', register: registerRsiCurriculum },
   ]
 
   for (const plugin of plugins) {
@@ -114,6 +129,12 @@ export function resetBuiltinPlugins(): void {
     'builtin:knowledge',
     'builtin:jitSynthesis',
     'builtin:adaptive',
+    'builtin:rsiConstitution',
+    'builtin:rsiAntibody',
+    'builtin:rsiCrystallize',
+    'builtin:rsiExperiment',
+    'builtin:rsiSleep',
+    'builtin:rsiCurriculum',
   ]) {
     registry.removePlugin(id)
   }
@@ -256,6 +277,87 @@ export {
   getStats as getPtraceStats,
   clearTraces,
 } from './ptraceHook.js'
+
+// RSI genome — shared state
+export {
+  getGenome,
+  getGenomeMeta,
+  getGenomeStats,
+  exportGenome,
+  importGenome,
+  mergeAntibodies,
+  resetGenome,
+} from './rsiGenome.js'
+
+// RSI antibody — failure-compiled guards
+export {
+  listAntibodies,
+  compileManual as compileAntibody,
+  retire as retireAntibody,
+  getCandidates as getAntibodyCandidates,
+  getAntibodyStats,
+  clearAntibodies,
+} from './rsiAntibodyHook.js'
+
+// RSI crystallize — skill crystallization
+export {
+  listCrystals,
+  crystallizeManual,
+  getCandidateSequences,
+  getCrystallizeStats,
+  clearCrystallize,
+} from './rsiCrystallizeHook.js'
+
+// RSI experiment — A/B testing + critic distillation
+export {
+  createExperiment,
+  listExperiments,
+  getExperimentResults,
+  submitCriticJudgment,
+  listCriticRules,
+  getCriticCoverage,
+  getExperimentStats,
+  clearExperiments,
+} from './rsiExperimentHook.js'
+
+// RSI sleep — session-end consolidation
+export {
+  triggerSleep,
+  getLastSleepReport,
+  getSleepHistory,
+  getSessionEventCount,
+  getSleepStats,
+  clearSleep,
+} from './rsiSleepHook.js'
+
+// RSI curriculum — self-generated training
+export {
+  getCapabilityProfile,
+  getTaskProfile,
+  findSweetSpot,
+  generateTraining,
+  submitExerciseResult,
+  getExercises as getCurriculumExercises,
+  getExerciseResults as getCurriculumResults,
+  getCurriculumStats,
+  clearCurriculum,
+} from './rsiCurriculumHook.js'
+
+// RSI constitution — immutable safety layer
+export {
+  addInvariant,
+  listInvariants,
+  addTest as addRatchetTest,
+  listTests as listRatchetTests,
+  runTests as runRatchetTests,
+  validate as validateMutation,
+  getMetrics as getRsiMetrics,
+  getMetricDefinitions,
+  getMetricHistory,
+  getViolations as getConstitutionViolations,
+  getConstitutionStats,
+  clearConstitution,
+} from './rsiConstitutionHook.js'
 
 // scheduler — model routing + budget limits
 export {

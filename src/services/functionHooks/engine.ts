@@ -445,6 +445,185 @@ export function buildCoreNouns(): Record<
         return getModelMap()
       },
     },
+    genome: {
+      stats: async () => {
+        const { getGenomeStats } = await import('./plugins/rsiGenome.js')
+        return getGenomeStats()
+      },
+      meta: async () => {
+        const { getGenomeMeta } = await import('./plugins/rsiGenome.js')
+        return getGenomeMeta()
+      },
+      export: async () => {
+        const { exportGenome } = await import('./plugins/rsiGenome.js')
+        return { json: exportGenome() }
+      },
+      import: async (e: { json: string }) => {
+        const { importGenome } = await import('./plugins/rsiGenome.js')
+        importGenome(e.json)
+        return { imported: true }
+      },
+      merge: async (e: { antibodies: unknown[] }) => {
+        const { mergeAntibodies } = await import('./plugins/rsiGenome.js')
+        return { imported: mergeAntibodies(e.antibodies as any) }
+      },
+    },
+    antibody: {
+      list: async () => {
+        const { listAntibodies } = await import('./plugins/rsiAntibodyHook.js')
+        return listAntibodies()
+      },
+      compile: async (e: { tool: string; errorPattern: string; guard: unknown }) => {
+        const { compileManual } = await import('./plugins/rsiAntibodyHook.js')
+        return compileManual(e.tool, e.errorPattern, e.guard as any)
+      },
+      retire: async (e: { antibodyId: string }) => {
+        const { retire } = await import('./plugins/rsiAntibodyHook.js')
+        return { retired: retire(e.antibodyId) }
+      },
+      candidates: async () => {
+        const { getCandidates } = await import('./plugins/rsiAntibodyHook.js')
+        return getCandidates()
+      },
+      stats: async () => {
+        const { getAntibodyStats } = await import('./plugins/rsiAntibodyHook.js')
+        return getAntibodyStats()
+      },
+    },
+    crystal: {
+      list: async () => {
+        const { listCrystals } = await import('./plugins/rsiCrystallizeHook.js')
+        return listCrystals()
+      },
+      create: async (e: { name: string; steps: unknown[]; paramConstraints?: unknown; prechecks?: string[] }) => {
+        const { crystallizeManual } = await import('./plugins/rsiCrystallizeHook.js')
+        return crystallizeManual(e.name, e.steps as any, e.paramConstraints as any, e.prechecks)
+      },
+      candidates: async () => {
+        const { getCandidateSequences } = await import('./plugins/rsiCrystallizeHook.js')
+        return getCandidateSequences()
+      },
+      stats: async () => {
+        const { getCrystallizeStats } = await import('./plugins/rsiCrystallizeHook.js')
+        return getCrystallizeStats()
+      },
+    },
+    experiment: {
+      create: async (e: { name: string; taskType: string; variants: unknown[] }) => {
+        const { createExperiment } = await import('./plugins/rsiExperimentHook.js')
+        return createExperiment(e.name, e.taskType, e.variants as any)
+      },
+      list: async () => {
+        const { listExperiments } = await import('./plugins/rsiExperimentHook.js')
+        return listExperiments()
+      },
+      results: async (e: { experimentId: string }) => {
+        const { getExperimentResults } = await import('./plugins/rsiExperimentHook.js')
+        return getExperimentResults(e.experimentId)
+      },
+      stats: async () => {
+        const { getExperimentStats } = await import('./plugins/rsiExperimentHook.js')
+        return getExperimentStats()
+      },
+    },
+    critic: {
+      judge: async (e: { tool: string; input: unknown; decision: string; reason: string }) => {
+        const { submitCriticJudgment } = await import('./plugins/rsiExperimentHook.js')
+        submitCriticJudgment(e.tool, e.input, e.decision as any, e.reason)
+        return { recorded: true }
+      },
+      rules: async () => {
+        const { listCriticRules } = await import('./plugins/rsiExperimentHook.js')
+        return listCriticRules()
+      },
+      coverage: async () => {
+        const { getCriticCoverage } = await import('./plugins/rsiExperimentHook.js')
+        return getCriticCoverage()
+      },
+    },
+    sleep: {
+      trigger: async () => {
+        const { triggerSleep } = await import('./plugins/rsiSleepHook.js')
+        return triggerSleep()
+      },
+      lastReport: async () => {
+        const { getLastSleepReport } = await import('./plugins/rsiSleepHook.js')
+        return getLastSleepReport()
+      },
+      history: async () => {
+        const { getSleepHistory } = await import('./plugins/rsiSleepHook.js')
+        return getSleepHistory()
+      },
+      stats: async () => {
+        const { getSleepStats } = await import('./plugins/rsiSleepHook.js')
+        return getSleepStats()
+      },
+    },
+    curriculum: {
+      profile: async () => {
+        const { getCapabilityProfile } = await import('./plugins/rsiCurriculumHook.js')
+        return getCapabilityProfile()
+      },
+      sweetSpot: async () => {
+        const { findSweetSpot } = await import('./plugins/rsiCurriculumHook.js')
+        return findSweetSpot()
+      },
+      train: async (e: { taskType?: string; count?: number }) => {
+        const { generateTraining } = await import('./plugins/rsiCurriculumHook.js')
+        return generateTraining(e.taskType, e.count)
+      },
+      submit: async (e: { exerciseId: string; success: boolean; score: number; feedback: string }) => {
+        const { submitExerciseResult } = await import('./plugins/rsiCurriculumHook.js')
+        submitExerciseResult(e.exerciseId, e.success, e.score, e.feedback)
+        return { recorded: true }
+      },
+      exercises: async () => {
+        const { getExercises } = await import('./plugins/rsiCurriculumHook.js')
+        return getExercises()
+      },
+      stats: async () => {
+        const { getCurriculumStats } = await import('./plugins/rsiCurriculumHook.js')
+        return getCurriculumStats()
+      },
+    },
+    constitution: {
+      addInvariant: async (e: { invariant: string; enforcement: string; description: string }) => {
+        const { addInvariant } = await import('./plugins/rsiConstitutionHook.js')
+        return addInvariant(e.invariant, e.enforcement as any, e.description)
+      },
+      list: async () => {
+        const { listInvariants } = await import('./plugins/rsiConstitutionHook.js')
+        return listInvariants()
+      },
+      validate: async (e: { operation: string; target: string; detail?: string }) => {
+        const { validate } = await import('./plugins/rsiConstitutionHook.js')
+        return validate(e.operation, e.target, e.detail)
+      },
+      addTest: async (e: { name: string; assertion: string; source: string }) => {
+        const { addTest } = await import('./plugins/rsiConstitutionHook.js')
+        return addTest(e.name, e.assertion, e.source)
+      },
+      runTests: async () => {
+        const { runTests } = await import('./plugins/rsiConstitutionHook.js')
+        return runTests()
+      },
+      metrics: async () => {
+        const { getMetrics } = await import('./plugins/rsiConstitutionHook.js')
+        return getMetrics()
+      },
+      metricHistory: async (e: { metricName?: string }) => {
+        const { getMetricHistory } = await import('./plugins/rsiConstitutionHook.js')
+        return getMetricHistory(e.metricName)
+      },
+      violations: async (e: { limit?: number }) => {
+        const { getViolations } = await import('./plugins/rsiConstitutionHook.js')
+        return getViolations(e.limit)
+      },
+      stats: async () => {
+        const { getConstitutionStats } = await import('./plugins/rsiConstitutionHook.js')
+        return getConstitutionStats()
+      },
+    },
     budget: {
       getrlimit: async (e: { agentId: string }) => {
         const { getrlimit } = await import('./plugins/schedulerHook.js')
