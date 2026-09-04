@@ -20,6 +20,7 @@ import { ProbeTool } from './tools/ProbeTool/ProbeTool.js'
 import { SreTool } from './tools/SreTool/SreTool.js'
 import { ProtocolReTool } from './tools/ProtocolReTool/ProtocolReTool.js'
 import { ApiReTool } from './tools/ApiReTool/ApiReTool.js'
+import { EvolveTool } from './tools/EvolveTool/EvolveTool.js'
 import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
 import { SoftwareAnalysisTool } from './tools/SoftwareAnalysisTool/SoftwareAnalysisTool.js'
 import { QuantOrientTool } from './tools/QuantOrientTool/QuantOrientTool.js'
@@ -261,6 +262,7 @@ export function getAllBaseTools(): Tools {
     SreTool,
     ProtocolReTool,
     ApiReTool,
+    EvolveTool,
     QuantVerifyTool,
     SoftwareAnalysisTool,
     QuantOrientTool,
