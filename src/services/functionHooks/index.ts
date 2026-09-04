@@ -74,3 +74,40 @@ export {
   enable as enablePlainLanguage,
   disable as disablePlainLanguage,
 } from './plugins/plainLanguageHook.js'
+
+// ctx.fork — speculative execution
+export {
+  fork as ctxFork,
+  resolve as ctxResolve,
+  abandon as ctxAbandon,
+  getActiveForks,
+  getForkHistory,
+  getStats as getForkStats,
+  clearForks,
+} from './plugins/ctxForkHook.js'
+
+// select — multiplexed event waiting
+export {
+  select,
+  notify as selectNotify,
+  getActiveSelects,
+  cancelSelect,
+  cancelAll as cancelAllSelects,
+  getStats as getSelectStats,
+  clearSelect,
+} from './plugins/selectHook.js'
+
+// mount — MCP namespace
+export {
+  mount,
+  umount,
+  createNs,
+  destroyNs,
+  bindAgent as mountBindAgent,
+  unbindAgent as mountUnbindAgent,
+  resolve as mountResolve,
+  listMounts,
+  listNamespaces,
+  getStats as getMountStats,
+  clearMounts,
+} from './plugins/mountHook.js'

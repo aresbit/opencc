@@ -3,13 +3,17 @@
  *
  * Registration order = nesting order (outermost first):
  *
- *   tuiView → plainLanguage → replay → taintFirewall → transaction → retry →
- *   writeGuard → cache → compress → contextHandle → autoPermit → knowledge → jitSynthesis → adaptive → ⊥
+ *   tuiView → plainLanguage → mount → ctxFork → select → replay → taintFirewall →
+ *   transaction → retry → writeGuard → cache → compress → contextHandle →
+ *   autoPermit → knowledge → jitSynthesis → adaptive → ⊥
  *
  * Design rationale (following OS-kernel analogy):
  *
  * - tuiView: observational, outermost — tags events with UI metadata
  * - plainLanguage: prompt enhancer — injects ISO 24495 plain-language directives
+ * - mount: namespace enforcement — denies tool calls outside agent's mount table
+ * - ctxFork: speculative execution — tracks branch file snapshots for rollback
+ * - select: event multiplexing — feeds subagent/file/timer events into poll sets
  * - replay (audit): sees raw I/O including taint redactions
  * - taintFirewall: blocks exfiltration before any transformation
  * - transaction: snapshots before edits, rollback wraps everything inside
@@ -38,6 +42,9 @@ import { register as registerAdaptive } from './adaptiveHintHook.js'
 import { register as registerJitSynthesis } from './jitSynthesisHook.js'
 import { register as registerTuiView } from './tuiViewHook.js'
 import { register as registerPlainLanguage } from './plainLanguageHook.js'
+import { register as registerCtxFork } from './ctxForkHook.js'
+import { register as registerSelect } from './selectHook.js'
+import { register as registerMount } from './mountHook.js'
 
 let registered = false
 
@@ -48,6 +55,9 @@ export function registerBuiltinPlugins(): void {
   const plugins = [
     { name: 'tuiView', id: 'builtin:tuiView', register: registerTuiView },
     { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
+    { name: 'mount', id: 'builtin:mount', register: registerMount },
+    { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
+    { name: 'select', id: 'builtin:select', register: registerSelect },
     { name: 'replay', id: 'builtin:replay', register: registerReplay },
     { name: 'taintFirewall', id: 'builtin:taintFirewall', register: registerTaintFirewall },
     { name: 'transaction', id: 'builtin:transaction', register: registerTransaction },
@@ -73,6 +83,9 @@ export function resetBuiltinPlugins(): void {
   for (const id of [
     'builtin:tuiView',
     'builtin:plainLanguage',
+    'builtin:mount',
+    'builtin:ctxFork',
+    'builtin:select',
     'builtin:replay',
     'builtin:taintFirewall',
     'builtin:transaction',
@@ -131,3 +144,40 @@ export {
   enable as enablePlainLanguage,
   disable as disablePlainLanguage,
 } from './plainLanguageHook.js'
+
+// ctx.fork — speculative execution
+export {
+  fork as ctxFork,
+  resolve as ctxResolve,
+  abandon as ctxAbandon,
+  getActiveForks,
+  getForkHistory,
+  getStats as getForkStats,
+  clearForks,
+} from './ctxForkHook.js'
+
+// select — multiplexed event waiting
+export {
+  select,
+  notify as selectNotify,
+  getActiveSelects,
+  cancelSelect,
+  cancelAll as cancelAllSelects,
+  getStats as getSelectStats,
+  clearSelect,
+} from './selectHook.js'
+
+// mount — MCP namespace
+export {
+  mount,
+  umount,
+  createNs,
+  destroyNs,
+  bindAgent as mountBindAgent,
+  unbindAgent as mountUnbindAgent,
+  resolve as mountResolve,
+  listMounts,
+  listNamespaces,
+  getStats as getMountStats,
+  clearMounts,
+} from './mountHook.js'
