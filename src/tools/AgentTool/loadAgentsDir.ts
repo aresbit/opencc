@@ -92,6 +92,12 @@ const AgentJsonSchema = lazySchema(() =>
     memory: z.enum(['user', 'project', 'local']).optional(),
     background: z.boolean().optional(),
     isolation: z.enum(['worktree', 'remote']).optional(),
+    tui: z.object({
+      views: z.array(z.string()).optional(),
+      widgets: z.array(z.string()).optional(),
+      layout: z.enum(['compact', 'expanded', 'dashboard']).optional(),
+      interactive: z.boolean().optional(),
+    }).optional(),
   }),
 )
 
@@ -121,6 +127,7 @@ export type BaseAgentDefinition = {
   initialPrompt?: string // Prepended to the first user turn (slash commands work)
   memory?: AgentMemoryScope // Persistent memory scope
   isolation?: 'worktree' | 'remote' // Run in an isolated git worktree, or remotely in CCR (ant-only)
+  tui?: import('../../services/tuiRegistry/types.js').AgentTuiConfig // Customizable TUI configuration
   pendingSnapshotUpdate?: { snapshotTimestamp: string }
   /** Omit CLAUDE.md hierarchy from the agent's userContext. Read-only agents
    * (Explore, Plan) don't need commit/PR/lint guidelines — the main agent has

@@ -28,6 +28,7 @@ import { getMainLoopModel, parseUserSpecifiedModel, renderModelName } from '../.
 import type { Theme, ThemeName } from '../../utils/theme.js';
 import type { outputSchema, Progress, RemoteLaunchedOutput } from './AgentTool.js';
 import { inputSchema } from './AgentTool.js';
+import { renderCustomProgressView, renderCustomResultView } from '../../services/tuiRegistry/TuiViewRenderer.js';
 import { getAgentColor } from './agentColorManager.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
@@ -373,6 +374,19 @@ export function renderToolResultMessage(data: Output, progressMessagesForMessage
     content,
     prompt
   } = data;
+
+  // Check for custom TUI result view
+  const dataAgentType = (data as any).agentType as string | undefined;
+  if (dataAgentType && agentId) {
+    const customResult = renderCustomResultView(dataAgentType, agentId, data, {
+      tools,
+      verbose,
+      theme,
+      isTranscriptMode,
+    });
+    if (customResult) return customResult;
+  }
+
   const result = [totalToolUseCount === 1 ? '1 tool use' : `${totalToolUseCount} tool uses`, formatNumber(totalTokens) + ' tokens', formatDuration(totalDurationMs)];
   const completionMessage = `Done (${result.join(' · ')})`;
   const finalAssistantMessage = createAssistantMessage({
@@ -462,6 +476,20 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
     return <MessageResponse height={1}>
         <Text dimColor>{INITIALIZING_TEXT}</Text>
       </MessageResponse>;
+  }
+
+  // Check for custom TUI view registered for this agent type
+  const firstPm = progressMessages[0]?.data as any;
+  const pmAgentType = firstPm?.agentType as string | undefined;
+  const pmAgentId = firstPm?.agentId as string | undefined;
+  if (pmAgentType && pmAgentId) {
+    const customView = renderCustomProgressView(pmAgentType, pmAgentId, progressMessages, {
+      tools,
+      verbose,
+      isTranscriptMode,
+      terminalSize,
+    });
+    if (customView) return customView;
   }
 
   // Checks to see if we should show a super condensed progress message summary.

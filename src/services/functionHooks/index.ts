@@ -63,3 +63,4 @@ export { getActiveTransaction, rollbackManual, clearTransaction } from './plugin
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './plugins/replayHook.js'
 export { getFailureMemory, getHintFor, getFailureCount, clearFailures } from './plugins/adaptiveHintHook.js'
 export { getSyntheticRecipes, getSyntheticTools, getRecipeCount, getToolHistory, clearSynthesis } from './plugins/jitSynthesisHook.js'
+export { hasCustomView, hasCustomResultView } from './plugins/tuiViewHook.js'

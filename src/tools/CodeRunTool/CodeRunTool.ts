@@ -108,9 +108,29 @@ export function createToolProxy(
     return _recipeProxy
   }
 
+  // Lazy-load TUI proxy for runtime view registration
+  let _tuiProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getTuiProxy() {
+    if (_tuiProxy) return _tuiProxy
+    _tuiProxy = {
+      async registerView(view: unknown) {
+        const { registerView } = await import('../../services/tuiRegistry/registry.js')
+        registerView(view as any)
+        return { registered: (view as any).id }
+      },
+      async configure(agentId: string, config: unknown) {
+        const { setAgentTuiConfig } = await import('../../services/tuiRegistry/registry.js')
+        setAgentTuiConfig(agentId, config as any)
+        return { configured: agentId }
+      },
+    }
+    return _tuiProxy
+  }
+
   return {
     tool: toolProxy,
     get recipe() { return getRecipeProxy() },
+    get tui() { return getTuiProxy() },
     _callLog: callLog,
   }
 }
@@ -140,6 +160,9 @@ result data directly (unwrapped). Input is validated against the tool's schema.
 
 \`$.recipe.<name>(params)\` — call a JIT-synthesized recipe (a pre-built
 multi-tool sequence detected from your usage patterns).
+
+\`$.tui.registerView(viewDef)\` — register a custom TUI view for agent progress.
+\`$.tui.configure(agentId, config)\` — set TUI config for an agent.
 
 ### When to use CodeRun
 

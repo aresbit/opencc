@@ -767,6 +767,17 @@ export const AgentTool = buildTool({
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();
 
+    // Set up TUI config if the agent definition declares one
+    if (selectedAgent.tui) {
+      try {
+        const { setAgentTuiConfig, initBuiltinViews } = await import('../../services/tuiRegistry/index.js');
+        initBuiltinViews();
+        setAgentTuiConfig(earlyAgentId, selectedAgent.tui);
+      } catch {
+        // TUI registry not available — non-fatal
+      }
+    }
+
     // Set up worktree isolation if requested
     let worktreeInfo: {
       worktreePath: string;
@@ -1482,6 +1493,16 @@ export const AgentTool = buildTool({
             logForDebugging(`Sync agent recovering from error with ${agentMessages.length} messages`);
           }
           const agentResult = finalizeAgentTool(agentMessages, syncAgentId, metadata);
+
+          // Clean up TUI view state for completed agent
+          try {
+            const { clearViewState, clearAgentTuiConfig } = await import('../../services/tuiRegistry/index.js');
+            clearViewState(earlyAgentId);
+            clearAgentTuiConfig(earlyAgentId);
+          } catch {
+            // TUI registry not available — non-fatal
+          }
+
           if (feature('TRANSCRIPT_CLASSIFIER')) {
             const currentAppState = toolUseContext.getAppState();
             const handoffWarning = await classifyHandoffIfNeeded({

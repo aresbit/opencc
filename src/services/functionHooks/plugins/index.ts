@@ -3,12 +3,13 @@
  *
  * Registration order = nesting order (outermost first):
  *
- *   replay → taintFirewall → transaction → retry → writeGuard →
- *   cache → compress → contextHandle → autoPermit → knowledge → adaptive → ⊥
+ *   tuiView → replay → taintFirewall → transaction → retry → writeGuard →
+ *   cache → compress → contextHandle → autoPermit → knowledge → jitSynthesis → adaptive → ⊥
  *
  * Design rationale (following OS-kernel analogy):
  *
- * - replay (audit) outermost: sees raw I/O including taint redactions
+ * - tuiView: observational, outermost — tags events with UI metadata
+ * - replay (audit): sees raw I/O including taint redactions
  * - taintFirewall: blocks exfiltration before any transformation
  * - transaction: snapshots before edits, rollback wraps everything inside
  * - retry: retries transient errors in any inner layer
@@ -34,6 +35,7 @@ import { register as registerAutoPermit } from './autoPermitHook.js'
 import { register as registerKnowledge } from './knowledgeHook.js'
 import { register as registerAdaptive } from './adaptiveHintHook.js'
 import { register as registerJitSynthesis } from './jitSynthesisHook.js'
+import { register as registerTuiView } from './tuiViewHook.js'
 
 let registered = false
 
@@ -42,6 +44,7 @@ export function registerBuiltinPlugins(): void {
   registered = true
 
   const plugins = [
+    { name: 'tuiView', id: 'builtin:tuiView', register: registerTuiView },
     { name: 'replay', id: 'builtin:replay', register: registerReplay },
     { name: 'taintFirewall', id: 'builtin:taintFirewall', register: registerTaintFirewall },
     { name: 'transaction', id: 'builtin:transaction', register: registerTransaction },
@@ -65,6 +68,7 @@ export function registerBuiltinPlugins(): void {
 export function resetBuiltinPlugins(): void {
   registered = false
   for (const id of [
+    'builtin:tuiView',
     'builtin:replay',
     'builtin:taintFirewall',
     'builtin:transaction',
@@ -108,3 +112,6 @@ export { getFailureMemory, getHintFor, getFailureCount, clearFailures } from './
 
 // JIT tool synthesis
 export { getSyntheticRecipes, getSyntheticTools, getRecipeCount, getToolHistory, clearSynthesis } from './jitSynthesisHook.js'
+
+// TUI views
+export { hasCustomView, hasCustomResultView } from './tuiViewHook.js'

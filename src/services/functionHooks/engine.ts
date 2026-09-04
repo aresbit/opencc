@@ -131,5 +131,22 @@ export function buildCoreNouns(): Record<
       start: async (e: unknown) => e,
       end: async (e: unknown) => e,
     },
+    tui: {
+      registerView: async (e: { view: import('../tuiRegistry/types.js').TuiViewDefinition }) => {
+        const { registerView } = await import('../tuiRegistry/registry.js')
+        registerView(e.view)
+        return { registered: e.view.id }
+      },
+      registerWidget: async (e: { widget: import('../tuiRegistry/types.js').TuiWidget }) => {
+        const { registerWidget } = await import('../tuiRegistry/registry.js')
+        registerWidget(e.widget)
+        return { registered: e.widget.id }
+      },
+      configure: async (e: { agentId: string; config: import('../tuiRegistry/types.js').AgentTuiConfig }) => {
+        const { setAgentTuiConfig } = await import('../tuiRegistry/registry.js')
+        setAgentTuiConfig(e.agentId, e.config)
+        return { configured: e.agentId }
+      },
+    },
   }
 }
