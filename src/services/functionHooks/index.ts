@@ -62,3 +62,4 @@ export { getTaintedCount, isTainted, clearTainted } from './plugins/taintFirewal
 export { getActiveTransaction, rollbackManual, clearTransaction } from './plugins/transactionHook.js'
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './plugins/replayHook.js'
 export { getFailureMemory, getHintFor, getFailureCount, clearFailures } from './plugins/adaptiveHintHook.js'
+export { getSyntheticRecipes, getSyntheticTools, getRecipeCount, getToolHistory, clearSynthesis } from './plugins/jitSynthesisHook.js'

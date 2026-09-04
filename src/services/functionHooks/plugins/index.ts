@@ -33,6 +33,7 @@ import { register as registerContextHandle } from './contextHandleHook.js'
 import { register as registerAutoPermit } from './autoPermitHook.js'
 import { register as registerKnowledge } from './knowledgeHook.js'
 import { register as registerAdaptive } from './adaptiveHintHook.js'
+import { register as registerJitSynthesis } from './jitSynthesisHook.js'
 
 let registered = false
 
@@ -51,6 +52,7 @@ export function registerBuiltinPlugins(): void {
     { name: 'contextHandle', id: 'builtin:contextHandle', register: registerContextHandle },
     { name: 'autoPermit', id: 'builtin:autoPermit', register: registerAutoPermit },
     { name: 'knowledge', id: 'builtin:knowledge', register: registerKnowledge },
+    { name: 'jitSynthesis', id: 'builtin:jitSynthesis', register: registerJitSynthesis },
     { name: 'adaptive', id: 'builtin:adaptive', register: registerAdaptive },
   ]
 
@@ -73,6 +75,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:contextHandle',
     'builtin:autoPermit',
     'builtin:knowledge',
+    'builtin:jitSynthesis',
     'builtin:adaptive',
   ]) {
     registry.removePlugin(id)
@@ -102,3 +105,6 @@ export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLo
 
 // Adaptive hints
 export { getFailureMemory, getHintFor, getFailureCount, clearFailures } from './adaptiveHintHook.js'
+
+// JIT tool synthesis
+export { getSyntheticRecipes, getSyntheticTools, getRecipeCount, getToolHistory, clearSynthesis } from './jitSynthesisHook.js'
