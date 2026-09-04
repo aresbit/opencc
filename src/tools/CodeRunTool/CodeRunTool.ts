@@ -159,11 +159,118 @@ export function createToolProxy(
     return _plainLanguageProxy
   }
 
+  // Lazy-load ctx.fork proxy for speculative execution
+  let _ctxProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getCtxProxy() {
+    if (_ctxProxy) return _ctxProxy
+    _ctxProxy = {
+      async fork(options: unknown) {
+        const { fork } = await import('../../services/functionHooks/plugins/ctxForkHook.js')
+        return fork(options as any)
+      },
+      async begin(forkId: unknown, branchId: unknown) {
+        const { begin } = await import('../../services/functionHooks/plugins/ctxForkHook.js')
+        return begin(String(forkId), String(branchId))
+      },
+      async complete(forkId: unknown, branchId: unknown, result: unknown, score?: unknown) {
+        const { complete } = await import('../../services/functionHooks/plugins/ctxForkHook.js')
+        complete(String(forkId), String(branchId), result, score as number | undefined)
+        return { completed: branchId }
+      },
+      async fail(forkId: unknown, branchId: unknown, error: unknown) {
+        const { fail } = await import('../../services/functionHooks/plugins/ctxForkHook.js')
+        fail(String(forkId), String(branchId), String(error))
+        return { failed: branchId }
+      },
+      async resolve(forkId: unknown) {
+        const { resolve } = await import('../../services/functionHooks/plugins/ctxForkHook.js')
+        return resolve(String(forkId))
+      },
+      async rollback(forkId: unknown, branchId: unknown) {
+        const { rollback } = await import('../../services/functionHooks/plugins/ctxForkHook.js')
+        return rollback(String(forkId), String(branchId))
+      },
+      async list() {
+        const { getActiveForks } = await import('../../services/functionHooks/plugins/ctxForkHook.js')
+        return getActiveForks()
+      },
+    }
+    return _ctxProxy
+  }
+
+  // Lazy-load select proxy for multiplexed event waiting
+  let _selectProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getSelectProxy() {
+    if (_selectProxy) return _selectProxy
+    _selectProxy = {
+      async wait(options: unknown) {
+        const { select } = await import('../../services/functionHooks/plugins/selectHook.js')
+        return select(options as any)
+      },
+      async notify(kind: unknown, id: unknown, payload?: unknown) {
+        const { notify } = await import('../../services/functionHooks/plugins/selectHook.js')
+        notify(String(kind) as any, String(id), payload)
+        return { notified: `${kind}:${id}` }
+      },
+      async cancel(selectId: unknown) {
+        const { cancelSelect } = await import('../../services/functionHooks/plugins/selectHook.js')
+        cancelSelect(String(selectId))
+        return { cancelled: selectId }
+      },
+      async list() {
+        const { getActiveSelects } = await import('../../services/functionHooks/plugins/selectHook.js')
+        return getActiveSelects()
+      },
+    }
+    return _selectProxy
+  }
+
+  // Lazy-load mount proxy for MCP namespace
+  let _mountProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getMountProxy() {
+    if (_mountProxy) return _mountProxy
+    _mountProxy = {
+      async add(path: unknown, serverId: unknown, label: unknown, tools: unknown, options?: unknown) {
+        const { mount } = await import('../../services/functionHooks/plugins/mountHook.js')
+        return mount(String(path), String(serverId), String(label), tools as string[], options as any)
+      },
+      async remove(path: unknown, nsId?: unknown) {
+        const { umount } = await import('../../services/functionHooks/plugins/mountHook.js')
+        return { unmounted: umount(String(path), nsId ? String(nsId) : undefined) }
+      },
+      async resolve(nsId?: unknown) {
+        const mod = await import('../../services/functionHooks/plugins/mountHook.js')
+        return mod.resolve(nsId ? String(nsId) : undefined)
+      },
+      async list(nsId?: unknown) {
+        const { listMounts } = await import('../../services/functionHooks/plugins/mountHook.js')
+        return listMounts(nsId ? String(nsId) : undefined)
+      },
+      async createNs(label: unknown, parentId?: unknown) {
+        const { createNs } = await import('../../services/functionHooks/plugins/mountHook.js')
+        return createNs(String(label), parentId ? String(parentId) : undefined)
+      },
+      async bind(agentId: unknown, nsId: unknown) {
+        const { bindAgent } = await import('../../services/functionHooks/plugins/mountHook.js')
+        bindAgent(String(agentId), String(nsId))
+        return { bound: agentId }
+      },
+      async listNs() {
+        const { listNamespaces } = await import('../../services/functionHooks/plugins/mountHook.js')
+        return listNamespaces()
+      },
+    }
+    return _mountProxy
+  }
+
   return {
     tool: toolProxy,
     get recipe() { return getRecipeProxy() },
     get tui() { return getTuiProxy() },
     get plainLanguage() { return getPlainLanguageProxy() },
+    get ctx() { return getCtxProxy() },
+    get select() { return getSelectProxy() },
+    get mount() { return getMountProxy() },
     _callLog: callLog,
   }
 }
@@ -201,6 +308,21 @@ multi-tool sequence detected from your usage patterns).
 \`$.plainLanguage.configure(config)\` — adjust plain language settings (targetGradeLevel, injectMode, etc.).
 \`$.plainLanguage.enable()\` / \`$.plainLanguage.disable()\` — toggle ISO 24495 prompt enhancement.
 \`$.plainLanguage.stats()\` — get session readability statistics.
+
+\`$.ctx.fork({ branches, strategy })\` — fork reasoning into N branches for speculative execution.
+\`$.ctx.begin(forkId, branchId)\` — start running a branch.
+\`$.ctx.complete(forkId, branchId, result, score?)\` — mark a branch as done with optional score.
+\`$.ctx.resolve(forkId)\` — pick the winner based on strategy (best-score, first-success, race).
+\`$.ctx.rollback(forkId, branchId)\` — restore files changed by a losing branch.
+
+\`$.select.wait({ sources, timeout })\` — wait on multiple event sources (timer, subagent, user_input, file_change).
+\`$.select.notify(kind, id, payload?)\` — fire a custom event into the select loop.
+
+\`$.mount.add(path, serverId, label, tools, options?)\` — mount an MCP server at a namespace path.
+\`$.mount.remove(path)\` — unmount.
+\`$.mount.resolve(nsId?)\` — list all tools visible in a namespace.
+\`$.mount.createNs(label, parentId?)\` — create a child namespace (inherits parent mounts).
+\`$.mount.bind(agentId, nsId)\` — bind an agent to a namespace.
 
 ### When to use CodeRun
 
