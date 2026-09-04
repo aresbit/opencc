@@ -263,6 +263,228 @@ export function createToolProxy(
     return _mountProxy
   }
 
+  // Lazy-load mprotect proxy for context memory protection
+  let _mprotectProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getMprotectProxy() {
+    if (_mprotectProxy) return _mprotectProxy
+    _mprotectProxy = {
+      async set(label: unknown, content: unknown, permissions: unknown, protectedBy?: unknown) {
+        const { mprotect } = await import('../../services/functionHooks/plugins/mprotectHook.js')
+        return mprotect(String(label), String(content), permissions as any, protectedBy ? String(protectedBy) : undefined)
+      },
+      async setPattern(label: unknown, pattern: unknown, permissions: unknown, protectedBy?: unknown) {
+        const { mprotectPattern } = await import('../../services/functionHooks/plugins/mprotectHook.js')
+        return mprotectPattern(String(label), String(pattern), permissions as any, protectedBy ? String(protectedBy) : undefined)
+      },
+      async unprotect(segmentId: unknown) {
+        const { munprotect } = await import('../../services/functionHooks/plugins/mprotectHook.js')
+        return { removed: munprotect(String(segmentId)) }
+      },
+      async check(content: unknown, op: unknown, source?: unknown) {
+        const { mcheck } = await import('../../services/functionHooks/plugins/mprotectHook.js')
+        return { allowed: mcheck(String(content), String(op) as any, source ? String(source) : undefined) }
+      },
+      async verify() {
+        const { mverify } = await import('../../services/functionHooks/plugins/mprotectHook.js')
+        return mverify()
+      },
+      async list() {
+        const { getSegments } = await import('../../services/functionHooks/plugins/mprotectHook.js')
+        return getSegments()
+      },
+    }
+    return _mprotectProxy
+  }
+
+  // Lazy-load IPC proxy for cross-session messaging
+  let _ipcProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getIpcProxy() {
+    if (_ipcProxy) return _ipcProxy
+    _ipcProxy = {
+      async send(channel: unknown, from: unknown, body: unknown, to?: unknown, ttl?: unknown) {
+        const { send } = await import('../../services/functionHooks/plugins/ipcHook.js')
+        return send(String(channel), String(from), body, to ? String(to) : undefined, ttl as number | undefined)
+      },
+      async recv(channel: unknown, recipientId: unknown, limit?: unknown, markRead?: unknown) {
+        const { recv } = await import('../../services/functionHooks/plugins/ipcHook.js')
+        return recv(String(channel), String(recipientId), limit as number | undefined, markRead as boolean | undefined)
+      },
+      async subscribe(channel: unknown, subscriberId: unknown) {
+        const mod = await import('../../services/functionHooks/plugins/ipcHook.js')
+        mod.subscribe(String(channel), String(subscriberId))
+        return { subscribed: `${subscriberId}@${channel}` }
+      },
+      async channels() {
+        const { listChannels } = await import('../../services/functionHooks/plugins/ipcHook.js')
+        return listChannels()
+      },
+      async peek(channel: unknown, limit?: unknown) {
+        const { peekChannel } = await import('../../services/functionHooks/plugins/ipcHook.js')
+        return peekChannel(String(channel), limit as number | undefined)
+      },
+    }
+    return _ipcProxy
+  }
+
+  // Lazy-load flock proxy for advisory file locks
+  let _flockProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getFlockProxy() {
+    if (_flockProxy) return _flockProxy
+    _flockProxy = {
+      async acquire(path: unknown, holder: unknown, type?: unknown, ttl?: unknown) {
+        const { flock } = await import('../../services/functionHooks/plugins/ipcHook.js')
+        return flock(String(path), String(holder), (type ?? 'exclusive') as any, ttl as number | undefined)
+      },
+      async release(path: unknown, holder: unknown) {
+        const { funlock } = await import('../../services/functionHooks/plugins/ipcHook.js')
+        return { released: funlock(String(path), String(holder)) }
+      },
+      async list() {
+        const { listLocks } = await import('../../services/functionHooks/plugins/ipcHook.js')
+        return listLocks()
+      },
+      async check(path: unknown) {
+        const { isLocked } = await import('../../services/functionHooks/plugins/ipcHook.js')
+        return { locked: isLocked(String(path)) }
+      },
+    }
+    return _flockProxy
+  }
+
+  // Lazy-load sudo proxy for privilege escalation policy
+  let _sudoProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getSudoProxy() {
+    if (_sudoProxy) return _sudoProxy
+    _sudoProxy = {
+      async allow(identity: unknown, resource: unknown, operation?: unknown, scope?: unknown, ttl?: unknown) {
+        const { allow } = await import('../../services/functionHooks/plugins/sudoHook.js')
+        return allow(String(identity), String(resource), (operation ?? '*') as any, (scope ?? 'session') as any, ttl as number | undefined)
+      },
+      async deny(identity: unknown, resource: unknown, operation?: unknown) {
+        const { deny } = await import('../../services/functionHooks/plugins/sudoHook.js')
+        return deny(String(identity), String(resource), (operation ?? '*') as any)
+      },
+      async revoke(policyId: unknown) {
+        const { revoke } = await import('../../services/functionHooks/plugins/sudoHook.js')
+        return { revoked: revoke(String(policyId)) }
+      },
+      async check(identity: unknown, resource: unknown, operation: unknown) {
+        const { check } = await import('../../services/functionHooks/plugins/sudoHook.js')
+        return { decision: check(String(identity), String(resource), String(operation)) }
+      },
+      async policies() {
+        const { getPolicies } = await import('../../services/functionHooks/plugins/sudoHook.js')
+        return getPolicies()
+      },
+      async log(limit?: unknown) {
+        const { getElevationLog } = await import('../../services/functionHooks/plugins/sudoHook.js')
+        return getElevationLog(limit as number | undefined)
+      },
+    }
+    return _sudoProxy
+  }
+
+  // Lazy-load ptrace proxy for agent debugging
+  let _ptraceProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getPtraceProxy() {
+    if (_ptraceProxy) return _ptraceProxy
+    _ptraceProxy = {
+      async attach(targetId: unknown, supervisorId: unknown) {
+        const { attach } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return attach(String(targetId), String(supervisorId))
+      },
+      async detach(targetId: unknown, supervisorId?: unknown) {
+        const { detach } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return { detached: detach(String(targetId), supervisorId ? String(supervisorId) : undefined) }
+      },
+      async breakpoint(targetId: unknown, toolName: unknown) {
+        const { setBreakpoint } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return { set: setBreakpoint(String(targetId), String(toolName)) }
+      },
+      async step(targetId: unknown) {
+        const { step } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return step(String(targetId))
+      },
+      async continue(targetId: unknown) {
+        const { continueExecution } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return { continued: continueExecution(String(targetId)) }
+      },
+      async inspect(targetId: unknown) {
+        const { inspect } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return inspect(String(targetId))
+      },
+      async inject(targetId: unknown, message: unknown) {
+        const { injectMessage } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return { injected: injectMessage(String(targetId), String(message)) }
+      },
+      async captures(targetId: unknown, limit?: unknown) {
+        const { getCaptures } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return getCaptures(String(targetId), limit as number | undefined)
+      },
+      async list() {
+        const { listTraces } = await import('../../services/functionHooks/plugins/ptraceHook.js')
+        return listTraces()
+      },
+    }
+    return _ptraceProxy
+  }
+
+  // Lazy-load scheduler proxy for model routing
+  let _schedulerProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getSchedulerProxy() {
+    if (_schedulerProxy) return _schedulerProxy
+    _schedulerProxy = {
+      async route(context: unknown) {
+        const { route } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        return route(context as any)
+      },
+      async addRoute(match: unknown, tier: unknown, priority?: unknown) {
+        const { addRoute } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        return addRoute(match as any, String(tier) as any, priority as number | undefined)
+      },
+      async removeRoute(ruleId: unknown) {
+        const { removeRoute } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        return { removed: removeRoute(String(ruleId)) }
+      },
+      async routes() {
+        const { getRoutes } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        return getRoutes()
+      },
+      async models() {
+        const { getModelMap } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        return getModelMap()
+      },
+    }
+    return _schedulerProxy
+  }
+
+  // Lazy-load budget proxy for token/cost resource limits
+  let _budgetProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getBudgetProxy() {
+    if (_budgetProxy) return _budgetProxy
+    _budgetProxy = {
+      async getrlimit(agentId: unknown) {
+        const { getrlimit } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        return getrlimit(String(agentId))
+      },
+      async setrlimit(agentId: unknown, resource: unknown, limit: unknown) {
+        const { setrlimit } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        setrlimit(String(agentId), String(resource) as any, limit as any)
+        return { set: `${agentId}.${resource}` }
+      },
+      async usage(agentId: unknown) {
+        const { getUsage } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        return getUsage(String(agentId))
+      },
+      async reset(agentId: unknown) {
+        const { resetUsage } = await import('../../services/functionHooks/plugins/schedulerHook.js')
+        resetUsage(String(agentId))
+        return { reset: agentId }
+      },
+    }
+    return _budgetProxy
+  }
+
   return {
     tool: toolProxy,
     get recipe() { return getRecipeProxy() },
@@ -271,6 +493,13 @@ export function createToolProxy(
     get ctx() { return getCtxProxy() },
     get select() { return getSelectProxy() },
     get mount() { return getMountProxy() },
+    get mprotect() { return getMprotectProxy() },
+    get ipc() { return getIpcProxy() },
+    get flock() { return getFlockProxy() },
+    get sudo() { return getSudoProxy() },
+    get ptrace() { return getPtraceProxy() },
+    get scheduler() { return getSchedulerProxy() },
+    get budget() { return getBudgetProxy() },
     _callLog: callLog,
   }
 }
@@ -323,6 +552,39 @@ multi-tool sequence detected from your usage patterns).
 \`$.mount.resolve(nsId?)\` — list all tools visible in a namespace.
 \`$.mount.createNs(label, parentId?)\` — create a child namespace (inherits parent mounts).
 \`$.mount.bind(agentId, nsId)\` — bind an agent to a namespace.
+
+\`$.mprotect.set(label, content, permissions, protectedBy?)\` — protect a context segment (read/write/exec/none).
+\`$.mprotect.setPattern(label, pattern, permissions)\` — protect by regex pattern.
+\`$.mprotect.check(content, op, source?)\` — check if operation is allowed on content.
+\`$.mprotect.verify()\` — verify integrity of all protected segments.
+
+\`$.ipc.send(channel, from, body, to?, ttl?)\` — send a message to a named channel.
+\`$.ipc.recv(channel, recipientId, limit?, markRead?)\` — receive unread messages.
+\`$.ipc.channels()\` — list active channels.
+
+\`$.flock.acquire(path, holder, type?, ttl?)\` — acquire advisory file lock (shared/exclusive).
+\`$.flock.release(path, holder)\` — release a lock.
+\`$.flock.check(path)\` — check if a file is locked.
+
+\`$.sudo.allow(identity, resource, operation?, scope?, ttl?)\` — grant a permission policy.
+\`$.sudo.deny(identity, resource, operation?)\` — deny a resource.
+\`$.sudo.check(identity, resource, operation)\` — evaluate policy for an action.
+\`$.sudo.policies()\` — list active sudo policies.
+
+\`$.ptrace.attach(targetId, supervisorId)\` — start tracing an agent.
+\`$.ptrace.detach(targetId)\` — stop tracing.
+\`$.ptrace.breakpoint(targetId, toolName)\` — pause before a tool runs.
+\`$.ptrace.step(targetId)\` — single-step one tool call.
+\`$.ptrace.inspect(targetId)\` — read agent state snapshot.
+
+\`$.scheduler.route({ tool?, agentType?, content?, estimatedTokens? })\` — route to model tier.
+\`$.scheduler.addRoute(match, tier, priority?)\` — add a routing rule.
+\`$.scheduler.models()\` — get current model tier mapping.
+
+\`$.budget.getrlimit(agentId)\` — get token/cost limits for an agent.
+\`$.budget.setrlimit(agentId, resource, { soft?, hard? })\` — set limits.
+\`$.budget.usage(agentId)\` — get current usage counters.
+\`$.budget.reset(agentId)\` — reset usage counters.
 
 ### When to use CodeRun
 

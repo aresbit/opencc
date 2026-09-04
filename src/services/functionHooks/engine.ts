@@ -266,5 +266,204 @@ export function buildCoreNouns(): Record<
         return { configured: e.agentId }
       },
     },
+    mprotect: {
+      set: async (e: { label: string; content: string; permissions: string[]; protectedBy?: string }) => {
+        const { mprotect } = await import('./plugins/mprotectHook.js')
+        return mprotect(e.label, e.content, e.permissions as any, e.protectedBy)
+      },
+      setPattern: async (e: { label: string; pattern: string; permissions: string[]; protectedBy?: string }) => {
+        const { mprotectPattern } = await import('./plugins/mprotectHook.js')
+        return mprotectPattern(e.label, e.pattern, e.permissions as any, e.protectedBy)
+      },
+      unprotect: async (e: { segmentId: string }) => {
+        const { munprotect } = await import('./plugins/mprotectHook.js')
+        return { removed: munprotect(e.segmentId) }
+      },
+      check: async (e: { content: string; op: string; source?: string }) => {
+        const { mcheck } = await import('./plugins/mprotectHook.js')
+        return { allowed: mcheck(e.content, e.op as any, e.source) }
+      },
+      verify: async () => {
+        const { mverify } = await import('./plugins/mprotectHook.js')
+        return mverify()
+      },
+      list: async () => {
+        const { getSegments } = await import('./plugins/mprotectHook.js')
+        return getSegments()
+      },
+      violations: async (e: { limit?: number }) => {
+        const { getViolations } = await import('./plugins/mprotectHook.js')
+        return getViolations(e.limit)
+      },
+    },
+    ipc: {
+      send: async (e: { channel: string; from: string; body: unknown; to?: string; ttl?: number }) => {
+        const { send } = await import('./plugins/ipcHook.js')
+        return send(e.channel, e.from, e.body, e.to, e.ttl)
+      },
+      recv: async (e: { channel: string; recipientId: string; limit?: number; markRead?: boolean }) => {
+        const { recv } = await import('./plugins/ipcHook.js')
+        return recv(e.channel, e.recipientId, e.limit, e.markRead)
+      },
+      subscribe: async (e: { channel: string; subscriberId: string }) => {
+        const { subscribe } = await import('./plugins/ipcHook.js')
+        subscribe(e.channel, e.subscriberId)
+        return { subscribed: `${e.subscriberId}@${e.channel}` }
+      },
+      unsubscribe: async (e: { channel: string; subscriberId: string }) => {
+        const { unsubscribe } = await import('./plugins/ipcHook.js')
+        unsubscribe(e.channel, e.subscriberId)
+        return { unsubscribed: `${e.subscriberId}@${e.channel}` }
+      },
+      channels: async () => {
+        const { listChannels } = await import('./plugins/ipcHook.js')
+        return listChannels()
+      },
+      peek: async (e: { channel: string; limit?: number }) => {
+        const { peekChannel } = await import('./plugins/ipcHook.js')
+        return peekChannel(e.channel, e.limit)
+      },
+    },
+    flock: {
+      acquire: async (e: { path: string; holder: string; type?: string; ttl?: number }) => {
+        const { flock } = await import('./plugins/ipcHook.js')
+        return flock(e.path, e.holder, (e.type ?? 'exclusive') as any, e.ttl)
+      },
+      release: async (e: { path: string; holder: string }) => {
+        const { funlock } = await import('./plugins/ipcHook.js')
+        return { released: funlock(e.path, e.holder) }
+      },
+      releaseAll: async (e: { holder: string }) => {
+        const { releaseAll } = await import('./plugins/ipcHook.js')
+        return { released: releaseAll(e.holder) }
+      },
+      list: async () => {
+        const { listLocks } = await import('./plugins/ipcHook.js')
+        return listLocks()
+      },
+      check: async (e: { path: string }) => {
+        const { isLocked } = await import('./plugins/ipcHook.js')
+        return { locked: isLocked(e.path) }
+      },
+    },
+    sudo: {
+      allow: async (e: { identity: string; resource: string; operation?: string; scope?: string; ttl?: number }) => {
+        const { allow } = await import('./plugins/sudoHook.js')
+        return allow(e.identity, e.resource, (e.operation ?? '*') as any, (e.scope ?? 'session') as any, e.ttl)
+      },
+      deny: async (e: { identity: string; resource: string; operation?: string }) => {
+        const { deny } = await import('./plugins/sudoHook.js')
+        return deny(e.identity, e.resource, (e.operation ?? '*') as any)
+      },
+      prompt: async (e: { identity: string; resource: string; operation?: string }) => {
+        const mod = await import('./plugins/sudoHook.js')
+        return mod.prompt(e.identity, e.resource, (e.operation ?? '*') as any)
+      },
+      revoke: async (e: { policyId: string }) => {
+        const { revoke } = await import('./plugins/sudoHook.js')
+        return { revoked: revoke(e.policyId) }
+      },
+      check: async (e: { identity: string; resource: string; operation: string }) => {
+        const { check } = await import('./plugins/sudoHook.js')
+        return { decision: check(e.identity, e.resource, e.operation) }
+      },
+      policies: async () => {
+        const { getPolicies } = await import('./plugins/sudoHook.js')
+        return getPolicies()
+      },
+      log: async (e: { limit?: number }) => {
+        const { getElevationLog } = await import('./plugins/sudoHook.js')
+        return getElevationLog(e.limit)
+      },
+    },
+    ptrace: {
+      attach: async (e: { targetId: string; supervisorId: string }) => {
+        const { attach } = await import('./plugins/ptraceHook.js')
+        return attach(e.targetId, e.supervisorId)
+      },
+      detach: async (e: { targetId: string; supervisorId?: string }) => {
+        const { detach } = await import('./plugins/ptraceHook.js')
+        return { detached: detach(e.targetId, e.supervisorId) }
+      },
+      breakpoint: async (e: { targetId: string; toolName: string }) => {
+        const { setBreakpoint } = await import('./plugins/ptraceHook.js')
+        return { set: setBreakpoint(e.targetId, e.toolName) }
+      },
+      removeBreakpoint: async (e: { targetId: string; toolName: string }) => {
+        const { removeBreakpoint } = await import('./plugins/ptraceHook.js')
+        return { removed: removeBreakpoint(e.targetId, e.toolName) }
+      },
+      step: async (e: { targetId: string }) => {
+        const { step } = await import('./plugins/ptraceHook.js')
+        return step(e.targetId)
+      },
+      continue: async (e: { targetId: string }) => {
+        const { continueExecution } = await import('./plugins/ptraceHook.js')
+        return { continued: continueExecution(e.targetId) }
+      },
+      inspect: async (e: { targetId: string }) => {
+        const { inspect } = await import('./plugins/ptraceHook.js')
+        return inspect(e.targetId)
+      },
+      inject: async (e: { targetId: string; message: string }) => {
+        const { injectMessage } = await import('./plugins/ptraceHook.js')
+        return { injected: injectMessage(e.targetId, e.message) }
+      },
+      captures: async (e: { targetId: string; limit?: number }) => {
+        const { getCaptures } = await import('./plugins/ptraceHook.js')
+        return getCaptures(e.targetId, e.limit)
+      },
+      list: async () => {
+        const { listTraces } = await import('./plugins/ptraceHook.js')
+        return listTraces()
+      },
+    },
+    scheduler: {
+      route: async (e: { tool?: string; agentType?: string; content?: string; estimatedTokens?: number }) => {
+        const { route } = await import('./plugins/schedulerHook.js')
+        return route(e)
+      },
+      addRoute: async (e: { match: Record<string, unknown>; tier: string; priority?: number }) => {
+        const { addRoute } = await import('./plugins/schedulerHook.js')
+        return addRoute(e.match as any, e.tier as any, e.priority)
+      },
+      removeRoute: async (e: { ruleId: string }) => {
+        const { removeRoute } = await import('./plugins/schedulerHook.js')
+        return { removed: removeRoute(e.ruleId) }
+      },
+      routes: async () => {
+        const { getRoutes } = await import('./plugins/schedulerHook.js')
+        return getRoutes()
+      },
+      setModel: async (e: { tier: string; modelId: string }) => {
+        const { setModelMap } = await import('./plugins/schedulerHook.js')
+        setModelMap(e.tier as any, e.modelId)
+        return { set: `${e.tier}=${e.modelId}` }
+      },
+      models: async () => {
+        const { getModelMap } = await import('./plugins/schedulerHook.js')
+        return getModelMap()
+      },
+    },
+    budget: {
+      getrlimit: async (e: { agentId: string }) => {
+        const { getrlimit } = await import('./plugins/schedulerHook.js')
+        return getrlimit(e.agentId)
+      },
+      setrlimit: async (e: { agentId: string; resource: string; limit: { soft?: number; hard?: number } }) => {
+        const { setrlimit } = await import('./plugins/schedulerHook.js')
+        setrlimit(e.agentId, e.resource as any, e.limit)
+        return { set: `${e.agentId}.${e.resource}` }
+      },
+      usage: async (e: { agentId: string }) => {
+        const { getUsage } = await import('./plugins/schedulerHook.js')
+        return getUsage(e.agentId)
+      },
+      reset: async (e: { agentId: string }) => {
+        const { resetUsage } = await import('./plugins/schedulerHook.js')
+        resetUsage(e.agentId)
+        return { reset: e.agentId }
+      },
+    },
   }
 }

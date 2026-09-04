@@ -111,3 +111,78 @@ export {
   getStats as getMountStats,
   clearMounts,
 } from './plugins/mountHook.js'
+
+// mprotect — context memory protection
+export {
+  mprotect,
+  mprotectPattern,
+  munprotect,
+  mcheck,
+  mverify,
+  getSegments as getMprotectSegments,
+  getViolations as getMprotectViolations,
+  getStats as getMprotectStats,
+  clearProtections,
+} from './plugins/mprotectHook.js'
+
+// IPC — message passing + advisory file locks
+export {
+  send as ipcSend,
+  recv as ipcRecv,
+  subscribe as ipcSubscribe,
+  unsubscribe as ipcUnsubscribe,
+  listChannels,
+  peekChannel,
+  flock,
+  funlock,
+  releaseAll as flockReleaseAll,
+  listLocks,
+  isLocked,
+  getStats as getIpcStats,
+  clearIpc,
+} from './plugins/ipcHook.js'
+
+// sudo — privilege escalation policy
+export {
+  allow as sudoAllow,
+  deny as sudoDeny,
+  prompt as sudoPrompt,
+  revoke as sudoRevoke,
+  check as sudoCheck,
+  getPolicies as getSudoPolicies,
+  getElevationLog,
+  getStats as getSudoStats,
+  clearSudo,
+} from './plugins/sudoHook.js'
+
+// ptrace — agent debugging / inspection
+export {
+  attach as ptraceAttach,
+  detach as ptraceDetach,
+  setBreakpoint as ptraceBreakpoint,
+  removeBreakpoint as ptraceRemoveBreakpoint,
+  step as ptraceStep,
+  continueExecution as ptraceContinue,
+  inspect as ptraceInspect,
+  injectMessage as ptraceInject,
+  getCaptures as getPtraceCaptures,
+  listTraces,
+  getStats as getPtraceStats,
+  clearTraces,
+} from './plugins/ptraceHook.js'
+
+// scheduler — model routing + budget limits
+export {
+  route as schedulerRoute,
+  addRoute as schedulerAddRoute,
+  removeRoute as schedulerRemoveRoute,
+  getRoutes as getSchedulerRoutes,
+  setModelMap,
+  getModelMap,
+  getrlimit,
+  setrlimit,
+  getUsage as getBudgetUsage,
+  resetUsage as resetBudgetUsage,
+  getStats as getSchedulerStats,
+  clearScheduler,
+} from './plugins/schedulerHook.js'
