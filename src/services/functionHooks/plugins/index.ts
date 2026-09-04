@@ -3,12 +3,13 @@
  *
  * Registration order = nesting order (outermost first):
  *
- *   tuiView → replay → taintFirewall → transaction → retry → writeGuard →
- *   cache → compress → contextHandle → autoPermit → knowledge → jitSynthesis → adaptive → ⊥
+ *   tuiView → plainLanguage → replay → taintFirewall → transaction → retry →
+ *   writeGuard → cache → compress → contextHandle → autoPermit → knowledge → jitSynthesis → adaptive → ⊥
  *
  * Design rationale (following OS-kernel analogy):
  *
  * - tuiView: observational, outermost — tags events with UI metadata
+ * - plainLanguage: prompt enhancer — injects ISO 24495 plain-language directives
  * - replay (audit): sees raw I/O including taint redactions
  * - taintFirewall: blocks exfiltration before any transformation
  * - transaction: snapshots before edits, rollback wraps everything inside
@@ -36,6 +37,7 @@ import { register as registerKnowledge } from './knowledgeHook.js'
 import { register as registerAdaptive } from './adaptiveHintHook.js'
 import { register as registerJitSynthesis } from './jitSynthesisHook.js'
 import { register as registerTuiView } from './tuiViewHook.js'
+import { register as registerPlainLanguage } from './plainLanguageHook.js'
 
 let registered = false
 
@@ -45,6 +47,7 @@ export function registerBuiltinPlugins(): void {
 
   const plugins = [
     { name: 'tuiView', id: 'builtin:tuiView', register: registerTuiView },
+    { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
     { name: 'replay', id: 'builtin:replay', register: registerReplay },
     { name: 'taintFirewall', id: 'builtin:taintFirewall', register: registerTaintFirewall },
     { name: 'transaction', id: 'builtin:transaction', register: registerTransaction },
@@ -69,6 +72,7 @@ export function resetBuiltinPlugins(): void {
   registered = false
   for (const id of [
     'builtin:tuiView',
+    'builtin:plainLanguage',
     'builtin:replay',
     'builtin:taintFirewall',
     'builtin:transaction',
@@ -115,3 +119,15 @@ export { getSyntheticRecipes, getSyntheticTools, getRecipeCount, getToolHistory,
 
 // TUI views
 export { hasCustomView, hasCustomResultView } from './tuiViewHook.js'
+
+// Plain Language (ISO 24495)
+export {
+  getConfig as getPlainLanguageConfig,
+  setConfig as setPlainLanguageConfig,
+  resetConfig as resetPlainLanguageConfig,
+  getStats as getPlainLanguageStats,
+  analyzeText as analyzeReadability,
+  isEnabled as isPlainLanguageEnabled,
+  enable as enablePlainLanguage,
+  disable as disablePlainLanguage,
+} from './plainLanguageHook.js'

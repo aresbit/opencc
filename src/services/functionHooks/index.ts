@@ -64,3 +64,13 @@ export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLo
 export { getFailureMemory, getHintFor, getFailureCount, clearFailures } from './plugins/adaptiveHintHook.js'
 export { getSyntheticRecipes, getSyntheticTools, getRecipeCount, getToolHistory, clearSynthesis } from './plugins/jitSynthesisHook.js'
 export { hasCustomView, hasCustomResultView } from './plugins/tuiViewHook.js'
+export {
+  getConfig as getPlainLanguageConfig,
+  setConfig as setPlainLanguageConfig,
+  resetConfig as resetPlainLanguageConfig,
+  getStats as getPlainLanguageStats,
+  analyzeText as analyzeReadability,
+  isEnabled as isPlainLanguageEnabled,
+  enable as enablePlainLanguage,
+  disable as disablePlainLanguage,
+} from './plugins/plainLanguageHook.js'

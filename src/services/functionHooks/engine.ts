@@ -131,6 +131,31 @@ export function buildCoreNouns(): Record<
       start: async (e: unknown) => e,
       end: async (e: unknown) => e,
     },
+    plainLanguage: {
+      analyze: async (e: { text: string }) => {
+        const { analyzeText } = await import('./plugins/plainLanguageHook.js')
+        return analyzeText(e.text)
+      },
+      configure: async (e: { config: Record<string, unknown> }) => {
+        const { setConfig } = await import('./plugins/plainLanguageHook.js')
+        setConfig(e.config as any)
+        return { configured: true }
+      },
+      enable: async () => {
+        const { enable } = await import('./plugins/plainLanguageHook.js')
+        enable()
+        return { enabled: true }
+      },
+      disable: async () => {
+        const { disable } = await import('./plugins/plainLanguageHook.js')
+        disable()
+        return { enabled: false }
+      },
+      stats: async () => {
+        const { getStats } = await import('./plugins/plainLanguageHook.js')
+        return getStats()
+      },
+    },
     tui: {
       registerView: async (e: { view: import('../tuiRegistry/types.js').TuiViewDefinition }) => {
         const { registerView } = await import('../tuiRegistry/registry.js')

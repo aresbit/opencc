@@ -127,10 +127,43 @@ export function createToolProxy(
     return _tuiProxy
   }
 
+  // Lazy-load plain language proxy for readability analysis and config
+  let _plainLanguageProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getPlainLanguageProxy() {
+    if (_plainLanguageProxy) return _plainLanguageProxy
+    _plainLanguageProxy = {
+      async analyze(text: unknown) {
+        const { analyzeText } = await import('../../services/functionHooks/plugins/plainLanguageHook.js')
+        return analyzeText(String(text))
+      },
+      async configure(cfg: unknown) {
+        const { setConfig } = await import('../../services/functionHooks/plugins/plainLanguageHook.js')
+        setConfig(cfg as any)
+        return { configured: true }
+      },
+      async enable() {
+        const { enable } = await import('../../services/functionHooks/plugins/plainLanguageHook.js')
+        enable()
+        return { enabled: true }
+      },
+      async disable() {
+        const { disable } = await import('../../services/functionHooks/plugins/plainLanguageHook.js')
+        disable()
+        return { enabled: false }
+      },
+      async stats() {
+        const { getStats } = await import('../../services/functionHooks/plugins/plainLanguageHook.js')
+        return getStats()
+      },
+    }
+    return _plainLanguageProxy
+  }
+
   return {
     tool: toolProxy,
     get recipe() { return getRecipeProxy() },
     get tui() { return getTuiProxy() },
+    get plainLanguage() { return getPlainLanguageProxy() },
     _callLog: callLog,
   }
 }
@@ -163,6 +196,11 @@ multi-tool sequence detected from your usage patterns).
 
 \`$.tui.registerView(viewDef)\` — register a custom TUI view for agent progress.
 \`$.tui.configure(agentId, config)\` — set TUI config for an agent.
+
+\`$.plainLanguage.analyze(text)\` — score text readability (Flesch-Kincaid grade, sentence length, passive voice ratio).
+\`$.plainLanguage.configure(config)\` — adjust plain language settings (targetGradeLevel, injectMode, etc.).
+\`$.plainLanguage.enable()\` / \`$.plainLanguage.disable()\` — toggle ISO 24495 prompt enhancement.
+\`$.plainLanguage.stats()\` — get session readability statistics.
 
 ### When to use CodeRun
 
