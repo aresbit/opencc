@@ -162,6 +162,10 @@ import type { AppState } from '../state/AppState.js'
 import { jsonStringify, jsonParse } from './slowOperations.js'
 import { isEnvTruthy } from './envUtils.js'
 import { errorMessage, getErrnoCode } from './errors.js'
+import {
+  hasAlgebraicHooksForEvent,
+  dispatchAlgebraicHooks,
+} from '../services/functionHooks/bridge.js'
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -1710,6 +1714,7 @@ function hasHookForEvent(
   const reg = getRegisteredHooks()?.[hookEvent]
   if (reg && reg.length > 0) return true
   if (appState?.sessionHooks.get(sessionId)?.hooks[hookEvent]) return true
+  if (hasAlgebraicHooksForEvent(hookEvent)) return true
   return false
 }
 
@@ -2130,6 +2135,8 @@ async function* executeHooks({
     toolUseContext?.options?.tools,
   )
   if (matchingHooks.length === 0) {
+    // No existing-style hooks, but algebraic-effect hooks may still apply.
+    yield* dispatchAlgebraicHooks(hookEvent, hookInput)
     return
   }
 
@@ -2184,6 +2191,8 @@ async function* executeHooks({
       numCancelled: 0,
       totalDurationMs,
     })
+    // Still dispatch through algebraic-effect chain even on the fast-path.
+    yield* dispatchAlgebraicHooks(hookEvent, hookInput)
     return
   }
 
@@ -3081,6 +3090,11 @@ async function* executeHooks({
       }
     }
   }
+
+  // Dispatch through algebraic-effect hook chain (dot-notation events).
+  // Runs after existing hooks so algebraic hooks can observe/override
+  // the results of command/callback/prompt hooks.
+  yield* dispatchAlgebraicHooks(hookEvent, hookInput)
 
   const totalDurationMs = Date.now() - batchStartTime
   getStatsStore()?.observe('hook_duration_ms', totalDurationMs)

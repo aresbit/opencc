@@ -39,3 +39,10 @@ export type {
   DenyResult,
 } from './types.js'
 export { EVENT_ALIASES, REVERSE_ALIASES, isDenyResult } from './types.js'
+export {
+  initEngine,
+  getEngine,
+  resetEngine,
+  hasAlgebraicHooksForEvent,
+  dispatchAlgebraicHooks,
+} from './bridge.js'
