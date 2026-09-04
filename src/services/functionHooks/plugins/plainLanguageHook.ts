@@ -207,11 +207,13 @@ Concrete rules:
 - Active voice default: "the function returns X" not "X is returned by the function"
 - One idea per sentence
 - Front-load key information (the verb within the first 7 words)
+
+**Principle 5 — No ornamental prose**: Strip all decorative writing. When a plain statement works, use it instead of metaphor, flowery language, or prose that signals the author's stance rather than conveying precise meaning. Say what you mean directly. Never dress up a simple fact with literary flair. If the sentence still communicates the same thing after you remove an adjective or adverb, remove it.
 `
 
 // Condensed version for periodic injection
 const ISO_24495_REMINDER = `
-[Plain Language reminder: short sentences, common words, active voice, answer-first structure. ISO 24495.]
+[Plain Language reminder: short sentences, common words, active voice, answer-first, no ornamental prose — say it directly, no metaphors or decorative language. ISO 24495.]
 `
 
 // ── Hook Registration ───────────────────────────────────────────
