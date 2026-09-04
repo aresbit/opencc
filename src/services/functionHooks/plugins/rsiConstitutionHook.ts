@@ -242,7 +242,7 @@ function validateGenomeMutation(operation: string, target: string, detail?: stri
 
     if (inv.includes('maximum') && operation === 'add') {
       if (inv.includes('antibod')) {
-        const max = parseInt(inv.match(/\d+/)?.[0] ?? '200')
+        const max = parseInt(inv.match(/\d+/)?.[0] ?? '200', 10)
         if (getAntibodies().length >= max) {
           const v = recordViolation(entry.id, entry.invariant, operation, `Antibody count at limit (${max})`, true)
           found.push(v)
