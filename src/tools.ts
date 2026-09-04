@@ -16,6 +16,10 @@ import { AutoresearchTool } from './tools/AutoresearchTool/AutoresearchTool.js'
 import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
 import { RepoToSkillTool } from './tools/RepoToSkillTool/RepoToSkillTool.js'
+import { ProbeTool } from './tools/ProbeTool/ProbeTool.js'
+import { SreTool } from './tools/SreTool/SreTool.js'
+import { ProtocolReTool } from './tools/ProtocolReTool/ProtocolReTool.js'
+import { ApiReTool } from './tools/ApiReTool/ApiReTool.js'
 import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
 import { SoftwareAnalysisTool } from './tools/SoftwareAnalysisTool/SoftwareAnalysisTool.js'
 import { QuantOrientTool } from './tools/QuantOrientTool/QuantOrientTool.js'
@@ -253,6 +257,10 @@ export function getAllBaseTools(): Tools {
     MemoryTool,
     Paper2CodeTool,
     RepoToSkillTool,
+    ProbeTool,
+    SreTool,
+    ProtocolReTool,
+    ApiReTool,
     QuantVerifyTool,
     SoftwareAnalysisTool,
     QuantOrientTool,
