@@ -15,6 +15,7 @@ import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { AutoresearchTool } from './tools/AutoresearchTool/AutoresearchTool.js'
 import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
+import { RepoToSkillTool } from './tools/RepoToSkillTool/RepoToSkillTool.js'
 import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
 import { SoftwareAnalysisTool } from './tools/SoftwareAnalysisTool/SoftwareAnalysisTool.js'
 import { QuantOrientTool } from './tools/QuantOrientTool/QuantOrientTool.js'
@@ -251,6 +252,7 @@ export function getAllBaseTools(): Tools {
     AutoresearchTool,
     MemoryTool,
     Paper2CodeTool,
+    RepoToSkillTool,
     QuantVerifyTool,
     SoftwareAnalysisTool,
     QuantOrientTool,
