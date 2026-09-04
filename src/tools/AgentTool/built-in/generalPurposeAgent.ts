@@ -30,5 +30,6 @@ export const GENERAL_PURPOSE_AGENT: BuiltInAgentDefinition = {
   source: 'built-in',
   baseDir: 'built-in',
   // model is intentionally omitted - uses getDefaultSubagentModel().
+  tui: { views: ['task-dashboard'], layout: 'compact' },
   getSystemPrompt: getGeneralPurposeSystemPrompt,
 }

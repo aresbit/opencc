@@ -45,6 +45,8 @@ import { AwrStRunTool } from './tools/AwrStRunTool/AwrStRunTool.js'
 import { EvalApplyTool } from './tools/EvalApplyTool/EvalApplyTool.js'
 import { ActorTool } from './tools/ActorTool/ActorTool.js'
 import { SSHRemoteTool } from './tools/SSHRemoteTool/SSHRemoteTool.js'
+import { CodeRunTool } from './tools/CodeRunTool/CodeRunTool.js'
+import { getSyntheticTools } from './services/functionHooks/plugins/jitSynthesisHook.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
@@ -304,6 +306,7 @@ export function getAllBaseTools(): Tools {
     McpFsReadTool,
     McpFsExecTool,
     CodeActTool,
+    CodeRunTool,
     ActionTool,
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
@@ -336,6 +339,8 @@ export function getAllBaseTools(): Tools {
     // Include ToolSearchTool when tool search might be enabled (optimistic check)
     // The actual decision to defer tools happens at request time in claude.ts
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
+    // JIT-synthesized tools: detected from repeated tool-call patterns
+    ...getSyntheticTools(),
   ]
 }
 

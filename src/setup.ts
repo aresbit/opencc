@@ -168,6 +168,10 @@ export async function setup(
     duration_ms: Date.now() - hooksStart,
   })
 
+  // Initialize algebraic-effect function hooks engine ($).
+  // Fire-and-forget — the engine resolves by the time any hook fires.
+  void import('./services/functionHooks/bridge.js').then(m => m.initEngine())
+
   // Initialize FileChanged hook watcher — sync, reads hook config snapshot
   initializeFileChangedWatcher(cwd)
 
