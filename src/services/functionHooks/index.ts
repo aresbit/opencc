@@ -57,7 +57,7 @@ export {
   getStats as getKnowledgeStats,
   clearKnowledge,
 } from './plugins/knowledgeHook.js'
-export { deref, derefFull, listHandles, getHandleCount, clearHandles } from './plugins/contextHandleHook.js'
+export { deref, derefFull, listHandles, getHandleCount, getHandleUtilization, clearHandles } from './plugins/contextHandleHook.js'
 export { getTaintedCount, isTainted, clearTainted } from './plugins/taintFirewallHook.js'
 export { getActiveTransaction, rollbackManual, clearTransaction } from './plugins/transactionHook.js'
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './plugins/replayHook.js'

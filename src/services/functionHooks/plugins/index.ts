@@ -200,7 +200,7 @@ export { isAutoPermitted, getApprovedCount, clearApproved } from './autoPermitHo
 export { queryFiles, getRecentFiles, getFileSymbols, getStats as getKnowledgeStats, clearKnowledge } from './knowledgeHook.js'
 
 // Context handles (virtual memory)
-export { deref, derefFull, listHandles, getHandleCount, clearHandles } from './contextHandleHook.js'
+export { deref, derefFull, listHandles, getHandleCount, getHandleUtilization, clearHandles } from './contextHandleHook.js'
 
 // Taint firewall
 export { getTaintedCount, isTainted, clearTainted } from './taintFirewallHook.js'
