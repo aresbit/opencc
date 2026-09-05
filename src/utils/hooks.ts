@@ -169,6 +169,21 @@ import {
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
 
+async function runAlgebraicHooksOutsideREPL(
+  hookEvent: HookEvent,
+  hookInput: HookInput,
+): Promise<void> {
+  try {
+    for await (const _ of dispatchAlgebraicHooks(hookEvent, hookInput)) {
+      // Consume results — outside REPL we can't propagate them back through
+      // a generator, but the dispatch itself triggers side-effects in the
+      // algebraic-effect chain (e.g. dreamHook session.end consolidation).
+    }
+  } catch (error) {
+    logError(error)
+  }
+}
+
 /**
  * SessionEnd hooks run during shutdown/clear and need a much tighter bound
  * than TOOL_HOOK_EXECUTION_TIMEOUT_MS. This value is used by callers as both
@@ -4167,6 +4182,8 @@ export async function executePreCompactHooks(
     timeoutMs,
   })
 
+  await runAlgebraicHooksOutsideREPL('PreCompact', hookInput)
+
   if (results.length === 0) {
     return {}
   }
@@ -4239,6 +4256,8 @@ export async function executePostCompactHooks(
     timeoutMs,
   })
 
+  await runAlgebraicHooksOutsideREPL('PostCompact', hookInput)
+
   if (results.length === 0) {
     return {}
   }
@@ -4307,6 +4326,10 @@ export async function executeSessionEndHooks(
     signal,
     timeoutMs,
   })
+
+  // Dispatch through algebraic-effect hook chain so plugins listening for
+  // session.end (e.g. dreamHook memory consolidation) actually fire.
+  await runAlgebraicHooksOutsideREPL('SessionEnd', hookInput)
 
   // During shutdown, Ink is unmounted so we can write directly to stderr
   for (const result of results) {
@@ -4412,6 +4435,8 @@ export async function executeConfigChangeHooks(
     timeoutMs,
     matchQuery: source,
   })
+
+  await runAlgebraicHooksOutsideREPL('ConfigChange', hookInput)
 
   // Policy settings are enterprise-managed — hooks fire for audit logging
   // but must never block policy changes from being applied
@@ -5127,6 +5152,8 @@ export async function executeWorktreeCreateHook(
     timeoutMs: TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   })
 
+  await runAlgebraicHooksOutsideREPL('WorktreeCreate', hookInput)
+
   // Find the first successful result with non-empty output
   const successfulResult = results.find(
     r => r.succeeded && r.output.trim().length > 0,
@@ -5173,6 +5200,8 @@ export async function executeWorktreeRemoveHook(
     hookInput,
     timeoutMs: TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   })
+
+  await runAlgebraicHooksOutsideREPL('WorktreeRemove', hookInput)
 
   if (results.length === 0) {
     return false
