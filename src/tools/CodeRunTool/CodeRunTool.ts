@@ -716,6 +716,34 @@ export function createToolProxy(
     return _constitutionProxy
   }
 
+  let _dreamProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getDreamProxy() {
+    if (_dreamProxy) return _dreamProxy
+    _dreamProxy = {
+      async trigger() {
+        const { triggerDream } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return triggerDream()
+      },
+      async last() {
+        const { getLastDream } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getLastDream()
+      },
+      async history() {
+        const { getDreamHistory } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getDreamHistory()
+      },
+      async stats() {
+        const { getDreamStats } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getDreamStats()
+      },
+      async configure(opts: unknown) {
+        const { setConfig } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return setConfig(opts as any)
+      },
+    }
+    return _dreamProxy
+  }
+
   let _prove2meProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
   function getProve2MeProxy() {
     if (_prove2meProxy) return _prove2meProxy
@@ -783,6 +811,7 @@ export function createToolProxy(
     get sleep() { return getSleepProxy() },
     get curriculum() { return getCurriculumProxy() },
     get constitution() { return getConstitutionProxy() },
+    get dream() { return getDreamProxy() },
     get prove2me() { return getProve2MeProxy() },
     _callLog: callLog,
   }
@@ -916,6 +945,12 @@ multi-tool sequence detected from your usage patterns).
 \`$.constitution.metrics()\` — compute and return current metric snapshots (anti-Goodhart immutable metrics).
 \`$.constitution.violations(limit?)\` — get constitution violation log.
 \`$.constitution.stats()\` — get constitution system stats.
+
+\`$.dream.trigger()\` — manually trigger dream consolidation (analyze session patterns, generate insights).
+\`$.dream.last()\` — get the most recent dream report.
+\`$.dream.history()\` — get all dream reports.
+\`$.dream.stats()\` — get dream stats (total dreams, current activity, would-trigger status).
+\`$.dream.configure({ minToolCalls?, minEventDelta?, cooldownMs?, enabled? })\` — adjust dream thresholds.
 
 \`$.prove2me.analyze(sourceCode, sourceFile?, moduleName?)\` — extract Lean 4 theorem statements from code.
 \`$.prove2me.addTheorem(theoremId, lean4Statement, naturalLanguage, dependencies?, tags?)\` — add a theorem to the DAG.

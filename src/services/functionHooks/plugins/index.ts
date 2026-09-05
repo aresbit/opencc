@@ -8,7 +8,7 @@
  *   transaction → retry → writeGuard → cache → compress → contextHandle →
  *   autoPermit → knowledge → jitSynthesis → adaptive →
  *   rsiConstitution → rsiAntibody → rsiCrystallize → rsiExperiment →
- *   rsiSleep → rsiCurriculum → ⊥
+ *   rsiSleep → dream → rsiCurriculum → ⊥
  *
  * Design rationale (following OS-kernel analogy):
  *
@@ -59,6 +59,7 @@ import { register as registerRsiCrystallize } from './rsiCrystallizeHook.js'
 import { register as registerRsiExperiment } from './rsiExperimentHook.js'
 import { register as registerRsiSleep } from './rsiSleepHook.js'
 import { register as registerRsiCurriculum } from './rsiCurriculumHook.js'
+import { register as registerDream } from './dreamHook.js'
 
 let registered = false
 
@@ -95,6 +96,7 @@ export function registerBuiltinPlugins(): void {
     { name: 'rsiCrystallize', id: 'builtin:rsiCrystallize', register: registerRsiCrystallize },
     { name: 'rsiExperiment', id: 'builtin:rsiExperiment', register: registerRsiExperiment },
     { name: 'rsiSleep', id: 'builtin:rsiSleep', register: registerRsiSleep },
+    { name: 'dream', id: 'builtin:dream', register: registerDream },
     { name: 'rsiCurriculum', id: 'builtin:rsiCurriculum', register: registerRsiCurriculum },
   ]
 
@@ -134,6 +136,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:rsiCrystallize',
     'builtin:rsiExperiment',
     'builtin:rsiSleep',
+    'builtin:dream',
     'builtin:rsiCurriculum',
   ]) {
     registry.removePlugin(id)
@@ -358,6 +361,18 @@ export {
   getConstitutionStats,
   clearConstitution,
 } from './rsiConstitutionHook.js'
+
+// dream — memory consolidation (replaces legacy autoDream)
+export {
+  triggerDream,
+  getLastDream,
+  getDreamHistory,
+  getDreamStats,
+  getConfig as getDreamConfig,
+  setConfig as setDreamConfig,
+  resetConfig as resetDreamConfig,
+  clearDream,
+} from './dreamHook.js'
 
 // scheduler — model routing + budget limits
 export {

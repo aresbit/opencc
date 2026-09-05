@@ -252,6 +252,18 @@ export {
   clearConstitution,
 } from './plugins/rsiConstitutionHook.js'
 
+// dream — memory consolidation (replaces legacy autoDream)
+export {
+  triggerDream,
+  getLastDream,
+  getDreamHistory,
+  getDreamStats,
+  getDreamConfig,
+  setDreamConfig,
+  resetDreamConfig,
+  clearDream,
+} from './plugins/dreamHook.js'
+
 // scheduler — model routing + budget limits
 export {
   route as schedulerRoute,

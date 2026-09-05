@@ -624,6 +624,28 @@ export function buildCoreNouns(): Record<
         return getConstitutionStats()
       },
     },
+    dream: {
+      trigger: async () => {
+        const { triggerDream } = await import('./plugins/dreamHook.js')
+        return triggerDream()
+      },
+      last: async () => {
+        const { getLastDream } = await import('./plugins/dreamHook.js')
+        return getLastDream()
+      },
+      history: async () => {
+        const { getDreamHistory } = await import('./plugins/dreamHook.js')
+        return getDreamHistory()
+      },
+      stats: async () => {
+        const { getDreamStats } = await import('./plugins/dreamHook.js')
+        return getDreamStats()
+      },
+      configure: async (e: { minToolCalls?: number; minEventDelta?: number; cooldownMs?: number; enabled?: boolean; autoConsolidate?: boolean }) => {
+        const { setConfig } = await import('./plugins/dreamHook.js')
+        return setConfig(e)
+      },
+    },
     budget: {
       getrlimit: async (e: { agentId: string }) => {
         const { getrlimit } = await import('./plugins/schedulerHook.js')
