@@ -14,6 +14,7 @@
  * Promise.all(...)       — parallel fan-out, no extra round-trips
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { z } from 'zod/v4'
 import { buildTool, findToolByName, type ToolDef, type Tools, type ToolUseContext, type CanUseToolFn } from '../../Tool.js'
 import type { AssistantMessage } from '../../types/message.js'
@@ -41,12 +42,32 @@ interface CallLogEntry {
 }
 
 /**
+ * Property names the JS runtime probes on arbitrary objects. The proxy must
+ * report these as absent. A `get` trap that returns a callable for every key
+ * makes $.tool a fake thenable: awaiting it (or letting deepResolve walk into
+ * it) invokes then(resolve, reject) as though "then" were a tool, resolve is
+ * never called, and the await never settles — a silent hang with no timeout.
+ * toJSON has the same shape under JSON.stringify.
+ */
+const NON_TOOL_KEYS = new Set([
+  'then',
+  'catch',
+  'finally',
+  'toJSON',
+  'toString',
+  'valueOf',
+  'constructor',
+  'prototype',
+  'inspect',
+])
+
+/**
  * Create the $ proxy object that code runs against.
  *
  * $.tool.<Name>(input) dispatches to the real tool by looking it up
- * in the tool list, parsing input through its Zod schema, and calling
- * tool.call(). The result is unwrapped (ToolResult.data) so the code
- * sees plain values, not framework wrappers.
+ * in the tool list, parsing input through its Zod schema, checking
+ * permission, and calling tool.call(). The result is unwrapped
+ * (ToolResult.data) so the code sees plain values, not framework wrappers.
  */
 export function createToolProxy(
   tools: Tools,
@@ -55,9 +76,14 @@ export function createToolProxy(
   parentMessage: AssistantMessage,
 ) {
   const callLog: CallLogEntry[] = []
+  let callSeq = 0
 
   const toolProxy = new Proxy({} as Record<string, (...args: unknown[]) => Promise<unknown>>, {
-    get(_, toolName: string) {
+    get(_, prop: string | symbol) {
+      // Symbols and JS protocol keys are never tool names.
+      if (typeof prop !== 'string' || NON_TOOL_KEYS.has(prop)) return undefined
+      const toolName = prop
+
       return async (input: Record<string, unknown> = {}) => {
         const tool = findToolByName(tools, toolName)
         if (!tool) throw new Error(`Tool "${toolName}" not available`)
@@ -68,8 +94,34 @@ export function createToolProxy(
         }
 
         const start = Date.now()
+
+        // Permission gate. Tools do not self-enforce — BashTool takes
+        // canUseTool as `_canUseTool` and never calls it, because the
+        // orchestrator (checkPermissionsAndCallTool) is what decides. Calling
+        // tool.call() directly, as this proxy used to, therefore ran every
+        // tool with no permission check at all: $.tool.Bash({command}) executed
+        // whatever it was handed. Route through canUseTool so CodeRun is bound
+        // by exactly the same policy as a normal tool call.
+        const toolUseID = `${context.toolUseId ?? 'coderun'}_${toolName}_${++callSeq}`
+        const decision = await canUseTool(
+          tool,
+          parsed.data as Record<string, unknown>,
+          context,
+          parentMessage,
+          toolUseID,
+        )
+        if (decision.behavior !== 'allow') {
+          callLog.push({ tool: toolName, elapsed: Date.now() - start, ok: false })
+          throw new Error(
+            `Permission denied for ${toolName}: ${decision.message}`,
+          )
+        }
+
+        // Honor an input the permission layer rewrote.
+        const callInput = (decision.updatedInput ?? parsed.data) as typeof parsed.data
+
         try {
-          const result = await tool.call(parsed.data, context, canUseTool, parentMessage)
+          const result = await tool.call(callInput, context, canUseTool, parentMessage)
           callLog.push({ tool: toolName, elapsed: Date.now() - start, ok: true })
           return result.data
         } catch (err) {
@@ -85,7 +137,11 @@ export function createToolProxy(
   function getRecipeProxy() {
     if (_recipeProxy) return _recipeProxy
     _recipeProxy = new Proxy({} as Record<string, (...args: unknown[]) => Promise<unknown>>, {
-      get(_, recipeName: string) {
+      get(_, prop: string | symbol) {
+        // Same thenable hazard as toolProxy — see NON_TOOL_KEYS.
+        if (typeof prop !== 'string' || NON_TOOL_KEYS.has(prop)) return undefined
+        const recipeName = prop
+
         return async (params: Record<string, unknown> = {}) => {
           let recipes: Array<{ name: string; codeTemplate: string }>
           try {
@@ -867,6 +923,17 @@ export function createToolProxy(
   }
 }
 
+/**
+ * CodeRun can reach itself through $.tool.CodeRun, and each level is a real
+ * nested execution with no timeout, so a self-referential snippet recurses
+ * until the stack dies. Cap the nesting instead of banning it — one level of
+ * composition is legitimate, five is a runaway. Scoped to the async context
+ * rather than a module counter so concurrent top-level CodeRuns don't see
+ * each other's depth.
+ */
+const MAX_CODERUN_DEPTH = 3
+const depthStorage = new AsyncLocalStorage<number>()
+
 const MAX_RESOLVE_DEPTH = 8
 
 async function deepResolve(value: unknown, depth = 0): Promise<unknown> {
@@ -1085,6 +1152,9 @@ return "No issues found";
 - Return the final result; it becomes the tool output
 - Errors in tool calls propagate as exceptions
 - All tool calls go through the full hook chain (cache, retry, etc.)
+- Tool calls are permission-checked exactly as if called directly; a denied
+  call throws \`Permission denied for <Tool>\`. Catch it if a denial is
+  recoverable, otherwise let it propagate.
 - For general computation (data analysis, ML, plots), use CodeAct instead`
   },
 
@@ -1096,6 +1166,19 @@ return "No issues found";
   renderToolUseMessage() { return null },
 
   async call({ code }, context, canUseTool, parentMessage) {
+    const depth = depthStorage.getStore() ?? 0
+    if (depth >= MAX_CODERUN_DEPTH) {
+      return {
+        data: {
+          success: false,
+          error: `CodeRun nesting limit reached (${MAX_CODERUN_DEPTH}). A CodeRun block invoked CodeRun too many levels deep — call the tools directly instead of nesting.`,
+          toolCalls: 0,
+          callLog: [],
+          elapsed: 0,
+        },
+      }
+    }
+
     const $ = createToolProxy(context.options.tools, context, canUseTool, parentMessage)
 
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
@@ -1103,7 +1186,7 @@ return "No issues found";
     const startTime = Date.now()
     try {
       const fn = new AsyncFunction('$', `"use strict";\n${code}`)
-      const rawResult = await fn($)
+      const rawResult = await depthStorage.run(depth + 1, () => fn($))
       const result = await deepResolve(rawResult)
       const elapsed = Date.now() - startTime
 
