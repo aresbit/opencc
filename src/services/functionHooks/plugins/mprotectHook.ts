@@ -264,8 +264,13 @@ export function register(on: OnRegistrar): void {
   })
 
   // Check tool results for content that tries to modify protected segments
-  on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
+  // 'tool.content', not 'tool.result'. On tool.result, next(e) returns the
+  // event object rather than a string, so `typeof result === 'string'` was
+  // always false and this integrity check never inspected any tool output.
+  on('tool.content', async ($, e: any, next) => {
+    const event = await next(e)
+    const result =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
 
     if (typeof result === 'string' && result.length > 50) {
       const check = checkPermission(result, 'write', `tool:${e.tool_name ?? e.tool ?? 'unknown'}`)
@@ -280,7 +285,8 @@ export function register(on: OnRegistrar): void {
       }
     }
 
-    return result
+    // Observational: record violations, pass the content through untouched.
+    return event
   })
 }
 

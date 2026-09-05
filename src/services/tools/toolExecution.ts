@@ -9,6 +9,7 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { applyToolContentHooks } from '../functionHooks/toolContent.js'
+import { invokeToolThroughHooks } from '../functionHooks/toolInvoke.js'
 import {
   extractMcpToolDetails,
   extractSkillName,
@@ -1206,21 +1207,34 @@ async function checkPermissionsAndCallTool(
     callInput = processedInput
   }
   try {
-    const result = await tool.call(
-      callInput,
+    // Routed through the `tool.invoke` chain so a hook can replace the
+    // computation (cache hit, retry, synthesized substitute) instead of only
+    // allowing/denying it. With no such hook registered this is exactly the
+    // original call — the chain's ⊥ is this same invocation.
+    const result = await invokeToolThroughHooks(
       {
-        ...toolUseContext,
-        toolUseId: toolUseID,
-        userModified: permissionDecision.userModified ?? false,
+        tool_name: tool.name,
+        tool_input: (callInput ?? {}) as Record<string, unknown>,
+        tool_use_id: toolUseID,
+        agent_id: toolUseContext.agentId,
       },
-      canUseTool,
-      assistantMessage,
-      progress => {
-        onToolProgress({
-          toolUseID: progress.toolUseID,
-          data: progress.data,
-        })
-      },
+      () =>
+        tool.call(
+          callInput,
+          {
+            ...toolUseContext,
+            toolUseId: toolUseID,
+            userModified: permissionDecision.userModified ?? false,
+          },
+          canUseTool,
+          assistantMessage,
+          progress => {
+            onToolProgress({
+              toolUseID: progress.toolUseID,
+              data: progress.data,
+            })
+          },
+        ),
     )
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)

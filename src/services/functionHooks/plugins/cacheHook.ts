@@ -34,16 +34,59 @@ const cache = new Map<string, CacheEntry>()
 let mtimeChecks = 0
 let mtimeInvalidations = 0
 
-function cacheKey(tool: string, input: Record<string, unknown>): string | null {
+/**
+ * OFF by default. The mechanism is now real (see the tool.invoke note in
+ * register()), which is exactly why the default matters: turning it on is a
+ * net loss today, for two reasons found when the short-circuit started
+ * working.
+ *
+ * 1. It would preempt a better upstream mechanism. FileReadTool already
+ *    dedups repeat reads: same path, same range, unchanged mtime returns a
+ *    tiny `{type:'file_unchanged'}` stub instead of the file. This cache
+ *    short-circuits BEFORE that, so a cache hit would hand back the full
+ *    content the stub exists to avoid — saving ~0.4ms of disk I/O and
+ *    costing the whole file in tokens, every repeat read.
+ * 2. Read has a side effect the cache would skip. FileReadTool.call()
+ *    records the read in `readFileState`, which FileEditTool checks to
+ *    enforce read-before-edit. readFileState is per-tool-use-context, so a
+ *    cache entry populated by one agent could satisfy another agent's Read
+ *    without recording it there — and the subsequent Edit would be rejected
+ *    for a file the model just "read". Keys are agent-scoped below so that
+ *    cannot happen if this is ever enabled.
+ *
+ * Left in place rather than deleted because the invalidation logic (mtime +
+ * write-through) is correct and is the part worth keeping if a future
+ * cacheable tool appears — Read simply is not that tool.
+ */
+let enabled = false
+
+export function setCacheEnabled(on: boolean): boolean {
+  enabled = on
+  return enabled
+}
+
+export function isCacheEnabled(): boolean {
+  return enabled
+}
+
+function cacheKey(
+  tool: string,
+  input: Record<string, unknown>,
+  agentId: string | undefined,
+): string | null {
   if (tool === 'Read' && input.file_path) {
-    return `read:${input.file_path}:${input.offset ?? 0}:${input.limit ?? 'all'}`
+    // agent-scoped: see note 2 above.
+    return `read:${agentId ?? 'main'}:${input.file_path}:${input.offset ?? 0}:${input.limit ?? 'all'}`
   }
   return null
 }
 
 function invalidatePath(filePath: string): void {
+  // Keys are `read:<agent>:<path>:<offset>:<limit>`, and a write by one
+  // agent invalidates the file for every agent, so match on the path
+  // segment rather than a prefix.
   for (const key of cache.keys()) {
-    if (key.startsWith(`read:${filePath}:`)) {
+    if (key.includes(`:${filePath}:`)) {
       cache.delete(key)
     }
   }
@@ -66,17 +109,28 @@ function evictStale(): void {
 }
 
 export function register(on: OnRegistrar): void {
-  on('tool.call', async ($, e: any, next) => {
+  // 'tool.invoke', not 'tool.call'. On tool.call this hook's `return
+  // cached.result` was dropped by the PostToolUse/PreToolUse bridge (which
+  // only honors deny / additionalContext / permissionDecision /
+  // updatedInput / preventContinuation), so a "cache hit" returned a value
+  // nobody read and the tool executed anyway — the cache never once saved a
+  // read. tool.invoke's ⊥ is the real tool execution, so returning early
+  // here genuinely skips it. See ../toolInvoke.ts.
+  on('tool.invoke', async ($, e: any, next) => {
     const tool = (e.tool_name ?? e.tool) as string
     const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
 
-    // Invalidate cache on write operations
+    // Invalidate cache on write operations. This runs even when serving is
+    // disabled, so stale entries can never survive a write and be served if
+    // someone enables it mid-session.
     if ((tool === 'Write' || tool === 'Edit') && input.file_path) {
       invalidatePath(input.file_path as string)
       return next(e)
     }
 
-    const key = cacheKey(tool, input)
+    if (!enabled) return next(e)
+
+    const key = cacheKey(tool, input, e.agent_id as string | undefined)
     if (!key) return next(e)
 
     const cached = cache.get(key)

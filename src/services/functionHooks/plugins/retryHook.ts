@@ -41,7 +41,13 @@ function sleep(ms: number): Promise<void> {
 }
 
 export function register(on: OnRegistrar): void {
-  on('tool.call', async ($, e: any, next) => {
+  // 'tool.invoke', not 'tool.call'. Retrying means re-running the tool, and
+  // on tool.call next(e) does not run the tool at all — that chain bottoms
+  // out in an identity function, so this loop retried nothing and its
+  // catch block could never fire. tool.invoke's ⊥ is the real execution and
+  // next(e) may be called repeatedly, so each attempt here is now an actual
+  // re-invocation. See ../toolInvoke.ts.
+  on('tool.invoke', async ($, e: any, next) => {
     let lastError: unknown
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {

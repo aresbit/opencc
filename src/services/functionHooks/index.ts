@@ -48,7 +48,7 @@ export {
 } from './bridge.js'
 
 // Built-in plugin utilities
-export { clearCache, getCacheMtimeStats } from './plugins/cacheHook.js'
+export { clearCache, getCacheMtimeStats, setCacheEnabled, isCacheEnabled } from './plugins/cacheHook.js'
 export { isAutoPermitted, getApprovedCount, clearApproved } from './plugins/autoPermitHook.js'
 export {
   queryFiles,
@@ -74,6 +74,10 @@ export {
 // tool.content — the transform point where a hook's resume value becomes
 // what the model actually sees (see plugins/contextShuntHook.js header).
 export { applyToolContentHooks, type ToolContentEvent } from './toolContent.js'
+
+// tool.invoke — the event whose ⊥ actually runs the tool, so a hook can
+// replace the computation instead of only allowing/denying it.
+export { invokeToolThroughHooks, type ToolInvokeEvent } from './toolInvoke.js'
 export { getTaintedCount, isTainted, clearTainted } from './plugins/taintFirewallHook.js'
 export { getActiveTransaction, rollbackManual, clearTransaction } from './plugins/transactionHook.js'
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './plugins/replayHook.js'

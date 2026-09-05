@@ -27,25 +27,28 @@ function compressText(text: string): string {
   )
 }
 
-function compressValue(val: unknown): unknown {
-  if (typeof val === 'string') return compressText(val)
-  if (val && typeof val === 'object' && !Array.isArray(val)) {
-    const obj = val as Record<string, unknown>
-    const compressed: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(obj)) {
-      compressed[k] = typeof v === 'string' ? compressText(v) : v
-    }
-    return compressed
-  }
-  return val
-}
-
 export function register(on: OnRegistrar): void {
-  on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
+  // 'tool.content', not 'tool.result'. On tool.result the compressed value
+  // was returned into the void: that event is bridged from PostToolUse,
+  // whose results can only deny / add context / change permission / rewrite
+  // input, and for non-MCP tools the result message is built before those
+  // hooks even run. So nothing here ever shrank anything. tool.content is
+  // dispatched where the returned string becomes what the model receives.
+  //
+  // Position is unchanged and still matters: compress sits OUTSIDE
+  // contextShunt/contextHandle, so a large result has already been
+  // handle-ized (and is now short) by the time it gets here, and only
+  // moderate results in the 12K-16K band — below contextHandle's threshold,
+  // above this one — actually get truncated. That is the split the chain
+  // docstring describes: lossless handle-ization first, lossy truncation
+  // only for what slips past it.
+  on('tool.content', async ($, e: any, next) => {
+    const event = await next(e)
+    const content =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
 
-    if (result == null) return result
-
-    return compressValue(result)
+    if (typeof content !== 'string') return event
+    const compressed = compressText(content)
+    return compressed === content ? event : compressed
   })
 }

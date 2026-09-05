@@ -92,8 +92,13 @@ function findRelatedFiles(pattern: string): string[] {
 
 export function register(on: OnRegistrar): void {
   // Index Grep results
-  on('tool.result', { tool_name: 'Grep' }, async ($, e: any, next) => {
-    const result = await next(e)
+  // 'tool.content': on tool.result, next(e) returns the event object, so the
+  // string/array branches below never matched and no Grep hit was ever
+  // indexed. tool.content carries the actual result text.
+  on('tool.content', { tool_name: 'Grep' }, async ($, e: any, next) => {
+    const event = await next(e)
+    const result =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
 
     const pattern = e.tool_input?.pattern as string
     if (pattern && result) {
@@ -114,22 +119,23 @@ export function register(on: OnRegistrar): void {
       if (files.length > 0) recordGrepResult(pattern, files)
     }
 
-    return result
+    // Observational: index the hits, pass the content through untouched.
+    return event
   })
 
   // Index Read results
-  on('tool.result', { tool_name: 'Read' }, async ($, e: any, next) => {
-    const result = await next(e)
+  // 'tool.content': on tool.result, next(e) returns the event object, which
+  // carries no file content, so `content` was always '' and not a single
+  // file was ever indexed (getStats().files stayed 0 for the whole session).
+  on('tool.content', { tool_name: 'Read' }, async ($, e: any, next) => {
+    const event = await next(e)
 
     const filePath = e.tool_input?.file_path as string
-    if (filePath && result) {
-      const content = typeof result === 'string'
-        ? result
-        : (result as any)?.content ?? ''
-      if (content) recordFileRead(filePath, content)
-    }
+    const content =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
+    if (filePath && content) recordFileRead(filePath, content)
 
-    return result
+    return event
   })
 
   // Enrich Grep calls with prior knowledge

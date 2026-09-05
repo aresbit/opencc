@@ -106,13 +106,24 @@ export function register(on: OnRegistrar): void {
     return next(e)
   })
 
-  on('tool.result', { tool_name: 'Bash' }, async ($, e: any, next) => {
-    const result = await next(e)
+  // 'tool.content', not 'tool.result'. This was worse than dead: on
+  // tool.result, next(e) returns the EVENT OBJECT, so resultStr was
+  // JSON.stringify(event) — which embeds tool_input.command. The failure
+  // detection was therefore matching against the command line rather than
+  // the command's output, so a command whose text happened to contain a
+  // failure indicator could roll back the user's files on a passing test.
+  // On tool.content resultStr is the actual output, which is what
+  // looksLikeTestFailure() was always meant to read.
+  on('tool.content', { tool_name: 'Bash' }, async ($, e: any, next) => {
+    const event = await next(e)
+    const result =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
     const cmd = e.tool_input?.command as string
 
-    if (!cmd || !isTestCommand(cmd) || !activeTx) return result
+    if (!cmd || !isTestCommand(cmd) || !activeTx) return event
+    if (typeof result !== 'string') return event
 
-    const resultStr = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+    const resultStr = result
 
     if (looksLikeTestFailure(resultStr) && activeTx.snapshots.size > 0) {
       const tx = activeTx
@@ -139,7 +150,7 @@ export function register(on: OnRegistrar): void {
       activeTx = null
     }
 
-    return result
+    return event
   })
 }
 

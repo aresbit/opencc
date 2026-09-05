@@ -68,8 +68,15 @@ function containsTainted(text: string): TaintEntry | undefined {
 }
 
 export function register(on: OnRegistrar): void {
-  on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
+  // 'tool.content', not 'tool.result'. On tool.result, next(e) bottoms out
+  // in an identity function and returns the EVENT OBJECT, never a string —
+  // so `typeof result === 'string'` was always false and this scanner never
+  // examined a single tool result. tool.content carries the actual content
+  // string, which is what needs scanning.
+  on('tool.content', async ($, e: any, next) => {
+    const event = await next(e)
+    const result =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
 
     if (typeof result === 'string') {
       const secrets = extractSecrets(result)
@@ -86,7 +93,8 @@ export function register(on: OnRegistrar): void {
       }
     }
 
-    return result
+    // Observational: record taint, pass the content through untouched.
+    return event
   })
 
   on('tool.call', async ($, e: any, next) => {

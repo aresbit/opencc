@@ -255,7 +255,10 @@ export function register(on: OnRegistrar): void {
   })
 
   // Hook tool.result — score readability and tag
-  on('tool.result', async ($, e: any, next) => {
+  // 'tool.content': on tool.result, next(e) returned the event object, which
+  // has no `content` field, so `text` was always null and readability stats
+  // were never collected from any tool output.
+  on('tool.content', async ($, e: any, next) => {
     const result = await next(e)
 
     if (!config.trackStats) return result
