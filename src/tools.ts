@@ -40,6 +40,7 @@ import { EvalApplyTool } from './tools/EvalApplyTool/EvalApplyTool.js'
 import { ActorTool } from './tools/ActorTool/ActorTool.js'
 import { SSHRemoteTool } from './tools/SSHRemoteTool/SSHRemoteTool.js'
 import { CodeRunTool } from './tools/CodeRunTool/CodeRunTool.js'
+import { Prove2MeTool } from './tools/Prove2MeTool/Prove2MeTool.js'
 import { getSyntheticTools } from './services/functionHooks/plugins/jitSynthesisHook.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
@@ -295,6 +296,7 @@ export function getAllBaseTools(): Tools {
     McpFsExecTool,
     CodeActTool,
     CodeRunTool,
+    Prove2MeTool,
     ActionTool,
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),

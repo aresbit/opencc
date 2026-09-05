@@ -716,6 +716,50 @@ export function createToolProxy(
     return _constitutionProxy
   }
 
+  let _prove2meProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getProve2MeProxy() {
+    if (_prove2meProxy) return _prove2meProxy
+    _prove2meProxy = {
+      async analyze(sourceCode: unknown, sourceFile?: unknown, moduleName?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'analyze', sourceCode: sourceCode as string, sourceFile: sourceFile as string, moduleName: moduleName as string }, context, canUseTool, parentMessage)
+      },
+      async addTheorem(theoremId: unknown, lean4Statement: unknown, naturalLanguage: unknown, dependencies?: unknown, tags?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'add-theorem', theoremId: theoremId as string, lean4Statement: lean4Statement as string, naturalLanguage: naturalLanguage as string, dependencies: dependencies as string[], tags: tags as string[] }, context, canUseTool, parentMessage)
+      },
+      async submitProof(theoremId: unknown, lean4Code: unknown, author?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'submit-proof', theoremId: theoremId as string, lean4Code: lean4Code as string, author: author as string }, context, canUseTool, parentMessage)
+      },
+      async status() {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'status' }, context, canUseTool, parentMessage)
+      },
+      async search(query: unknown, limit?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'search', query: query as string, limit: limit as number }, context, canUseTool, parentMessage)
+      },
+      async attackable() {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'attackable' }, context, canUseTool, parentMessage)
+      },
+      async generate(separated?: unknown, theoremId?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'generate', separated: separated as boolean, theoremId: theoremId as string }, context, canUseTool, parentMessage)
+      },
+      async export(outputDir?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'export', outputDir: outputDir as string }, context, canUseTool, parentMessage)
+      },
+      async dagStats() {
+        const { getDAGStats } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return getDAGStats()
+      },
+    }
+    return _prove2meProxy
+  }
+
   return {
     tool: toolProxy,
     get recipe() { return getRecipeProxy() },
@@ -739,6 +783,7 @@ export function createToolProxy(
     get sleep() { return getSleepProxy() },
     get curriculum() { return getCurriculumProxy() },
     get constitution() { return getConstitutionProxy() },
+    get prove2me() { return getProve2MeProxy() },
     _callLog: callLog,
   }
 }
@@ -871,6 +916,16 @@ multi-tool sequence detected from your usage patterns).
 \`$.constitution.metrics()\` — compute and return current metric snapshots (anti-Goodhart immutable metrics).
 \`$.constitution.violations(limit?)\` — get constitution violation log.
 \`$.constitution.stats()\` — get constitution system stats.
+
+\`$.prove2me.analyze(sourceCode, sourceFile?, moduleName?)\` — extract Lean 4 theorem statements from code.
+\`$.prove2me.addTheorem(theoremId, lean4Statement, naturalLanguage, dependencies?, tags?)\` — add a theorem to the DAG.
+\`$.prove2me.submitProof(theoremId, lean4Code, author?)\` — submit a Lean 4 proof sketch.
+\`$.prove2me.status()\` — get DAG statistics (total/proved/open/sorry/failed).
+\`$.prove2me.search(query, limit?)\` — find existing theorems by natural language.
+\`$.prove2me.attackable()\` — list theorems whose dependencies are all proved (ready to prove).
+\`$.prove2me.generate(separated?, theoremId?)\` — output Lean 4 code (separated statement/proof files).
+\`$.prove2me.export(outputDir?)\` — write Lean files and DAG to disk.
+\`$.prove2me.dagStats()\` — get DAG stats (total, proved, open, sorry, failed, maxDepth).
 
 ### When to use CodeRun
 
