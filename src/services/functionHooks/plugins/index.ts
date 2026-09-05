@@ -69,6 +69,7 @@ import { register as registerCtxFork } from './ctxForkHook.js'
 import { register as registerSelect } from './selectHook.js'
 import { register as registerMount } from './mountHook.js'
 import { register as registerMcpBroker } from './mcpBrokerHook.js'
+import { register as registerKvCacheAffinity } from './kvCacheAffinityHook.js'
 import { register as registerMprotect } from './mprotectHook.js'
 import { register as registerIpc } from './ipcHook.js'
 import { register as registerSudo } from './sudoHook.js'
@@ -100,6 +101,7 @@ export function registerBuiltinPlugins(): void {
     { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
     { name: 'mount', id: 'builtin:mount', register: registerMount },
     { name: 'mcpBroker', id: 'builtin:mcpBroker', register: registerMcpBroker },
+    { name: 'kvCacheAffinity', id: 'builtin:kvCacheAffinity', register: registerKvCacheAffinity },
     { name: 'sudo', id: 'builtin:sudo', register: registerSudo },
     { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
     { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace },
@@ -150,6 +152,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:plainLanguage',
     'builtin:mount',
     'builtin:mcpBroker',
+    'builtin:kvCacheAffinity',
     'builtin:sudo',
     'builtin:ctxFork',
     'builtin:ptrace',
@@ -511,3 +514,10 @@ export {
   type McpAclRule,
   type McpCallRecord,
 } from './mcpBrokerHook.js'
+
+// kvCacheAffinity — prompt-cache hit-rate telemetry + additionalContext dedup
+export {
+  shouldDedupContext,
+  getKvCacheStats,
+  clearKvCacheAffinity,
+} from './kvCacheAffinityHook.js'

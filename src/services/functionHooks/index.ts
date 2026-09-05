@@ -352,3 +352,10 @@ export {
   type McpAclRule,
   type McpCallRecord,
 } from './plugins/mcpBrokerHook.js'
+
+// kvCacheAffinity — prompt-cache hit-rate telemetry + additionalContext dedup
+export {
+  shouldDedupContext,
+  getKvCacheStats,
+  clearKvCacheAffinity,
+} from './plugins/kvCacheAffinityHook.js'

@@ -7,6 +7,7 @@ import type {
 import { randomUUID } from 'crypto'
 import type { QuerySource } from 'src/constants/querySource.js'
 import { logEvent } from 'src/services/analytics/index.js'
+import { shouldDedupContext } from 'src/services/functionHooks/plugins/kvCacheAffinityHook.js'
 import { getContentText } from 'src/utils/messages.js'
 import {
   findCommand,
@@ -236,7 +237,18 @@ export async function processUserInput({
       result.messages.push(
         createAttachmentMessage({
           type: 'hook_additional_context',
-          content: hookResult.additionalContexts.map(applyTruncation),
+          // A hook re-injecting the identical reminder text every turn pays
+          // its full token cost again each time even though it's a new
+          // appended message (not a cache-prefix issue — see
+          // kvCacheAffinityHook.ts's header for why the prefix itself is
+          // fine here). Collapse an exact repeat to a short reference
+          // instead of the full text.
+          content: hookResult.additionalContexts.map(text => {
+            const { dedupe, repeatCount } = shouldDedupContext(text)
+            return dedupe
+              ? `[repeated context — identical to an earlier turn, seen ${repeatCount + 1}x this session]`
+              : applyTruncation(text)
+          }),
           hookName: 'UserPromptSubmit',
           toolUseID: `hook-${randomUUID()}`,
           hookEvent: 'UserPromptSubmit',
