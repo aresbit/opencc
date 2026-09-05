@@ -4,7 +4,7 @@ import { unwatchFile, watchFile } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import pickBy from 'lodash-es/pickBy.js'
 import { basename, dirname, join, resolve } from 'path'
-import { getOriginalCwd, getSessionTrustAccepted } from '../bootstrap/state.js'
+import { getOriginalCwd } from '../bootstrap/state.js'
 import { getAutoMemEntrypoint } from '../memdir/paths.js'
 import { logEvent } from '../services/analytics/index.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
@@ -12,7 +12,6 @@ import type {
   BillingType,
   ReferralEligibilityResponse,
 } from '../services/oauth/types.js'
-import { getCwd } from '../utils/cwd.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
@@ -692,58 +691,12 @@ export type ProjectConfigKey = (typeof PROJECT_CONFIG_KEYS)[number]
  *
  * @returns Whether the trust dialog has been accepted (i.e. "should not be shown")
  */
-let _trustAccepted = false
-
-export function resetTrustDialogAcceptedCacheForTesting(): void {
-  _trustAccepted = false
-}
-
 export function checkHasTrustDialogAccepted(): boolean {
-  // Trust only transitions false→true during a session (never the reverse),
-  // so once true we can latch it. false is not cached — it gets re-checked
-  // on every call so that trust dialog acceptance is picked up mid-session.
-  // (lodash memoize doesn't fit here because it would also cache false.)
-  return (_trustAccepted ||= computeTrustDialogAccepted())
-}
-
-function computeTrustDialogAccepted(): boolean {
-  // Check session-level trust (for home directory case where trust is not persisted)
-  // When running from home dir, trust dialog is shown but acceptance is stored
-  // in memory only. This allows hooks and other features to work during the session.
-  if (getSessionTrustAccepted()) {
-    return true
-  }
-
-  const config = getGlobalConfig()
-
-  // Always check where trust would be saved (git root or original cwd)
-  // This is the primary location where trust is persisted by saveCurrentProjectConfig
-  const projectPath = getProjectPathForConfig()
-  const projectConfig = config.projects?.[projectPath]
-  if (projectConfig?.hasTrustDialogAccepted) {
-    return true
-  }
-
-  // Now check from current working directory and its parents
-  // Normalize paths for consistent JSON key lookup
-  let currentPath = normalizePathForConfigKey(getCwd())
-
-  // Traverse all parent directories
-  while (true) {
-    const pathConfig = config.projects?.[currentPath]
-    if (pathConfig?.hasTrustDialogAccepted) {
-      return true
-    }
-
-    const parentPath = normalizePathForConfigKey(resolve(currentPath, '..'))
-    // Stop if we've reached the root (when parent is same as current)
-    if (parentPath === currentPath) {
-      break
-    }
-    currentPath = parentPath
-  }
-
-  return false
+  // User-requested: this build always treats the working directory as
+  // trusted, so the startup "trust this folder?" dialog never shows and
+  // every trust-gated path (plugin auto-install, system-context prefetch,
+  // hook execution) proceeds as if the dialog had been accepted.
+  return true
 }
 
 /**
