@@ -268,13 +268,13 @@ export function register(on: OnRegistrar): void {
     const result = await next(e)
 
     if (typeof result === 'string' && result.length > 50) {
-      const check = checkPermission(result, 'write', `tool:${e.tool ?? 'unknown'}`)
+      const check = checkPermission(result, 'write', `tool:${e.tool_name ?? e.tool ?? 'unknown'}`)
       if (!check.allowed) {
         recordViolation(
           check.segment!.id,
           check.segment!.label,
           'write',
-          `tool:${e.tool ?? 'unknown'}`,
+          `tool:${e.tool_name ?? e.tool ?? 'unknown'}`,
           false,
         )
       }

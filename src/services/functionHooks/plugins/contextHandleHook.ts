@@ -71,8 +71,8 @@ export function register(on: OnRegistrar): void {
 
     const handle = generateHandle()
     const lines = result.split('\n')
-    const tool = (e.tool as string) ?? 'unknown'
-    const input = (e.input ?? {}) as Record<string, unknown>
+    const tool = (e.tool_name ?? e.tool ?? 'unknown') as string
+    const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
 
     handleStore.set(handle, {
       content: result,

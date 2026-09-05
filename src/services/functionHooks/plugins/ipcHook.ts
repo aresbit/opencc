@@ -279,8 +279,8 @@ function gcLocks(): number {
 
 export function register(on: OnRegistrar): void {
   // Check locks on file writes
-  on('tool.call', { tool: 'Write' }, async ($, e: any, next) => {
-    const filePath = e.input?.file_path as string
+  on('tool.call', { tool_name: 'Write' }, async ($, e: any, next) => {
+    const filePath = e.tool_input?.file_path as string
     const agentId = (e._agentId ?? 'main') as string
 
     if (filePath) {
@@ -299,8 +299,8 @@ export function register(on: OnRegistrar): void {
     return next(e)
   })
 
-  on('tool.call', { tool: 'Edit' }, async ($, e: any, next) => {
-    const filePath = e.input?.file_path as string
+  on('tool.call', { tool_name: 'Edit' }, async ($, e: any, next) => {
+    const filePath = e.tool_input?.file_path as string
     const agentId = (e._agentId ?? 'main') as string
 
     if (filePath) {

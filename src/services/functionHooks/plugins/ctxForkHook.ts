@@ -293,8 +293,8 @@ async function rollbackBranch(forkId: string, branchId: string): Promise<string[
 
 export function register(on: OnRegistrar): void {
   // Track file edits within active fork branches for rollback
-  on('tool.call', { tool: 'Write' }, async ($, e: any, next) => {
-    const filePath = e.input?.file_path as string
+  on('tool.call', { tool_name: 'Write' }, async ($, e: any, next) => {
+    const filePath = e.tool_input?.file_path as string
     if (filePath && e._forkBranchId) {
       const forkId = e._forkId as string
       const branchId = e._forkBranchId as string
@@ -312,8 +312,8 @@ export function register(on: OnRegistrar): void {
     return next(e)
   })
 
-  on('tool.call', { tool: 'Edit' }, async ($, e: any, next) => {
-    const filePath = e.input?.file_path as string
+  on('tool.call', { tool_name: 'Edit' }, async ($, e: any, next) => {
+    const filePath = e.tool_input?.file_path as string
     if (filePath && e._forkBranchId) {
       const forkId = e._forkId as string
       const branchId = e._forkBranchId as string
@@ -343,7 +343,7 @@ export function register(on: OnRegistrar): void {
         const branch = session.branches.get(branchId)
         if (branch) {
           branch.toolCalls.push({
-            tool: e.tool ?? 'unknown',
+            tool: e.tool_name ?? e.tool ?? 'unknown',
             elapsed: e._elapsed ?? 0,
           })
         }

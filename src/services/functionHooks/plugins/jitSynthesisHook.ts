@@ -200,7 +200,7 @@ function createSyntheticTool(recipe: Recipe): Tool {
 
 export function register(on: OnRegistrar): void {
   on('tool.call', async ($, e: any, next) => {
-    const tool = e.tool as string
+    const tool = (e.tool_name ?? e.tool) as string
     if (tool && tool !== 'CodeRun' && !tool.startsWith('jit_')) {
       toolHistory.push(tool)
       if (toolHistory.length > MAX_HISTORY) toolHistory.shift()

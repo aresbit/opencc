@@ -90,25 +90,25 @@ function looksLikeTestFailure(resultStr: string): boolean {
 }
 
 export function register(on: OnRegistrar): void {
-  on('tool.call', { tool: 'Write' }, async ($, e: any, next) => {
-    const filePath = e.input?.file_path as string
+  on('tool.call', { tool_name: 'Write' }, async ($, e: any, next) => {
+    const filePath = e.tool_input?.file_path as string
     if (filePath) {
       try { await snapshotFile(filePath) } catch { /* fail-open */ }
     }
     return next(e)
   })
 
-  on('tool.call', { tool: 'Edit' }, async ($, e: any, next) => {
-    const filePath = e.input?.file_path as string
+  on('tool.call', { tool_name: 'Edit' }, async ($, e: any, next) => {
+    const filePath = e.tool_input?.file_path as string
     if (filePath) {
       try { await snapshotFile(filePath) } catch { /* fail-open */ }
     }
     return next(e)
   })
 
-  on('tool.result', { tool: 'Bash' }, async ($, e: any, next) => {
+  on('tool.result', { tool_name: 'Bash' }, async ($, e: any, next) => {
     const result = await next(e)
-    const cmd = e.input?.command as string
+    const cmd = e.tool_input?.command as string
 
     if (!cmd || !isTestCommand(cmd) || !activeTx) return result
 

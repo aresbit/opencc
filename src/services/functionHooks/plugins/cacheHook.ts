@@ -51,8 +51,8 @@ function evictStale(): void {
 
 export function register(on: OnRegistrar): void {
   on('tool.call', async ($, e: any, next) => {
-    const tool = e.tool as string
-    const input = (e.input ?? {}) as Record<string, unknown>
+    const tool = (e.tool_name ?? e.tool) as string
+    const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
 
     // Invalidate cache on write operations
     if ((tool === 'Write' || tool === 'Edit') && input.file_path) {

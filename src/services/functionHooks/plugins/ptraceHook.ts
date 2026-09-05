@@ -218,7 +218,7 @@ export function register(on: OnRegistrar): void {
     const session = traceSessions.get(agentId)
     if (!session || session.state === 'detached') return next(e)
 
-    const toolName = (e.tool ?? 'unknown') as string
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
 
     // Check breakpoints
     if (session.breakpoints.has(toolName)) {
@@ -226,7 +226,7 @@ export function register(on: OnRegistrar): void {
 
       const capture: TraceCapture = {
         tool: toolName,
-        input: e.input,
+        input: e.tool_input ?? e.input,
         timestamp: Date.now(),
         breakpointHit: toolName,
       }
@@ -246,7 +246,7 @@ export function register(on: OnRegistrar): void {
 
     const capture: TraceCapture = {
       tool: toolName,
-      input: e.input,
+      input: e.tool_input ?? e.input,
       result,
       timestamp: Date.now(),
       elapsed: Date.now() - start,
@@ -270,8 +270,8 @@ export function register(on: OnRegistrar): void {
       const session = traceSessions.get(agentId)
       if (session) {
         addCapture(session, {
-          tool: e.tool ?? 'unknown',
-          input: e.input,
+          tool: e.tool_name ?? e.tool ?? 'unknown',
+          input: e.tool_input ?? e.input,
           error: String(e.error ?? 'unknown error'),
           timestamp: Date.now(),
         })

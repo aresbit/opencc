@@ -45,8 +45,8 @@ export function register(on: OnRegistrar): void {
   // After a tool call succeeds, record the pattern
   on('tool.result', async ($, e: any, next) => {
     const result = await next(e)
-    const tool = e.tool as string
-    const input = (e.input ?? {}) as Record<string, unknown>
+    const tool = (e.tool_name ?? e.tool) as string
+    const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
 
     if (tool && result != null) {
       const pattern = extractPattern(tool, input)
@@ -58,8 +58,8 @@ export function register(on: OnRegistrar): void {
 
   // Before a tool call, check if the pattern was previously approved
   on('tool.call', async ($, e: any, next) => {
-    const tool = e.tool as string
-    const input = (e.input ?? {}) as Record<string, unknown>
+    const tool = (e.tool_name ?? e.tool) as string
+    const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
 
     if (tool) {
       const pattern = extractPattern(tool, input)

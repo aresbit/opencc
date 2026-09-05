@@ -369,7 +369,7 @@ export function register(on: OnRegistrar): void {
 
     fireEvent({
       kind: 'tool_complete',
-      id: e.tool ?? 'unknown',
+      id: e.tool_name ?? e.tool ?? 'unknown',
       payload: result,
       firedAt: Date.now(),
     })

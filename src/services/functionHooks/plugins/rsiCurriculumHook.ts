@@ -224,8 +224,8 @@ export function register(on: OnRegistrar): void {
   on('tool.result', async ($, e: any, next) => {
     const result = await next(e)
 
-    const toolName = (e.tool ?? 'unknown') as string
-    const input = e.input
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
+    const input = e.tool_input ?? e.input
 
     const classification = classifyTask(toolName, input)
 
@@ -240,8 +240,8 @@ export function register(on: OnRegistrar): void {
   })
 
   on('tool.error', async ($, e: any, next) => {
-    const toolName = (e.tool ?? 'unknown') as string
-    const classification = classifyTask(toolName, e.input)
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
+    const classification = classifyTask(toolName, e.tool_input ?? e.input)
     updateTaskProfile(classification.type, false, classification.difficulty)
     return next(e)
   })

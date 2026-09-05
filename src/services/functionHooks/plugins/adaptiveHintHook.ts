@@ -78,10 +78,10 @@ function deriveHint(tool: string, input: Record<string, unknown>, error: unknown
 
 export function register(on: OnRegistrar): void {
   on('tool.call', async ($, e: any, next) => {
-    const tool = e.tool as string
+    const tool = (e.tool_name ?? e.tool) as string
     if (!tool) return next(e)
 
-    const input = (e.input ?? {}) as Record<string, unknown>
+    const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
     const sig = extractSignature(tool, input)
     const memory = failureMemory.get(sig)
 

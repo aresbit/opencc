@@ -243,7 +243,7 @@ export function register(on: OnRegistrar): void {
     const nsId = getAgentNamespace(agentId)
     if (nsId === ROOT_NS_ID) return next(e) // Root sees everything
 
-    const toolName = e.tool as string
+    const toolName = (e.tool_name ?? e.tool) as string
     if (!isToolVisible(nsId, toolName)) {
       return {
         deny: `Tool "${toolName}" is not mounted in agent namespace "${nsId}". ` +

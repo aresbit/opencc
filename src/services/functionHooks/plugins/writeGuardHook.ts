@@ -91,9 +91,9 @@ function quickLint(content: string, filePath: string): LintIssue[] {
 }
 
 export function register(on: OnRegistrar): void {
-  on('tool.call', { tool: 'Write' }, async ($, e: any, next) => {
-    const filePath = e.input?.file_path as string
-    const content = e.input?.content as string
+  on('tool.call', { tool_name: 'Write' }, async ($, e: any, next) => {
+    const filePath = e.tool_input?.file_path as string
+    const content = e.tool_input?.content as string
 
     if (!filePath || !content) return next(e)
     if (!GUARDED_EXTENSIONS.has(getExtension(filePath))) return next(e)
@@ -109,9 +109,9 @@ export function register(on: OnRegistrar): void {
     return next(e)
   })
 
-  on('tool.call', { tool: 'Edit' }, async ($, e: any, next) => {
-    const filePath = e.input?.file_path as string
-    const newString = e.input?.new_string as string
+  on('tool.call', { tool_name: 'Edit' }, async ($, e: any, next) => {
+    const filePath = e.tool_input?.file_path as string
+    const newString = e.tool_input?.new_string as string
 
     if (!filePath || !newString) return next(e)
     if (!GUARDED_EXTENSIONS.has(getExtension(filePath))) return next(e)

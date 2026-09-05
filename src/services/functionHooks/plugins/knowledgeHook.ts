@@ -92,10 +92,10 @@ function findRelatedFiles(pattern: string): string[] {
 
 export function register(on: OnRegistrar): void {
   // Index Grep results
-  on('tool.result', { tool: 'Grep' }, async ($, e: any, next) => {
+  on('tool.result', { tool_name: 'Grep' }, async ($, e: any, next) => {
     const result = await next(e)
 
-    const pattern = e.input?.pattern as string
+    const pattern = e.tool_input?.pattern as string
     if (pattern && result) {
       const files: string[] = []
       if (typeof result === 'string') {
@@ -118,10 +118,10 @@ export function register(on: OnRegistrar): void {
   })
 
   // Index Read results
-  on('tool.result', { tool: 'Read' }, async ($, e: any, next) => {
+  on('tool.result', { tool_name: 'Read' }, async ($, e: any, next) => {
     const result = await next(e)
 
-    const filePath = e.input?.file_path as string
+    const filePath = e.tool_input?.file_path as string
     if (filePath && result) {
       const content = typeof result === 'string'
         ? result
@@ -133,11 +133,11 @@ export function register(on: OnRegistrar): void {
   })
 
   // Enrich Grep calls with prior knowledge
-  on('tool.call', { tool: 'Grep' }, async ($, e: any, next) => {
-    const pattern = e.input?.pattern as string
+  on('tool.call', { tool_name: 'Grep' }, async ($, e: any, next) => {
+    const pattern = e.tool_input?.pattern as string
     if (pattern) {
       const related = findRelatedFiles(pattern)
-      if (related.length > 0 && !e.input?.path) {
+      if (related.length > 0 && !e.tool_input?.path) {
         // Attach hints as metadata (doesn't override user-specified path)
         e._knowledgeHint = related
       }

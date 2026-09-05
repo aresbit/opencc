@@ -74,7 +74,7 @@ export function register(on: OnRegistrar): void {
     if (typeof result === 'string') {
       const secrets = extractSecrets(result)
       if (secrets.length > 0) {
-        const source = `${e.tool ?? 'unknown'}(${String(e.input?.file_path ?? e.input?.command ?? '').slice(0, 60)})`
+        const source = `${e.tool_name ?? e.tool ?? 'unknown'}(${String(e.tool_input?.file_path ?? e.tool_input?.command ?? '').slice(0, 60)})`
         for (const secret of secrets) {
           if (taintedValues.size >= MAX_TAINTED) {
             const oldest = taintedValues.keys().next().value
@@ -90,10 +90,10 @@ export function register(on: OnRegistrar): void {
   })
 
   on('tool.call', async ($, e: any, next) => {
-    const tool = e.tool as string
+    const tool = (e.tool_name ?? e.tool) as string
     if (!EXFIL_TOOLS.has(tool) || taintedValues.size === 0) return next(e)
 
-    const input = e.input as Record<string, unknown> | undefined
+    const input = (e.tool_input ?? e.input) as Record<string, unknown> | undefined
     if (!input) return next(e)
 
     const serialized = JSON.stringify(input)

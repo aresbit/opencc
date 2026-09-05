@@ -244,8 +244,8 @@ export function register(on: OnRegistrar): void {
     }
 
     // Check distilled critic rules before high-risk actions
-    const toolName = (e.tool ?? 'unknown') as string
-    const criticResult = checkCriticRules(toolName, e.input)
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
+    const criticResult = checkCriticRules(toolName, e.tool_input ?? e.input)
     if (criticResult?.decision === 'deny') {
       return {
         deny: `Critic rule ${criticResult.rule.id}: ${criticResult.rule.reason}`,

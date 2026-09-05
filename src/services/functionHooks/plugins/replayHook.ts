@@ -53,7 +53,7 @@ export function register(on: OnRegistrar): void {
   on('tool.call', async ($, e: any, next) => {
     const seq = ++seqCounter
     const start = Date.now()
-    const tool = e.tool as string | undefined
+    const tool = (e.tool_name ?? e.tool) as string | undefined
 
     try {
       const result = await next(e)
@@ -62,7 +62,7 @@ export function register(on: OnRegistrar): void {
         timestamp: start,
         event: 'tool.call',
         tool,
-        inputSummary: summarize(e.input),
+        inputSummary: summarize(e.tool_input ?? e.input),
         resultSummary: summarize(result),
         duration: Date.now() - start,
       })
@@ -73,7 +73,7 @@ export function register(on: OnRegistrar): void {
         timestamp: start,
         event: 'tool.call',
         tool,
-        inputSummary: summarize(e.input),
+        inputSummary: summarize(e.tool_input ?? e.input),
         resultSummary: 'ERROR',
         duration: Date.now() - start,
         error: String(err).slice(0, 500),
@@ -85,7 +85,7 @@ export function register(on: OnRegistrar): void {
   on('tool.result', async ($, e: any, next) => {
     const seq = ++seqCounter
     const start = Date.now()
-    const tool = e.tool as string | undefined
+    const tool = (e.tool_name ?? e.tool) as string | undefined
 
     try {
       const result = await next(e)
@@ -94,7 +94,7 @@ export function register(on: OnRegistrar): void {
         timestamp: start,
         event: 'tool.result',
         tool,
-        inputSummary: summarize(e.input),
+        inputSummary: summarize(e.tool_input ?? e.input),
         resultSummary: summarize(result),
         duration: Date.now() - start,
       })
@@ -105,7 +105,7 @@ export function register(on: OnRegistrar): void {
         timestamp: start,
         event: 'tool.result',
         tool,
-        inputSummary: summarize(e.input),
+        inputSummary: summarize(e.tool_input ?? e.input),
         resultSummary: 'ERROR',
         duration: Date.now() - start,
         error: String(err).slice(0, 500),

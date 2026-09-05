@@ -199,11 +199,11 @@ export function register(on: OnRegistrar): void {
   // Intercept tool calls for sudo policy evaluation
   on('tool.call', async ($, e: any, next) => {
     const agentId = (e._agentId ?? 'main') as string
-    const toolName = (e.tool ?? 'unknown') as string
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
 
     // Determine resource from tool input
     let resource = toolName
-    const filePath = e.input?.file_path ?? e.input?.path
+    const filePath = e.tool_input?.file_path ?? e.tool_input?.path
     if (filePath) resource = String(filePath)
 
     // Determine operation from tool type
