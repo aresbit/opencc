@@ -165,8 +165,10 @@ export function register(on: OnRegistrar): void {
   on('tool.result', async ($, e: any, next) => {
     const result = await next(e)
 
-    const toolName = (e.tool ?? 'unknown') as string
-    const input = (e.input ?? {}) as Record<string, unknown>
+    // PreToolUse's hookInput carries tool_name/tool_input, not tool/input —
+    // matches the fix applied to dreamHook.ts/rsiSleepHook.ts/rsiAntibodyHook.ts.
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
+    const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
 
     const isError =
       result && typeof result === 'object' &&
@@ -238,8 +240,8 @@ export function register(on: OnRegistrar): void {
 
   // Track errors for sequence failure rate
   on('tool.error', async ($, e: any, next) => {
-    const toolName = (e.tool ?? 'unknown') as string
-    const input = (e.input ?? {}) as Record<string, unknown>
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
+    const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
 
     recentCalls.push({
       tool: toolName,

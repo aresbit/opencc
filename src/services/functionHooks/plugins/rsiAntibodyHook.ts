@@ -187,8 +187,11 @@ function matchAntibody(
 export function register(on: OnRegistrar): void {
   // Intercept tool calls — check antibodies before execution
   on('tool.call', async ($, e: any, next) => {
-    const toolName = (e.tool ?? 'unknown') as string
-    const input = e.input
+    // PreToolUse's hookInput carries tool_name/tool_input, not tool/input —
+    // e.tool/e.input fall back for callers that already normalized the
+    // shape, matching the fix applied to dreamHook.ts/rsiSleepHook.ts.
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
+    const input = e.tool_input ?? e.input
 
     const ab = matchAntibody(toolName, input)
     if (ab) {
@@ -206,7 +209,7 @@ export function register(on: OnRegistrar): void {
       }
 
       if (ab.guard.type === 'rewrite' && ab.guard.replacement) {
-        e.input = { ...input, ...ab.guard.replacement }
+        e.tool_input = { ...input, ...ab.guard.replacement }
         e._antibodyRewrite = ab.id
       }
 
@@ -221,9 +224,9 @@ export function register(on: OnRegistrar): void {
 
   // Capture tool errors — feed into failure tracking
   on('tool.error', async ($, e: any, next) => {
-    const toolName = (e.tool ?? 'unknown') as string
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
     const error = String(e.error ?? '')
-    const input = e.input
+    const input = e.tool_input ?? e.input
 
     recordFailure(toolName, input, error, e._contextHint)
 
@@ -234,13 +237,13 @@ export function register(on: OnRegistrar): void {
   on('tool.result', async ($, e: any, next) => {
     const result = await next(e)
 
-    const toolName = (e.tool ?? 'unknown') as string
+    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
 
     if (result && typeof result === 'object') {
       const r = result as Record<string, unknown>
       if (r.error || r.exitCode !== undefined && r.exitCode !== 0) {
         const errorStr = String(r.error ?? r.stderr ?? `exit code ${r.exitCode}`)
-        recordFailure(toolName, e.input, errorStr)
+        recordFailure(toolName, e.tool_input ?? e.input, errorStr)
       }
     }
 
