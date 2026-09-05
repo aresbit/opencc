@@ -123,6 +123,26 @@ export function buildCoreNouns(): Record<
       render: async (e: { component: string; props: unknown; surface?: string }) => {
         return { component: e.component, props: e.props }
       },
+      // Rendering is the one hookable capability that can lie to the user
+      // rather than just to the model — a wrapped <HookSlot> can make a
+      // denied action look like it succeeded, or render a leaked credential
+      // as ordinary output. These let an untrusted plugin's ui.slot.render /
+      // ui.press hooks be pulled without touching its other hooks (tool.call,
+      // session.end, ...), which keep running normally.
+      disable: async (e: { pluginId: string }) => {
+        const { disableUICapability } = await import('./uiDispatcher.js')
+        disableUICapability(e.pluginId)
+        return { disabled: e.pluginId }
+      },
+      enable: async (e: { pluginId: string }) => {
+        const { enableUICapability } = await import('./uiDispatcher.js')
+        enableUICapability(e.pluginId)
+        return { enabled: e.pluginId }
+      },
+      listDisabled: async () => {
+        const { listUIDisabledPlugins } = await import('./uiDispatcher.js')
+        return listUIDisabledPlugins()
+      },
     },
     fs: {
       read: async (e: { path: string }) => {

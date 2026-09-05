@@ -13,7 +13,9 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { useVoiceEnabled } from '../../hooks/useVoiceEnabled.js';
 import { Box, Text } from '../../ink.js';
 import { useClaudeAiLimits } from '../../services/claudeAiLimitsHook.js';
-import { calculateTokenWarningState } from '../../services/compact/autoCompact.js';
+import { calculateTokenWarningState, getAutoCompactThreshold } from '../../services/compact/autoCompact.js';
+import { getTotalCostUSD } from '../../bootstrap/state.js';
+import { HookSlot } from '../UIHookSlot.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
 import type { Message } from '../../types/message.js';
 import { getApiKeyHelperElapsedMs, getConfiguredApiKeyHelper, getSubscriptionType } from '../../utils/auth.js';
@@ -91,6 +93,16 @@ export function Notifications(t0) {
     t4 = $[4];
   }
   const isShowingCompactMessage = t4.isAboveWarningThreshold;
+  // Captured into a stably-named local rather than referenced from t4 at the
+  // render call site below — this file's React-compiler output reuses tN
+  // identifiers per position, not per logical value, so t4 is not safe to
+  // read again later in the function.
+  const contextGaugeProps = {
+    tokenUsage,
+    threshold: getAutoCompactThreshold(mainLoopModel),
+    percentLeft: t4.percentLeft,
+    costUSD: getTotalCostUSD(),
+  };
   const {
     status: ideStatus
   } = useIdeConnectionStatus(mcpClients);
@@ -319,6 +331,7 @@ function NotificationContent({
           </Text>
         </Box>}
       {!isBriefOnly && <TokenWarning tokenUsage={tokenUsage} model={mainLoopModel} />}
+      {!isBriefOnly && <HookSlot id="context-gauge" props={contextGaugeProps}>{null}</HookSlot>}
       {shouldShowAutoUpdater && <AutoUpdaterWrapper verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isAutoUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={!isShowingCompactMessage} />}
       {feature('VOICE_MODE') ? voiceEnabled && voiceError && <Box>
               <Text color="error" wrap="truncate">

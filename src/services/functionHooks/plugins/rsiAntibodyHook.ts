@@ -16,6 +16,7 @@
  */
 
 import type { OnRegistrar } from '../types.js'
+import { dispatchBestEffort } from '../dispatcher.js'
 import {
   addAntibody,
   findAntibody,
@@ -193,6 +194,12 @@ export function register(on: OnRegistrar): void {
     if (ab) {
       if (ab.guard.type === 'block') {
         ab.blockCount++
+        await dispatchBestEffort($, 'rsi.antibody.block', {
+          antibodyId: ab.id,
+          tool: toolName,
+          message: ab.guard.message,
+          blockCount: ab.blockCount,
+        })
         return {
           deny: ab.guard.message,
         }

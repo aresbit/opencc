@@ -3,12 +3,14 @@
  *
  * Registration order = nesting order (outermost first):
  *
- *   tuiView → plainLanguage → mount → sudo → ctxFork → ptrace → select →
- *   scheduler → replay → taintFirewall → mprotect → ipc →
+ *   tuiView → plainLanguage → mount → sudo → ctxFork → ptrace → thinkLoop →
+ *   select → scheduler → replay → taintFirewall → mprotect → ipc →
  *   transaction → retry → writeGuard → cache → compress → contextHandle →
  *   autoPermit → knowledge → jitSynthesis → adaptive →
  *   rsiConstitution → rsiAntibody → rsiCrystallize → rsiExperiment →
- *   rsiSleep → dream → rsiCurriculum → ⊥
+ *   rsiSleep → dream → rsiCurriculum →
+ *   uiContextGauge → uiSubagentDashboard → uiGitStatus → uiFold →
+ *   uiRsiHeartbeat → ⊥
  *
  * Design rationale (following OS-kernel analogy):
  *
@@ -28,6 +30,17 @@
  * - autoPermit: observational — marks approved patterns
  * - knowledge: observational — indexes findings
  * - adaptive: innermost — learns from failures at the bottom
+ *
+ * UI ring — synchronous ui.slot.render / ui.press hooks, dispatched by
+ * uiDispatcher.ts (not dispatcher.ts) from inside React render. None of
+ * these touch tool.call/session.end/etc., so their order relative to the
+ * plugins above is irrelevant; they only compete with each other, and each
+ * owns a distinct slot id:
+ * - uiContextGauge: renders "context-gauge" — token/cost watermark bar
+ * - uiSubagentDashboard: renders "subagent-dashboard" — running-agent grid
+ * - uiGitStatus: renders "git-status" — branch/uncommitted/background count
+ * - uiFold: renders "tool-result" — height-clamps oversized tool output
+ * - uiRsiHeartbeat: renders "rsi-heartbeat" + toasts on antibody/crystal events
  */
 
 import { registry } from '../registry.js'
@@ -61,6 +74,11 @@ import { register as registerRsiExperiment } from './rsiExperimentHook.js'
 import { register as registerRsiSleep } from './rsiSleepHook.js'
 import { register as registerRsiCurriculum } from './rsiCurriculumHook.js'
 import { register as registerDream } from './dreamHook.js'
+import { register as registerUiContextGauge } from './uiContextGaugeHook.js'
+import { register as registerUiSubagentDashboard } from './uiSubagentDashboardHook.js'
+import { register as registerUiGitStatus } from './uiGitStatusHook.js'
+import { register as registerUiFold } from './uiFoldHook.js'
+import { register as registerUiRsiHeartbeat } from './uiRsiHeartbeatHook.js'
 
 let registered = false
 
@@ -100,6 +118,12 @@ export function registerBuiltinPlugins(): void {
     { name: 'rsiSleep', id: 'builtin:rsiSleep', register: registerRsiSleep },
     { name: 'dream', id: 'builtin:dream', register: registerDream },
     { name: 'rsiCurriculum', id: 'builtin:rsiCurriculum', register: registerRsiCurriculum },
+    // UI ring
+    { name: 'uiContextGauge', id: 'builtin:uiContextGauge', register: registerUiContextGauge },
+    { name: 'uiSubagentDashboard', id: 'builtin:uiSubagentDashboard', register: registerUiSubagentDashboard },
+    { name: 'uiGitStatus', id: 'builtin:uiGitStatus', register: registerUiGitStatus },
+    { name: 'uiFold', id: 'builtin:uiFold', register: registerUiFold },
+    { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat },
   ]
 
   for (const plugin of plugins) {
@@ -141,6 +165,11 @@ export function resetBuiltinPlugins(): void {
     'builtin:rsiSleep',
     'builtin:dream',
     'builtin:rsiCurriculum',
+    'builtin:uiContextGauge',
+    'builtin:uiSubagentDashboard',
+    'builtin:uiGitStatus',
+    'builtin:uiFold',
+    'builtin:uiRsiHeartbeat',
   ]) {
     registry.removePlugin(id)
   }
@@ -414,3 +443,30 @@ export {
   type ThinkTrace,
   type ReflectResult,
 } from './thinkLoopHook.js'
+
+// ui.contextGauge — token/cost watermark bar
+export type { ContextGaugeProps } from './uiContextGaugeHook.js'
+
+// ui.subagentDashboard — running-agent status grid
+export type { SubagentDashboardProps } from './uiSubagentDashboardHook.js'
+
+// ui.gitStatus — branch/uncommitted/background-task bar
+export {
+  getCachedGitStatus,
+  clearUiGitStatus,
+  type GitStatusProps,
+} from './uiGitStatusHook.js'
+
+// ui.fold — smart folding of oversized tool output
+export {
+  isFoldRevealed,
+  setFoldRevealed,
+  type ToolResultFoldProps,
+} from './uiFoldHook.js'
+
+// ui.rsiHeartbeat — antibody-block / crystallize toasts + status icon
+export {
+  getCrystalCount,
+  getLastAntibodyBlock,
+  clearRsiHeartbeat,
+} from './uiRsiHeartbeatHook.js'

@@ -25,6 +25,7 @@ export type FunctionHookEvent =
   | 'permission.request'
   | 'permission.denied'
   | 'ui.render'
+  | 'ui.slot.render'
   | 'ui.press'
   | 'ui.log'
   | 'config.change'

@@ -15,7 +15,8 @@
  * tool results but doesn't intercept execution.
  */
 
-import type { OnRegistrar } from '../types.js'
+import type { EngineInterface, OnRegistrar } from '../types.js'
+import { dispatchBestEffort } from '../dispatcher.js'
 import {
   addCrystal,
   getCrystals,
@@ -124,7 +125,7 @@ function extractPrechecks(
   return prechecks
 }
 
-function tryCrystallize(): Crystal | null {
+function tryCrystallize($: EngineInterface): Crystal | null {
   for (const [fp, candidate] of sequenceCandidates) {
     if (candidate.occurrences < CRYSTALLIZATION_THRESHOLD) continue
 
@@ -146,6 +147,11 @@ function tryCrystallize(): Crystal | null {
     )
 
     sequenceCandidates.delete(fp)
+    void dispatchBestEffort($, 'rsi.crystal.crystallize', {
+      name: crystal.name,
+      steps: crystal.sequence.length,
+      successRate: crystal.successRate,
+    })
     return crystal
   }
 
@@ -224,7 +230,7 @@ export function register(on: OnRegistrar): void {
       }
 
       // Try to crystallize
-      tryCrystallize()
+      tryCrystallize($)
     }
 
     return result

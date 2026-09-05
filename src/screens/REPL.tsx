@@ -10,6 +10,10 @@ import { tmpdir } from 'os';
 import figures from 'figures';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- / n N Esc [ v are bare letters in transcript modal context, same class as g/G/j/k in ScrollKeybindingHandler
 import { useInput } from '../ink.js';
+import { HookSlot } from '../components/UIHookSlot.js';
+import { UIPressBridge } from '../components/UIPressBridge.js';
+import { ToastBridge } from '../components/UIToastBridge.js';
+import { isBackgroundTask } from '../tasks/types.js';
 import { useSearchInput } from '../hooks/useSearchInput.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { useSearchHighlight } from '../ink/hooks/use-search-highlight.js';
@@ -4642,6 +4646,8 @@ export function REPL({
   // the 30-cap dump branch stays unwrapped for native terminal scrollback.
   const mainReturn = <KeybindingSetup>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={terminalTitle} disabled={titleDisabled} noPrefix={showStatusInTerminalTab} />
+      <UIPressBridge />
+      <ToastBridge />
       <GlobalKeybindingHandlers {...globalKeybindingProps} />
       {feature('VOICE_MODE') ? <VoiceKeybindingHandler voiceHandleKeyEvent={voice.handleKeyEvent} stripTrailing={voice.stripTrailing} resetAnchor={voice.resetAnchor} isActive={!toolJSX?.isLocalJSXCommand} /> : null}
       <CommandKeybindingHandlers onSubmit={onSubmit} isActive={!toolJSX?.isLocalJSXCommand} />
@@ -4678,6 +4684,8 @@ export function REPL({
                   </Box>}
               {("external" as string) === 'ant' && <TungstenLiveMonitor />}
               {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
+              <HookSlot id="subagent-dashboard" props={{ tasks }}>{null}</HookSlot>
+              <HookSlot id="git-status" props={{ backgroundTaskCount: count(Object.values(tasks), t => isBackgroundTask(t)) }}>{null}</HookSlot>
               <Box flexGrow={1} />
               {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} />}
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}

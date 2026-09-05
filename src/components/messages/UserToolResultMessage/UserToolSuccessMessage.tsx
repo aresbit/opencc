@@ -10,6 +10,7 @@ import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierAppro
 import type { buildMessageLookups } from '../../../utils/messages.js';
 import { MessageResponse } from '../../MessageResponse.js';
 import { HookProgressMessage } from '../HookProgressMessage.js';
+import { HookSlot } from '../../UIHookSlot.js';
 type Props = {
   message: NormalizedUserMessage;
   lookups: ReturnType<typeof buildMessageLookups>;
@@ -82,9 +83,13 @@ export function UserToolSuccessMessage({
   // so MarkdownTable's SAFETY_MARGIN=4 (tuned for the assistant-text 2-col
   // dot gutter) holds — otherwise tables wrap their box-drawing chars.
   const rendersAsAssistantText = tool.userFacingName(undefined) === '';
+  // contentLength is a cheap proxy for "how much text is this" — Ink gives
+  // no pre-render line count for arbitrary JSX and tool-result shapes vary
+  // too much to parse generically, so the fold hook decides purely off size.
+  const contentLength = JSON.stringify(toolResult).length;
   return <Box flexDirection="column">
       <Box flexDirection="column" width={rendersAsAssistantText ? undefined : width}>
-        {renderedMessage}
+        <HookSlot id="tool-result" props={{ toolUseID, contentLength }}>{renderedMessage}</HookSlot>
         {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
                 <Text dimColor>
                   <Text color="success">{figures.tick}</Text>

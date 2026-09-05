@@ -301,3 +301,25 @@ export {
   type ThinkTrace,
   type ReflectResult,
 } from './plugins/thinkLoopHook.js'
+
+// UI-layer algebraic-effect hooks — synchronous ui.slot.render / ui.press,
+// dispatched from inside React render (see uiDispatcher.ts, not dispatcher.ts)
+export {
+  disableUICapability,
+  enableUICapability,
+  isUICapabilityDisabled,
+  listUIDisabledPlugins,
+  dispatchUISync,
+  requestToast,
+  subscribeToasts,
+  bumpUIEpoch,
+  subscribeUIEpoch,
+  getUIEpoch,
+  onAsyncUIHookWarning,
+  type ToastRequest,
+} from './uiDispatcher.js'
+export { getCachedGitStatus, clearUiGitStatus, type GitStatusProps } from './plugins/uiGitStatusHook.js'
+export { isFoldRevealed, setFoldRevealed, type ToolResultFoldProps } from './plugins/uiFoldHook.js'
+export { getCrystalCount, getLastAntibodyBlock, clearRsiHeartbeat } from './plugins/uiRsiHeartbeatHook.js'
+export type { ContextGaugeProps } from './plugins/uiContextGaugeHook.js'
+export type { SubagentDashboardProps } from './plugins/uiSubagentDashboardHook.js'

@@ -192,3 +192,25 @@ export async function dispatchWithDefault<E, R>(
   const wrappedDefault: HookFn<E, R> = (_$, e2, _next) => defaultHandler(e2)
   return dispatch($, event, e, wrappedDefault)
 }
+
+/**
+ * Raise a side-channel event a plugin doesn't own the outcome of — a
+ * notification, not a decision. Unlike dispatch(), a hookless event here is
+ * not an error: most of the time nobody is listening (no UI toast plugin
+ * mounted, say), and that must be silent rather than throw ⊥ into whatever
+ * unrelated code path triggered the notice. Any other failure (a listening
+ * hook actually throwing) still propagates — swallowing that would hide a
+ * real plugin bug behind "nobody was listening anyway".
+ */
+export async function dispatchBestEffort<E>(
+  $: EngineInterface,
+  event: FunctionHookEvent | string,
+  e: E,
+): Promise<void> {
+  const identity: HookFn<E, E> = (_$, e2, _next) => e2
+  try {
+    await dispatch($, event, e, identity)
+  } catch (error) {
+    if (!(error instanceof HookChainBottomError)) throw error
+  }
+}
