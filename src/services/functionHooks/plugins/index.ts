@@ -6,7 +6,8 @@
  *   perfTelescopy → tuiView → plainLanguage → mount → mcpBroker → sudo →
  *   ctxFork → ptrace → thinkLoop → select → scheduler → replay → taintFirewall →
  *   mprotect → ipc → transaction → retry → writeGuard → cache → compress →
- *   contextHandle → autoPermit → knowledge → jitSynthesis → adaptive →
+ *   contextShunt → contextHandle → autoPermit → knowledge → jitSynthesis →
+ *   adaptive →
  *   rsiConstitution → rsiAntibody → rsiCrystallize → rsiExperiment →
  *   rsiSleep → dream → rsiCurriculum →
  *   uiContextGauge → uiSubagentDashboard → uiGitStatus → uiFold →
@@ -32,7 +33,11 @@
  * - writeGuard: rejects bad writes before caching
  * - cache: serves cached results (stores post-compress/handle values)
  * - compress: lossy truncation for moderate-sized results (12K+)
- * - contextHandle: lossless handle-ization for large results (16K+)
+ * - contextShunt: replaces contextHandle's preview with a worker-model
+ *   summary so the payload never enters context (OFF by default — it is the
+ *   only transform here that calls a model)
+ * - contextHandle: lossless handle-ization for large results (16K+), on
+ *   tool.content — the event whose resume value is what the model sees
  * - autoPermit: observational — marks approved patterns
  * - knowledge: observational — indexes findings
  * - adaptive: innermost — learns from failures at the bottom
@@ -59,6 +64,7 @@ import { register as registerWriteGuard } from './writeGuardHook.js'
 import { register as registerCache } from './cacheHook.js'
 import { register as registerCompress } from './compressHook.js'
 import { register as registerContextHandle } from './contextHandleHook.js'
+import { register as registerContextShunt } from './contextShuntHook.js'
 import { register as registerAutoPermit } from './autoPermitHook.js'
 import { register as registerKnowledge } from './knowledgeHook.js'
 import { register as registerAdaptive } from './adaptiveHintHook.js'
@@ -121,6 +127,11 @@ export function registerBuiltinPlugins(): void {
     { name: 'writeGuard', id: 'builtin:writeGuard', register: registerWriteGuard },
     { name: 'cache', id: 'builtin:cache', register: registerCache },
     { name: 'compress', id: 'builtin:compress', register: registerCompress },
+    // contextShunt wraps contextHandle: contextHandle turns a large result
+    // into "[handle:…] + preview", and contextShunt upgrades that preview
+    // into a worker-model summary. Registration order = nesting order, so
+    // shunt must come first to see handle-ized output from next(e).
+    { name: 'contextShunt', id: 'builtin:contextShunt', register: registerContextShunt },
     { name: 'contextHandle', id: 'builtin:contextHandle', register: registerContextHandle },
     { name: 'autoPermit', id: 'builtin:autoPermit', register: registerAutoPermit },
     { name: 'knowledge', id: 'builtin:knowledge', register: registerKnowledge },
@@ -174,6 +185,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:writeGuard',
     'builtin:cache',
     'builtin:compress',
+    'builtin:contextShunt',
     'builtin:contextHandle',
     'builtin:autoPermit',
     'builtin:knowledge',
@@ -206,7 +218,19 @@ export { isAutoPermitted, getApprovedCount, clearApproved } from './autoPermitHo
 export { queryFiles, getRecentFiles, getFileSymbols, getStats as getKnowledgeStats, clearKnowledge } from './knowledgeHook.js'
 
 // Context handles (virtual memory)
-export { deref, derefFull, listHandles, getHandleCount, getHandleUtilization, clearHandles } from './contextHandleHook.js'
+export { deref, derefFull, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles } from './contextHandleHook.js'
+
+// Context shunt — worker-model summary replaces the payload in context
+export {
+  getShuntConfig,
+  setShuntConfig,
+  resetShuntConfig,
+  getShuntStats,
+  setShuntSummarizer,
+  clearShunt,
+  type ShuntConfig,
+  type ShuntSummarizer,
+} from './contextShuntHook.js'
 
 // Taint firewall
 export { getTaintedCount, isTainted, clearTainted } from './taintFirewallHook.js'

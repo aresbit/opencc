@@ -14,6 +14,7 @@ import type { HookEvent } from 'src/entrypoints/agentSdkTypes.js'
 export type FunctionHookEvent =
   | 'tool.call'
   | 'tool.result'
+  | 'tool.content'
   | 'tool.error'
   | 'prompt.submit'
   | 'session.start'

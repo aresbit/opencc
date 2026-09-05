@@ -946,6 +946,37 @@ export function createToolProxy(
     return _kvCacheProxy
   }
 
+  // Lazy-load context-shunt proxy — worker-model summaries in place of payloads
+  let _shuntProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getShuntProxy() {
+    if (_shuntProxy) return _shuntProxy
+    const load = () => import('../../services/functionHooks/plugins/contextShuntHook.js')
+    _shuntProxy = {
+      async enable() {
+        return (await load()).setShuntConfig({ enabled: true })
+      },
+      async disable() {
+        return (await load()).setShuntConfig({ enabled: false })
+      },
+      async config(partial?: unknown) {
+        const m = await load()
+        return partial
+          ? m.setShuntConfig(partial as Parameters<typeof m.setShuntConfig>[0])
+          : m.getShuntConfig()
+      },
+      async stats() {
+        return (await load()).getShuntStats()
+      },
+      async reset() {
+        const m = await load()
+        m.resetShuntConfig()
+        m.clearShunt()
+        return { ok: true }
+      },
+    }
+    return _shuntProxy
+  }
+
   let _prove2meProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
   function getProve2MeProxy() {
     if (_prove2meProxy) return _prove2meProxy
@@ -1018,6 +1049,7 @@ export function createToolProxy(
     get perf() { return getPerfProxy() },
     get mcpBroker() { return getMcpBrokerProxy() },
     get kvCache() { return getKvCacheProxy() },
+    get shunt() { return getShuntProxy() },
     get prove2me() { return getProve2MeProxy() },
     _callLog: callLog,
   }
@@ -1224,6 +1256,8 @@ multi-tool sequence detected from your usage patterns).
 Note: MCP connections are already a process-wide singleton (one connection per server, shared by every subagent) regardless of policy — 'singleton' here adds serialization on top of that sharing, it does not change how many connections exist. 'per-session'/'isolate' can only deny a conflicting call; a hook cannot route a call to a different connection, so true per-connection isolation isn't achievable at this layer.
 
 \`$.kvCache.stats()\` — prompt-cache hit rate for this session (cacheReadInputTokens, cacheCreationInputTokens, hitRate) from real API usage data. Repeated additionalContext from a UserPromptSubmit hook is auto-deduped to a short reference after the first occurrence.
+
+\`$.shunt.enable()\` / \`$.shunt.disable()\` / \`$.shunt.config({minChars, tools, timeoutMs})\` / \`$.shunt.stats()\` — context shunt. When enabled, a tool result over ~16K chars is sent to a cheap worker model and only its summary enters context; the full text stays retrievable with exact bytes via \`deref(handle, start, end)\`. stats() reports charsSaved — characters that never entered context (and so are never re-sent on later turns). OFF by default: it costs a worker call per large result and the summary is lossy, unlike the preview it replaces.
 
 \`$.prove2me.analyze(sourceCode, sourceFile?, moduleName?)\` — extract Lean 4 theorem statements from code.
 \`$.prove2me.addTheorem(theoremId, lean4Statement, naturalLanguage, dependencies?, tags?)\` — add a theorem to the DAG.

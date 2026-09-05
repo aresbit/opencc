@@ -85,11 +85,22 @@ function summarizeInput(input: Record<string, unknown>): string {
 }
 
 export function register(on: OnRegistrar): void {
-  on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
+  // 'tool.content', not 'tool.result'. This hook was originally written on
+  // tool.result and its return value was silently discarded: tool.result is
+  // bridged from PostToolUse, which cannot rewrite a tool result (bridge.ts
+  // only acts on object results with specific keys, AggregatedHookResult has
+  // no content-replacement field, and for non-MCP tools the result message is
+  // built before PostToolUse even runs). So handle-ization stored content in
+  // the Map and narrowed nothing. tool.content is dispatched at the one point
+  // where the resume value really becomes what the model sees — see
+  // ../toolContent.ts.
+  on('tool.content', async ($, e: any, next) => {
+    const event = await next(e)
+    const result =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
 
     if (typeof result !== 'string' || result.length <= THRESHOLD) {
-      return result
+      return event
     }
 
     evictOldest()
@@ -131,6 +142,19 @@ export function deref(handle: string, startLine = 0, endLine?: number): string |
   entry.lastDerefAt = Date.now()
   const end = endLine ?? entry.lines.length
   return entry.lines.slice(startLine, end).join('\n')
+}
+
+/**
+ * Read a handle's content WITHOUT counting it as a dereference.
+ *
+ * For internal machinery that needs the bytes but isn't the model consuming
+ * them — contextShuntHook summarizing the content, for instance. Counting
+ * those would make getHandleUtilization() report content as "used" when
+ * nothing the model asked for ever touched it, which is exactly the
+ * measurement that function exists to keep honest.
+ */
+export function peekHandle(handle: string): string | null {
+  return handleStore.get(handle)?.content ?? null
 }
 
 export function derefFull(handle: string): string | null {

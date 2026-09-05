@@ -57,7 +57,23 @@ export {
   getStats as getKnowledgeStats,
   clearKnowledge,
 } from './plugins/knowledgeHook.js'
-export { deref, derefFull, listHandles, getHandleCount, getHandleUtilization, clearHandles } from './plugins/contextHandleHook.js'
+export { deref, derefFull, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles } from './plugins/contextHandleHook.js'
+
+// Context shunt — worker-model summary replaces the payload in context
+export {
+  getShuntConfig,
+  setShuntConfig,
+  resetShuntConfig,
+  getShuntStats,
+  setShuntSummarizer,
+  clearShunt,
+  type ShuntConfig,
+  type ShuntSummarizer,
+} from './plugins/contextShuntHook.js'
+
+// tool.content — the transform point where a hook's resume value becomes
+// what the model actually sees (see plugins/contextShuntHook.js header).
+export { applyToolContentHooks, type ToolContentEvent } from './toolContent.js'
 export { getTaintedCount, isTainted, clearTainted } from './plugins/taintFirewallHook.js'
 export { getActiveTransaction, rollbackManual, clearTransaction } from './plugins/transactionHook.js'
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './plugins/replayHook.js'

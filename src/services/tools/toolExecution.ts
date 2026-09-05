@@ -8,6 +8,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from 'src/services/analytics/index.js'
+import { applyToolContentHooks } from '../functionHooks/toolContent.js'
 import {
   extractMcpToolDetails,
   extractSkillName,
@@ -1416,8 +1417,24 @@ async function checkPermissionsAndCallTool(
           )
         : await processToolResultBlock(tool, toolUseResult, toolUseID)
 
+      // Let `tool.content` hooks narrow what actually reaches the model.
+      // This is the one chokepoint every tool's output passes through (MCP
+      // and non-MCP alike) while it is still rewritable — PostToolUse runs
+      // after the message below is already built, so it cannot do this.
+      // Fail-open: applyToolContentHooks returns the original block on any
+      // error, so a tool result can never be lost to an optimization.
+      const shuntedToolResultBlock = await applyToolContentHooks(
+        toolResultBlock,
+        {
+          tool_name: tool.name,
+          tool_input: (processedInput ?? {}) as Record<string, unknown>,
+          tool_use_id: toolUseID,
+          agent_id: toolUseContext.agentId,
+        },
+      )
+
       // Build content blocks - tool result first, then optional feedback
-      const contentBlocks: ContentBlockParam[] = [toolResultBlock]
+      const contentBlocks: ContentBlockParam[] = [shuntedToolResultBlock]
       // Add accept feedback if user provided feedback when approving
       // (acceptFeedback only exists on PermissionAllowDecision, which is guaranteed here)
       if (
