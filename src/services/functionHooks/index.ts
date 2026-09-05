@@ -219,8 +219,11 @@ export {
   getLastSleepReport,
   getSleepHistory,
   getSessionEventCount,
+  getSessionEvents,
+  getSessionEventsByType,
   getSleepStats,
   clearSleep,
+  type SessionEvent,
 } from './plugins/rsiSleepHook.js'
 
 // RSI curriculum — self-generated training
@@ -252,6 +255,21 @@ export {
   clearConstitution,
 } from './plugins/rsiConstitutionHook.js'
 
+// dream — memory consolidation (replaces legacy autoDream)
+export {
+  triggerDream,
+  getLastDream,
+  getDreamHistory,
+  getDreamStats,
+  getRecentCalls as getDreamRecentCalls,
+  getActivity as getDreamActivity,
+  getDreamConfig,
+  setDreamConfig,
+  resetDreamConfig,
+  clearDream,
+  type ToolCallRecord,
+} from './plugins/dreamHook.js'
+
 // scheduler — model routing + budget limits
 export {
   route as schedulerRoute,
@@ -267,3 +285,19 @@ export {
   getStats as getSchedulerStats,
   clearScheduler,
 } from './plugins/schedulerHook.js'
+
+// thinkLoop — eval/apply interpreter for deliberative reasoning
+export {
+  loop as thinkLoop,
+  step as thinkStep,
+  reflect as thinkReflect,
+  getTraces as getThinkTraces,
+  getResults as getThinkResults,
+  getStats as getThinkStats,
+  clearThinkLoop,
+  type ThinkProgram,
+  type ThinkExpr,
+  type ThinkResult,
+  type ThinkTrace,
+  type ReflectResult,
+} from './plugins/thinkLoopHook.js'

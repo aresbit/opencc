@@ -558,6 +558,14 @@ export function buildCoreNouns(): Record<
         const { getSleepStats } = await import('./plugins/rsiSleepHook.js')
         return getSleepStats()
       },
+      events: async (opts?: { type?: string; limit?: number; offset?: number }) => {
+        const { getSessionEvents } = await import('./plugins/rsiSleepHook.js')
+        return getSessionEvents(opts as any)
+      },
+      eventsByType: async () => {
+        const { getSessionEventsByType } = await import('./plugins/rsiSleepHook.js')
+        return getSessionEventsByType()
+      },
     },
     curriculum: {
       profile: async () => {
@@ -622,6 +630,62 @@ export function buildCoreNouns(): Record<
       stats: async () => {
         const { getConstitutionStats } = await import('./plugins/rsiConstitutionHook.js')
         return getConstitutionStats()
+      },
+    },
+    dream: {
+      trigger: async () => {
+        const { triggerDream } = await import('./plugins/dreamHook.js')
+        return triggerDream()
+      },
+      last: async () => {
+        const { getLastDream } = await import('./plugins/dreamHook.js')
+        return getLastDream()
+      },
+      history: async () => {
+        const { getDreamHistory } = await import('./plugins/dreamHook.js')
+        return getDreamHistory()
+      },
+      stats: async () => {
+        const { getDreamStats } = await import('./plugins/dreamHook.js')
+        return getDreamStats()
+      },
+      configure: async (e: { minToolCalls?: number; minEventDelta?: number; cooldownMs?: number; enabled?: boolean; autoConsolidate?: boolean }) => {
+        const { setConfig } = await import('./plugins/dreamHook.js')
+        return setConfig(e)
+      },
+      recentCalls: async (opts?: { tool?: string; limit?: number; offset?: number }) => {
+        const { getRecentCalls } = await import('./plugins/dreamHook.js')
+        return getRecentCalls(opts)
+      },
+      activity: async () => {
+        const { getActivity } = await import('./plugins/dreamHook.js')
+        return getActivity()
+      },
+    },
+    think: {
+      loop: async (e: { program: import('./plugins/thinkLoopHook.js').ThinkProgram; externalApply?: (fn: string, args: unknown[]) => Promise<unknown> }) => {
+        const { loop } = await import('./plugins/thinkLoopHook.js')
+        return loop(e.program, e.externalApply)
+      },
+      step: async (e: { expr: import('./plugins/thinkLoopHook.js').ThinkExpr; env?: Record<string, unknown>; externalApply?: (fn: string, args: unknown[]) => Promise<unknown> }) => {
+        const { step } = await import('./plugins/thinkLoopHook.js')
+        return step(e.expr, e.env, e.externalApply)
+      },
+      reflect: async (e: { result: unknown; criteria: string }) => {
+        const { reflect } = await import('./plugins/thinkLoopHook.js')
+        return reflect(e.result, e.criteria)
+      },
+      traces: async (e: { programId?: string; stepId?: string; limit?: number; offset?: number }) => {
+        const { getTraces } = await import('./plugins/thinkLoopHook.js')
+        return getTraces(e)
+      },
+      results: async (e: { limit?: number }) => {
+        const { getResults } = await import('./plugins/thinkLoopHook.js')
+        return getResults(e)
+      },
+      stats: async () => {
+        const { getStats } = await import('./plugins/thinkLoopHook.js')
+        return getStats()
       },
     },
     budget: {

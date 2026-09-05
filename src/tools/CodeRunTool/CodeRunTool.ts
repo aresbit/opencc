@@ -637,6 +637,14 @@ export function createToolProxy(
         const { getSleepStats } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
         return getSleepStats()
       },
+      async events(opts?: { type?: string; limit?: number; offset?: number }) {
+        const { getSessionEvents } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
+        return getSessionEvents(opts as any)
+      },
+      async eventsByType() {
+        const { getSessionEventsByType } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
+        return getSessionEventsByType()
+      },
     }
     return _sleepProxy
   }
@@ -716,6 +724,119 @@ export function createToolProxy(
     return _constitutionProxy
   }
 
+  let _dreamProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getDreamProxy() {
+    if (_dreamProxy) return _dreamProxy
+    _dreamProxy = {
+      async trigger() {
+        const { triggerDream } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return triggerDream()
+      },
+      async last() {
+        const { getLastDream } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getLastDream()
+      },
+      async history() {
+        const { getDreamHistory } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getDreamHistory()
+      },
+      async stats() {
+        const { getDreamStats } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getDreamStats()
+      },
+      async configure(opts: unknown) {
+        const { setConfig } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return setConfig(opts as any)
+      },
+      async recentCalls(opts?: { tool?: string; limit?: number; offset?: number }) {
+        const { getRecentCalls } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getRecentCalls(opts)
+      },
+      async activity() {
+        const { getActivity } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getActivity()
+      },
+    }
+    return _dreamProxy
+  }
+
+  // Lazy-load thinkLoop proxy for deliberative reasoning loops
+  let _thinkProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getThinkProxy() {
+    if (_thinkProxy) return _thinkProxy
+    _thinkProxy = {
+      async loop(program: unknown) {
+        const { loop } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return loop(program as any)
+      },
+      async step(expr: unknown, env?: unknown) {
+        const { step } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return step(expr as any, env as any)
+      },
+      async reflect(result: unknown, criteria: unknown) {
+        const { reflect } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return reflect(result, String(criteria))
+      },
+      async traces(opts?: { programId?: string; stepId?: string; limit?: number; offset?: number }) {
+        const { getTraces } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return getTraces(opts)
+      },
+      async results(opts?: { limit?: number }) {
+        const { getResults } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return getResults(opts)
+      },
+      async stats() {
+        const { getStats } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return getStats()
+      },
+    }
+    return _thinkProxy
+  }
+
+  let _prove2meProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getProve2MeProxy() {
+    if (_prove2meProxy) return _prove2meProxy
+    _prove2meProxy = {
+      async analyze(sourceCode: unknown, sourceFile?: unknown, moduleName?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'analyze', sourceCode: sourceCode as string, sourceFile: sourceFile as string, moduleName: moduleName as string }, context, canUseTool, parentMessage)
+      },
+      async addTheorem(theoremId: unknown, lean4Statement: unknown, naturalLanguage: unknown, dependencies?: unknown, tags?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'add-theorem', theoremId: theoremId as string, lean4Statement: lean4Statement as string, naturalLanguage: naturalLanguage as string, dependencies: dependencies as string[], tags: tags as string[] }, context, canUseTool, parentMessage)
+      },
+      async submitProof(theoremId: unknown, lean4Code: unknown, author?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'submit-proof', theoremId: theoremId as string, lean4Code: lean4Code as string, author: author as string }, context, canUseTool, parentMessage)
+      },
+      async status() {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'status' }, context, canUseTool, parentMessage)
+      },
+      async search(query: unknown, limit?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'search', query: query as string, limit: limit as number }, context, canUseTool, parentMessage)
+      },
+      async attackable() {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'attackable' }, context, canUseTool, parentMessage)
+      },
+      async generate(separated?: unknown, theoremId?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'generate', separated: separated as boolean, theoremId: theoremId as string }, context, canUseTool, parentMessage)
+      },
+      async export(outputDir?: unknown) {
+        const { Prove2MeTool: p2m } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return p2m.call({ action: 'export', outputDir: outputDir as string }, context, canUseTool, parentMessage)
+      },
+      async dagStats() {
+        const { getDAGStats } = await import('../Prove2MeTool/Prove2MeTool.js')
+        return getDAGStats()
+      },
+    }
+    return _prove2meProxy
+  }
+
   return {
     tool: toolProxy,
     get recipe() { return getRecipeProxy() },
@@ -739,8 +860,35 @@ export function createToolProxy(
     get sleep() { return getSleepProxy() },
     get curriculum() { return getCurriculumProxy() },
     get constitution() { return getConstitutionProxy() },
+    get dream() { return getDreamProxy() },
+    get think() { return getThinkProxy() },
+    get prove2me() { return getProve2MeProxy() },
     _callLog: callLog,
   }
+}
+
+const MAX_RESOLVE_DEPTH = 8
+
+async function deepResolve(value: unknown, depth = 0): Promise<unknown> {
+  if (depth > MAX_RESOLVE_DEPTH) return value
+
+  if (value instanceof Promise || (value && typeof (value as any).then === 'function')) {
+    return deepResolve(await value, depth + 1)
+  }
+
+  if (Array.isArray(value)) {
+    return Promise.all(value.map(v => deepResolve(v, depth + 1)))
+  }
+
+  if (value !== null && typeof value === 'object' && value.constructor === Object) {
+    const resolved: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) {
+      resolved[k] = await deepResolve(v, depth + 1)
+    }
+    return resolved
+  }
+
+  return value
 }
 
 export const CodeRunTool = buildTool({
@@ -855,6 +1003,8 @@ multi-tool sequence detected from your usage patterns).
 \`$.sleep.lastReport()\` — get the most recent sleep consolidation report.
 \`$.sleep.history()\` — get all sleep reports from this session.
 \`$.sleep.stats()\` — get sleep system stats (generation, cycles, improvements).
+\`$.sleep.events({type?, limit?, offset?})\` — dump raw session event log. type: 'tool_call'|'tool_result'|'tool_error'|'subagent'|'prompt'. Returns [{type, tool?, success?, timestamp, metadata?}].
+\`$.sleep.eventsByType()\` — get event counts grouped by type (e.g. {tool_call:15, tool_result:14, tool_error:2}).
 
 \`$.curriculum.profile()\` — get capability profile by task type (success rates, difficulty, trends).
 \`$.curriculum.sweetSpot()\` — find tasks in the zone of proximal development (40-70% success).
@@ -871,6 +1021,31 @@ multi-tool sequence detected from your usage patterns).
 \`$.constitution.metrics()\` — compute and return current metric snapshots (anti-Goodhart immutable metrics).
 \`$.constitution.violations(limit?)\` — get constitution violation log.
 \`$.constitution.stats()\` — get constitution system stats.
+
+\`$.dream.trigger()\` — manually trigger dream consolidation (analyze session patterns, generate insights).
+\`$.dream.last()\` — get the most recent dream report.
+\`$.dream.history()\` — get all dream reports.
+\`$.dream.stats()\` — get dream stats (total dreams, current activity, would-trigger status).
+\`$.dream.configure({ minToolCalls?, minEventDelta?, cooldownMs?, enabled? })\` — adjust dream thresholds.
+\`$.dream.recentCalls({tool?, limit?, offset?})\` — dump raw tool call log. Returns [{tool, timestamp, success, filePath?}].
+\`$.dream.activity()\` — get full current activity state: uniqueTools[], filesTouched[], errorPatterns[], counters.
+
+\`$.think.loop(program)\` — run a ThinkProgram (eval/apply loop with steps, guards, refinement, convergence).
+\`$.think.step(expr, env?)\` — evaluate a single ThinkExpr in an environment. Expr types: literal, ref, call, seq, branch, loop, let, reflect.
+\`$.think.reflect(result, criteria)\` — meta-cognitive check: returns { satisfied, feedback, score, iteration, elapsed }.
+\`$.think.traces({ programId?, stepId?, limit?, offset? })\` — get execution traces from think loops.
+\`$.think.results({ limit? })\` — get completed program results.
+\`$.think.stats()\` — get think loop stats (totalPrograms, totalIterations, convergenceRate).
+
+\`$.prove2me.analyze(sourceCode, sourceFile?, moduleName?)\` — extract Lean 4 theorem statements from code.
+\`$.prove2me.addTheorem(theoremId, lean4Statement, naturalLanguage, dependencies?, tags?)\` — add a theorem to the DAG.
+\`$.prove2me.submitProof(theoremId, lean4Code, author?)\` — submit a Lean 4 proof sketch.
+\`$.prove2me.status()\` — get DAG statistics (total/proved/open/sorry/failed).
+\`$.prove2me.search(query, limit?)\` — find existing theorems by natural language.
+\`$.prove2me.attackable()\` — list theorems whose dependencies are all proved (ready to prove).
+\`$.prove2me.generate(separated?, theoremId?)\` — output Lean 4 code (separated statement/proof files).
+\`$.prove2me.export(outputDir?)\` — write Lean files and DAG to disk.
+\`$.prove2me.dagStats()\` — get DAG stats (total, proved, open, sorry, failed, maxDepth).
 
 ### When to use CodeRun
 
@@ -928,7 +1103,8 @@ return "No issues found";
     const startTime = Date.now()
     try {
       const fn = new AsyncFunction('$', `"use strict";\n${code}`)
-      const result = await fn($)
+      const rawResult = await fn($)
+      const result = await deepResolve(rawResult)
       const elapsed = Date.now() - startTime
 
       return {

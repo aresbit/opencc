@@ -39,7 +39,7 @@ import {
 
 // ── Session Event Log ──────────────────────────────────────────
 
-interface SessionEvent {
+export interface SessionEvent {
   type: 'tool_call' | 'tool_result' | 'tool_error' | 'subagent' | 'prompt'
   tool?: string
   success?: boolean
@@ -367,6 +367,26 @@ export function getSleepHistory(): SleepReport[] {
 
 export function getSessionEventCount(): number {
   return sessionLog.length
+}
+
+export function getSessionEvents(opts?: {
+  type?: SessionEvent['type']
+  limit?: number
+  offset?: number
+}): SessionEvent[] {
+  let events: SessionEvent[] = [...sessionLog]
+  if (opts?.type) events = events.filter(e => e.type === opts.type)
+  const start = opts?.offset ?? 0
+  const end = opts?.limit ? start + opts.limit : events.length
+  return events.slice(start, end)
+}
+
+export function getSessionEventsByType(): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const e of sessionLog) {
+    counts[e.type] = (counts[e.type] ?? 0) + 1
+  }
+  return counts
 }
 
 export function getSleepStats(): {

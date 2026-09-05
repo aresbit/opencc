@@ -8,7 +8,7 @@
  *   transaction → retry → writeGuard → cache → compress → contextHandle →
  *   autoPermit → knowledge → jitSynthesis → adaptive →
  *   rsiConstitution → rsiAntibody → rsiCrystallize → rsiExperiment →
- *   rsiSleep → rsiCurriculum → ⊥
+ *   rsiSleep → dream → rsiCurriculum → ⊥
  *
  * Design rationale (following OS-kernel analogy):
  *
@@ -53,12 +53,14 @@ import { register as registerIpc } from './ipcHook.js'
 import { register as registerSudo } from './sudoHook.js'
 import { register as registerPtrace } from './ptraceHook.js'
 import { register as registerScheduler } from './schedulerHook.js'
+import { register as registerThinkLoop } from './thinkLoopHook.js'
 import { register as registerRsiConstitution } from './rsiConstitutionHook.js'
 import { register as registerRsiAntibody } from './rsiAntibodyHook.js'
 import { register as registerRsiCrystallize } from './rsiCrystallizeHook.js'
 import { register as registerRsiExperiment } from './rsiExperimentHook.js'
 import { register as registerRsiSleep } from './rsiSleepHook.js'
 import { register as registerRsiCurriculum } from './rsiCurriculumHook.js'
+import { register as registerDream } from './dreamHook.js'
 
 let registered = false
 
@@ -73,6 +75,7 @@ export function registerBuiltinPlugins(): void {
     { name: 'sudo', id: 'builtin:sudo', register: registerSudo },
     { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
     { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace },
+    { name: 'thinkLoop', id: 'builtin:thinkLoop', register: registerThinkLoop },
     { name: 'select', id: 'builtin:select', register: registerSelect },
     { name: 'scheduler', id: 'builtin:scheduler', register: registerScheduler },
     { name: 'replay', id: 'builtin:replay', register: registerReplay },
@@ -95,6 +98,7 @@ export function registerBuiltinPlugins(): void {
     { name: 'rsiCrystallize', id: 'builtin:rsiCrystallize', register: registerRsiCrystallize },
     { name: 'rsiExperiment', id: 'builtin:rsiExperiment', register: registerRsiExperiment },
     { name: 'rsiSleep', id: 'builtin:rsiSleep', register: registerRsiSleep },
+    { name: 'dream', id: 'builtin:dream', register: registerDream },
     { name: 'rsiCurriculum', id: 'builtin:rsiCurriculum', register: registerRsiCurriculum },
   ]
 
@@ -113,6 +117,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:sudo',
     'builtin:ctxFork',
     'builtin:ptrace',
+    'builtin:thinkLoop',
     'builtin:select',
     'builtin:scheduler',
     'builtin:replay',
@@ -134,6 +139,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:rsiCrystallize',
     'builtin:rsiExperiment',
     'builtin:rsiSleep',
+    'builtin:dream',
     'builtin:rsiCurriculum',
   ]) {
     registry.removePlugin(id)
@@ -326,8 +332,11 @@ export {
   getLastSleepReport,
   getSleepHistory,
   getSessionEventCount,
+  getSessionEvents,
+  getSessionEventsByType,
   getSleepStats,
   clearSleep,
+  type SessionEvent,
 } from './rsiSleepHook.js'
 
 // RSI curriculum — self-generated training
@@ -359,6 +368,21 @@ export {
   clearConstitution,
 } from './rsiConstitutionHook.js'
 
+// dream — memory consolidation (replaces legacy autoDream)
+export {
+  triggerDream,
+  getLastDream,
+  getDreamHistory,
+  getDreamStats,
+  getRecentCalls as getDreamRecentCalls,
+  getActivity as getDreamActivity,
+  getConfig as getDreamConfig,
+  setConfig as setDreamConfig,
+  resetConfig as resetDreamConfig,
+  clearDream,
+  type ToolCallRecord,
+} from './dreamHook.js'
+
 // scheduler — model routing + budget limits
 export {
   route as schedulerRoute,
@@ -374,3 +398,19 @@ export {
   getStats as getSchedulerStats,
   clearScheduler,
 } from './schedulerHook.js'
+
+// thinkLoop — eval/apply interpreter for deliberative reasoning
+export {
+  loop as thinkLoop,
+  step as thinkStep,
+  reflect as thinkReflect,
+  getTraces as getThinkTraces,
+  getResults as getThinkResults,
+  getStats as getThinkStats,
+  clearThinkLoop,
+  type ThinkProgram,
+  type ThinkExpr,
+  type ThinkResult,
+  type ThinkTrace,
+  type ReflectResult,
+} from './thinkLoopHook.js'
