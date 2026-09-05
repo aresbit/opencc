@@ -333,3 +333,18 @@ export {
   type PerfSample,
   type PerfEventStats,
 } from './plugins/perfTelescopyHook.js'
+
+// mcpBroker — policy table for shared MCP server access
+export {
+  addMcpPolicy,
+  removeMcpPolicy,
+  getMcpPolicies,
+  releaseMcpOwnership,
+  getMcpOwnership,
+  getMcpCallLog,
+  getMcpBrokerStats,
+  clearMcpBroker,
+  type McpPolicy,
+  type McpTier,
+  type McpCallRecord,
+} from './plugins/mcpBrokerHook.js'

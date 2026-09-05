@@ -3,8 +3,8 @@
  *
  * Registration order = nesting order (outermost first):
  *
- *   perfTelescopy → tuiView → plainLanguage → mount → sudo → ctxFork →
- *   ptrace → thinkLoop → select → scheduler → replay → taintFirewall →
+ *   perfTelescopy → tuiView → plainLanguage → mount → mcpBroker → sudo →
+ *   ctxFork → ptrace → thinkLoop → select → scheduler → replay → taintFirewall →
  *   mprotect → ipc → transaction → retry → writeGuard → cache → compress →
  *   contextHandle → autoPermit → knowledge → jitSynthesis → adaptive →
  *   rsiConstitution → rsiAntibody → rsiCrystallize → rsiExperiment →
@@ -68,6 +68,7 @@ import { register as registerPlainLanguage } from './plainLanguageHook.js'
 import { register as registerCtxFork } from './ctxForkHook.js'
 import { register as registerSelect } from './selectHook.js'
 import { register as registerMount } from './mountHook.js'
+import { register as registerMcpBroker } from './mcpBrokerHook.js'
 import { register as registerMprotect } from './mprotectHook.js'
 import { register as registerIpc } from './ipcHook.js'
 import { register as registerSudo } from './sudoHook.js'
@@ -98,6 +99,7 @@ export function registerBuiltinPlugins(): void {
     { name: 'tuiView', id: 'builtin:tuiView', register: registerTuiView },
     { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
     { name: 'mount', id: 'builtin:mount', register: registerMount },
+    { name: 'mcpBroker', id: 'builtin:mcpBroker', register: registerMcpBroker },
     { name: 'sudo', id: 'builtin:sudo', register: registerSudo },
     { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
     { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace },
@@ -147,6 +149,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:tuiView',
     'builtin:plainLanguage',
     'builtin:mount',
+    'builtin:mcpBroker',
     'builtin:sudo',
     'builtin:ctxFork',
     'builtin:ptrace',
@@ -489,3 +492,18 @@ export {
   type PerfSample,
   type PerfEventStats,
 } from './perfTelescopyHook.js'
+
+// mcpBroker — policy table for shared MCP server access
+export {
+  addMcpPolicy,
+  removeMcpPolicy,
+  getMcpPolicies,
+  releaseMcpOwnership,
+  getMcpOwnership,
+  getMcpCallLog,
+  getMcpBrokerStats,
+  clearMcpBroker,
+  type McpPolicy,
+  type McpTier,
+  type McpCallRecord,
+} from './mcpBrokerHook.js'

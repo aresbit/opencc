@@ -884,6 +884,43 @@ export function createToolProxy(
     return _perfProxy
   }
 
+  // Lazy-load MCP broker proxy for shared-server policy management
+  let _mcpBrokerProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getMcpBrokerProxy() {
+    if (_mcpBrokerProxy) return _mcpBrokerProxy
+    _mcpBrokerProxy = {
+      async addPolicy(serverPattern: unknown, tier: unknown, poolSize?: unknown) {
+        const { addMcpPolicy } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return addMcpPolicy(String(serverPattern), tier as any, poolSize as number | undefined)
+      },
+      async removePolicy(policyId: unknown) {
+        const { removeMcpPolicy } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return { removed: removeMcpPolicy(String(policyId)) }
+      },
+      async policies() {
+        const { getMcpPolicies } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return getMcpPolicies()
+      },
+      async releaseOwnership(server: unknown) {
+        const { releaseMcpOwnership } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return { released: releaseMcpOwnership(String(server)) }
+      },
+      async ownership() {
+        const { getMcpOwnership } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return getMcpOwnership()
+      },
+      async callLog(opts?: { server?: string; limit?: number }) {
+        const { getMcpCallLog } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return getMcpCallLog(opts)
+      },
+      async stats() {
+        const { getMcpBrokerStats } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return getMcpBrokerStats()
+      },
+    }
+    return _mcpBrokerProxy
+  }
+
   let _prove2meProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
   function getProve2MeProxy() {
     if (_prove2meProxy) return _prove2meProxy
@@ -954,6 +991,7 @@ export function createToolProxy(
     get dream() { return getDreamProxy() },
     get think() { return getThinkProxy() },
     get perf() { return getPerfProxy() },
+    get mcpBroker() { return getMcpBrokerProxy() },
     get prove2me() { return getProve2MeProxy() },
     _callLog: callLog,
   }
@@ -1146,6 +1184,15 @@ multi-tool sequence detected from your usage patterns).
 \`$.perf.stats()\` — aggregated per-event stats (count, avg/p50/p95/max ms, cache hit rate, error rate, total bytes), sorted by total time — the flame graph as a table. Measure with this before assuming where time goes.
 \`$.perf.sampleCount()\` — total samples recorded.
 \`$.perf.clear()\` — reset the telescopy buffer.
+
+\`$.mcpBroker.addPolicy(serverPattern, tier, poolSize?)\` — declare a policy for MCP servers matching a glob (e.g. "ida*"). tier: 'singleton' (serialize all calls — use for stateful servers that can't handle concurrent commands), 'pool' (bound concurrency to poolSize), 'per-session'/'isolate' (deny calls from any session but the first to claim the server — see notes below, this is not true connection isolation).
+\`$.mcpBroker.removePolicy(policyId)\` — remove a policy.
+\`$.mcpBroker.policies()\` — list active policies.
+\`$.mcpBroker.releaseOwnership(server)\` — release a per-session/isolate server's ownership claim so another session can use it.
+\`$.mcpBroker.ownership()\` — which session currently owns which per-session/isolate servers.
+\`$.mcpBroker.callLog({server?, limit?})\` — recent MCP calls with queue/wait/duration timing and denial reasons.
+\`$.mcpBroker.stats()\` — policy count, active locks/pools, owned servers, total/denied call counts.
+Note: MCP connections are already a process-wide singleton (one connection per server, shared by every subagent) regardless of policy — 'singleton' here adds serialization on top of that sharing, it does not change how many connections exist. 'per-session'/'isolate' can only deny a conflicting call; a hook cannot route a call to a different connection, so true per-connection isolation isn't achievable at this layer.
 
 \`$.prove2me.analyze(sourceCode, sourceFile?, moduleName?)\` — extract Lean 4 theorem statements from code.
 \`$.prove2me.addTheorem(theoremId, lean4Statement, naturalLanguage, dependencies?, tags?)\` — add a theorem to the DAG.
