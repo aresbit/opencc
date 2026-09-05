@@ -45,6 +45,8 @@ export type FunctionHookEvent =
   | 'mount.remove'
   | 'ns.create'
   | 'ns.destroy'
+  | 'mcp.resource.list'
+  | 'mcp.prompt.get'
   | 'mprotect.set'
   | 'mprotect.check'
   | 'mprotect.violation'

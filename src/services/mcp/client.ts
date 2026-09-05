@@ -255,6 +255,41 @@ import { dirname, join } from 'path'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
+import { getEngine } from '../functionHooks/bridge.js'
+import { dispatch, HookChainBottomError } from '../functionHooks/dispatcher.js'
+
+/**
+ * Resources and prompts previously bypassed the hook chain entirely —
+ * tools/call goes through the generic PreToolUse pipeline in
+ * toolExecution.ts (any tool, native or MCP, is hooked there uniformly),
+ * but resources/list and prompts/get are called directly from here with no
+ * dispatch() anywhere in between. This is the gate: a hook returning
+ * {deny: reason} blocks the real request; anything else (including no
+ * hook registered at all) lets it proceed exactly as before.
+ *
+ * No ToolUseContext reaches these call sites (only an MCPServerConnection),
+ * so unlike tool.call there is no agent_id on this event — an MCP broker
+ * ACL rule scoped to a specific agent pattern cannot distinguish which
+ * session triggered a resource/prompt fetch. A '*' agent pattern still
+ * applies normally.
+ */
+async function mcpGate(
+  event: 'mcp.resource.list' | 'mcp.prompt.get',
+  payload: Record<string, unknown>,
+): Promise<{ deny?: string }> {
+  const $ = getEngine()
+  if (!$) return {}
+  try {
+    const result = await dispatch($, event, payload, (_$, e) => e)
+    if (result && typeof result === 'object' && 'deny' in result) {
+      return { deny: String((result as { deny: unknown }).deny) }
+    }
+    return {}
+  } catch (error) {
+    if (error instanceof HookChainBottomError) return {}
+    throw error
+  }
+}
 
 const MCP_AUTH_CACHE_TTL_MS = 15 * 60 * 1000 // 15 min
 
@@ -1442,7 +1477,7 @@ export const connectToServer = memoize(
               }
 
               // Wait for graceful shutdown with rapid escalation (total 500ms to keep CLI responsive)
-              await new Promise<void>(async resolve => {
+              await new Promise<void>(resolve => { void (async () => {
                 let resolved = false
 
                 // Set up a timer to check if process still exists
@@ -1553,7 +1588,7 @@ export const connectToServer = memoize(
                     resolve()
                   }
                 }
-              })
+              })() })
             }
           } catch (processError) {
             logMCPDebug(name, `Error terminating process: ${processError}`)
@@ -2005,6 +2040,12 @@ export const fetchResourcesForClient = memoizeWithLRU(
         return []
       }
 
+      const gate = await mcpGate('mcp.resource.list', { mcpServer: client.name })
+      if (gate.deny) {
+        logMCPError(client.name, `resources/list denied by hook: ${gate.deny}`)
+        return []
+      }
+
       const result = await client.client.request(
         { method: 'resources/list' },
         ListResourcesResultSchema,
@@ -2073,6 +2114,13 @@ export const fetchCommandsForClient = memoizeWithLRU(
             const argsArray = args.split(' ')
             try {
               const connectedClient = await ensureConnectedClient(client)
+              const gate = await mcpGate('mcp.prompt.get', {
+                mcpServer: client.name,
+                mcpPrompt: prompt.name,
+              })
+              if (gate.deny) {
+                throw new Error(`Denied by hook: ${gate.deny}`)
+              }
               const result = await connectedClient.client.getPrompt({
                 name: prompt.name,
                 arguments: zipObject(argNames, argsArray),
