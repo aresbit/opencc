@@ -40,6 +40,17 @@
  * Policy is data, not code — the same philosophy as schedulerHook's model
  * routing table: addPolicy()/removePolicy() at runtime, matched by glob
  * against the server name, most-recently-added wins.
+ *
+ * Progress notifications (a proposed concern for a broker: "route them
+ * back to the right session after forwarding"): verified, not built. A
+ * call's onProgress callback is a plain JS closure carried through the
+ * event object; awaiting next(e) here — even queued behind a singleton
+ * lock or a pool semaphore — never detaches it from the call that owns
+ * it, confirmed with two concurrent singleton-serialized calls whose
+ * progress events never cross-delivered. Session-routing infrastructure
+ * only becomes necessary once a call actually crosses a process boundary,
+ * which nothing in this file does; that belongs with whatever eventually
+ * implements transparent remote offload, not speculatively here.
  */
 
 import type { OnRegistrar } from '../types.js'
