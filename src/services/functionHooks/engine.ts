@@ -558,6 +558,14 @@ export function buildCoreNouns(): Record<
         const { getSleepStats } = await import('./plugins/rsiSleepHook.js')
         return getSleepStats()
       },
+      events: async (opts?: { type?: string; limit?: number; offset?: number }) => {
+        const { getSessionEvents } = await import('./plugins/rsiSleepHook.js')
+        return getSessionEvents(opts as any)
+      },
+      eventsByType: async () => {
+        const { getSessionEventsByType } = await import('./plugins/rsiSleepHook.js')
+        return getSessionEventsByType()
+      },
     },
     curriculum: {
       profile: async () => {
@@ -644,6 +652,14 @@ export function buildCoreNouns(): Record<
       configure: async (e: { minToolCalls?: number; minEventDelta?: number; cooldownMs?: number; enabled?: boolean; autoConsolidate?: boolean }) => {
         const { setConfig } = await import('./plugins/dreamHook.js')
         return setConfig(e)
+      },
+      recentCalls: async (opts?: { tool?: string; limit?: number; offset?: number }) => {
+        const { getRecentCalls } = await import('./plugins/dreamHook.js')
+        return getRecentCalls(opts)
+      },
+      activity: async () => {
+        const { getActivity } = await import('./plugins/dreamHook.js')
+        return getActivity()
       },
     },
     budget: {

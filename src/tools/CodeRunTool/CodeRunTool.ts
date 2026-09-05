@@ -637,6 +637,14 @@ export function createToolProxy(
         const { getSleepStats } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
         return getSleepStats()
       },
+      async events(opts?: { type?: string; limit?: number; offset?: number }) {
+        const { getSessionEvents } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
+        return getSessionEvents(opts as any)
+      },
+      async eventsByType() {
+        const { getSessionEventsByType } = await import('../../services/functionHooks/plugins/rsiSleepHook.js')
+        return getSessionEventsByType()
+      },
     }
     return _sleepProxy
   }
@@ -739,6 +747,14 @@ export function createToolProxy(
       async configure(opts: unknown) {
         const { setConfig } = await import('../../services/functionHooks/plugins/dreamHook.js')
         return setConfig(opts as any)
+      },
+      async recentCalls(opts?: { tool?: string; limit?: number; offset?: number }) {
+        const { getRecentCalls } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getRecentCalls(opts)
+      },
+      async activity() {
+        const { getActivity } = await import('../../services/functionHooks/plugins/dreamHook.js')
+        return getActivity()
       },
     }
     return _dreamProxy
@@ -929,6 +945,8 @@ multi-tool sequence detected from your usage patterns).
 \`$.sleep.lastReport()\` — get the most recent sleep consolidation report.
 \`$.sleep.history()\` — get all sleep reports from this session.
 \`$.sleep.stats()\` — get sleep system stats (generation, cycles, improvements).
+\`$.sleep.events({type?, limit?, offset?})\` — dump raw session event log. type: 'tool_call'|'tool_result'|'tool_error'|'subagent'|'prompt'. Returns [{type, tool?, success?, timestamp, metadata?}].
+\`$.sleep.eventsByType()\` — get event counts grouped by type (e.g. {tool_call:15, tool_result:14, tool_error:2}).
 
 \`$.curriculum.profile()\` — get capability profile by task type (success rates, difficulty, trends).
 \`$.curriculum.sweetSpot()\` — find tasks in the zone of proximal development (40-70% success).
@@ -951,6 +969,8 @@ multi-tool sequence detected from your usage patterns).
 \`$.dream.history()\` — get all dream reports.
 \`$.dream.stats()\` — get dream stats (total dreams, current activity, would-trigger status).
 \`$.dream.configure({ minToolCalls?, minEventDelta?, cooldownMs?, enabled? })\` — adjust dream thresholds.
+\`$.dream.recentCalls({tool?, limit?, offset?})\` — dump raw tool call log. Returns [{tool, timestamp, success, filePath?}].
+\`$.dream.activity()\` — get full current activity state: uniqueTools[], filesTouched[], errorPatterns[], counters.
 
 \`$.prove2me.analyze(sourceCode, sourceFile?, moduleName?)\` — extract Lean 4 theorem statements from code.
 \`$.prove2me.addTheorem(theoremId, lean4Statement, naturalLanguage, dependencies?, tags?)\` — add a theorem to the DAG.

@@ -329,8 +329,11 @@ export {
   getLastSleepReport,
   getSleepHistory,
   getSessionEventCount,
+  getSessionEvents,
+  getSessionEventsByType,
   getSleepStats,
   clearSleep,
+  type SessionEvent,
 } from './rsiSleepHook.js'
 
 // RSI curriculum — self-generated training
@@ -368,10 +371,13 @@ export {
   getLastDream,
   getDreamHistory,
   getDreamStats,
+  getRecentCalls as getDreamRecentCalls,
+  getActivity as getDreamActivity,
   getConfig as getDreamConfig,
   setConfig as setDreamConfig,
   resetConfig as resetDreamConfig,
   clearDream,
+  type ToolCallRecord,
 } from './dreamHook.js'
 
 // scheduler — model routing + budget limits

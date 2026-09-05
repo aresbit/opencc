@@ -111,7 +111,7 @@ const MAX_REPORTS = 50
 
 // ── Tool Usage Tracking (for pattern detection) ──────────────────
 
-interface ToolCallRecord {
+export interface ToolCallRecord {
   tool: string
   timestamp: number
   success: boolean
@@ -381,6 +381,42 @@ export function setConfig(partial: Partial<DreamConfig>): DreamConfig {
 
 export function resetConfig(): void {
   config = { ...DEFAULT_CONFIG }
+}
+
+export function getRecentCalls(opts?: {
+  tool?: string
+  limit?: number
+  offset?: number
+}): ToolCallRecord[] {
+  let calls = [...recentCalls]
+  if (opts?.tool) calls = calls.filter(c => c.tool === opts.tool)
+  const start = opts?.offset ?? 0
+  const end = opts?.limit ? start + opts.limit : calls.length
+  return calls.slice(start, end)
+}
+
+export function getActivity(): {
+  toolCalls: number
+  toolResults: number
+  toolErrors: number
+  uniqueTools: string[]
+  filesTouched: string[]
+  errorPatterns: Array<{ pattern: string; count: number }>
+  sessionStartedAt: number
+  events: number
+  recentCallCount: number
+} {
+  return {
+    toolCalls: activity.toolCalls,
+    toolResults: activity.toolResults,
+    toolErrors: activity.toolErrors,
+    uniqueTools: [...activity.uniqueTools],
+    filesTouched: [...activity.filesTouched],
+    errorPatterns: [...activity.errorPatterns.entries()].map(([pattern, count]) => ({ pattern, count })),
+    sessionStartedAt: activity.sessionStartedAt,
+    events: activity.events,
+    recentCallCount: recentCalls.length,
+  }
 }
 
 export function clearDream(): void {
