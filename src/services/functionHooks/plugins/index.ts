@@ -498,6 +498,9 @@ export {
   addMcpPolicy,
   removeMcpPolicy,
   getMcpPolicies,
+  addMcpAclRule,
+  removeMcpAclRule,
+  getMcpAclRules,
   releaseMcpOwnership,
   getMcpOwnership,
   getMcpCallLog,
@@ -505,5 +508,6 @@ export {
   clearMcpBroker,
   type McpPolicy,
   type McpTier,
+  type McpAclRule,
   type McpCallRecord,
 } from './mcpBrokerHook.js'

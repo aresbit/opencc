@@ -901,6 +901,18 @@ export function createToolProxy(
         const { getMcpPolicies } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
         return getMcpPolicies()
       },
+      async addAcl(serverPattern: unknown, agentPattern: unknown, decision: unknown) {
+        const { addMcpAclRule } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return addMcpAclRule(String(serverPattern), String(agentPattern), decision as any)
+      },
+      async removeAcl(ruleId: unknown) {
+        const { removeMcpAclRule } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return { removed: removeMcpAclRule(String(ruleId)) }
+      },
+      async aclRules() {
+        const { getMcpAclRules } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
+        return getMcpAclRules()
+      },
       async releaseOwnership(server: unknown) {
         const { releaseMcpOwnership } = await import('../../services/functionHooks/plugins/mcpBrokerHook.js')
         return { released: releaseMcpOwnership(String(server)) }
@@ -1188,6 +1200,9 @@ multi-tool sequence detected from your usage patterns).
 \`$.mcpBroker.addPolicy(serverPattern, tier, poolSize?)\` — declare a policy for MCP servers matching a glob (e.g. "ida*"). tier: 'singleton' (serialize all calls — use for stateful servers that can't handle concurrent commands), 'pool' (bound concurrency to poolSize), 'per-session'/'isolate' (deny calls from any session but the first to claim the server — see notes below, this is not true connection isolation).
 \`$.mcpBroker.removePolicy(policyId)\` — remove a policy.
 \`$.mcpBroker.policies()\` — list active policies.
+\`$.mcpBroker.addAcl(serverPattern, agentPattern, decision)\` — session-scoped credential boundary, independent of tier: decision 'allow'/'deny' for agents matching agentPattern calling servers matching serverPattern. Most-recently-added rule wins. Default (no rule) is allow, unchanged from today.
+\`$.mcpBroker.removeAcl(ruleId)\` — remove an ACL rule.
+\`$.mcpBroker.aclRules()\` — list active ACL rules.
 \`$.mcpBroker.releaseOwnership(server)\` — release a per-session/isolate server's ownership claim so another session can use it.
 \`$.mcpBroker.ownership()\` — which session currently owns which per-session/isolate servers.
 \`$.mcpBroker.callLog({server?, limit?})\` — recent MCP calls with queue/wait/duration timing and denial reasons.

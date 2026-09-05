@@ -56,6 +56,16 @@ export interface McpPolicy {
   createdAt: number
 }
 
+export interface McpAclRule {
+  id: string
+  /** Glob against the MCP server name. */
+  serverPattern: string
+  /** Glob against the calling agent_id ('*' = every agent/session). */
+  agentPattern: string
+  decision: 'allow' | 'deny'
+  createdAt: number
+}
+
 export interface McpCallRecord {
   server: string
   tool: string
@@ -71,7 +81,9 @@ export interface McpCallRecord {
 // ── State ─────────────────────────────────────────────────────────
 
 const policies: McpPolicy[] = []
+const aclRules: McpAclRule[] = []
 let policyCounter = 0
+let aclCounter = 0
 
 /** One mutex chain per server name under a 'singleton' policy. */
 const singletonLocks = new Map<string, Promise<void>>()
@@ -86,6 +98,11 @@ const MAX_CALL_LOG = 500
 function generatePolicyId(): string {
   policyCounter++
   return `mcpb_${policyCounter.toString(16).padStart(4, '0')}`
+}
+
+function generateAclId(): string {
+  aclCounter++
+  return `mcpacl_${aclCounter.toString(16).padStart(4, '0')}`
 }
 
 function globMatch(pattern: string, value: string): boolean {
@@ -103,6 +120,25 @@ function resolvePolicy(server: string): McpPolicy | undefined {
   // default overrides it, same convention as sudoHook's evaluatePolicy.
   for (let i = policies.length - 1; i >= 0; i--) {
     if (globMatch(policies[i]!.serverPattern, server)) return policies[i]
+  }
+  return undefined
+}
+
+/**
+ * The credential boundary the design calls for: sharing the MCP
+ * connection process-wide must not mean sharing what it's authorized to
+ * do. Independent of tier/pooling — a server can have no concurrency
+ * policy at all and still be ACL-restricted, or vice versa. Default is
+ * 'allow' (today's behavior, unchanged) until a rule says otherwise; most
+ * recently added rule wins so a narrow deny can override a wildcard allow
+ * added earlier, or vice versa.
+ */
+function evaluateAcl(server: string, agentId: string): McpAclRule | undefined {
+  for (let i = aclRules.length - 1; i >= 0; i--) {
+    const rule = aclRules[i]!
+    if (globMatch(rule.serverPattern, server) && globMatch(rule.agentPattern, agentId)) {
+      return rule
+    }
   }
   return undefined
 }
@@ -156,6 +192,16 @@ export function register(on: OnRegistrar): void {
     const policy = resolvePolicy(server)
 
     const record: McpCallRecord = { server, tool, agentId, queuedAt: Date.now() }
+
+    const aclRule = evaluateAcl(server, agentId)
+    if (aclRule?.decision === 'deny') {
+      record.denied = `ACL rule ${aclRule.id} denies "${agentId}" on "${server}"`
+      recordCall(record)
+      return {
+        deny: `Session "${agentId}" is not authorized to call MCP server "${server}" ` +
+              `(ACL rule ${aclRule.id}).`,
+      }
+    }
 
     if (!policy) {
       // No policy = today's default behavior (already-shared singleton
@@ -244,6 +290,33 @@ export function getMcpPolicies(): McpPolicy[] {
   return [...policies]
 }
 
+export function addMcpAclRule(
+  serverPattern: string,
+  agentPattern: string,
+  decision: 'allow' | 'deny',
+): McpAclRule {
+  const rule: McpAclRule = {
+    id: generateAclId(),
+    serverPattern,
+    agentPattern,
+    decision,
+    createdAt: Date.now(),
+  }
+  aclRules.push(rule)
+  return rule
+}
+
+export function removeMcpAclRule(ruleId: string): boolean {
+  const idx = aclRules.findIndex(r => r.id === ruleId)
+  if (idx === -1) return false
+  aclRules.splice(idx, 1)
+  return true
+}
+
+export function getMcpAclRules(): McpAclRule[] {
+  return [...aclRules]
+}
+
 /** Release a per-session/isolate server's ownership claim manually. */
 export function releaseMcpOwnership(server: string): boolean {
   return owners.delete(server)
@@ -262,6 +335,7 @@ export function getMcpCallLog(opts?: { server?: string; limit?: number }): McpCa
 
 export function getMcpBrokerStats(): {
   policies: number
+  aclRules: number
   activeSingletonLocks: number
   activePools: number
   ownedServers: number
@@ -270,6 +344,7 @@ export function getMcpBrokerStats(): {
 } {
   return {
     policies: policies.length,
+    aclRules: aclRules.length,
     activeSingletonLocks: singletonLocks.size,
     activePools: poolState.size,
     ownedServers: owners.size,
@@ -280,9 +355,11 @@ export function getMcpBrokerStats(): {
 
 export function clearMcpBroker(): void {
   policies.length = 0
+  aclRules.length = 0
   singletonLocks.clear()
   poolState.clear()
   owners.clear()
   callLog.length = 0
   policyCounter = 0
+  aclCounter = 0
 }
