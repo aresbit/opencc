@@ -237,7 +237,7 @@ export function parseDraftJSToMarkdown(article: XArticle): string {
 // Custom error classes for domain blocking
 class DomainBlockedError extends Error {
   constructor(domain: string) {
-    super(`Claude Code is unable to fetch from ${domain}`)
+    super(`opencc is unable to fetch from ${domain}`)
     this.name = 'DomainBlockedError'
   }
 }
