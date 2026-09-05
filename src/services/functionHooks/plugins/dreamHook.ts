@@ -261,12 +261,13 @@ export function register(on: OnRegistrar): void {
   on('tool.call', async ($, e: any, next) => {
     activity.toolCalls++
     activity.events++
-    if (e.tool) activity.uniqueTools.add(e.tool)
-    const filePath = e.input?.file_path ?? e.input?.path
+    const toolName = e.tool_name ?? e.tool
+    if (toolName) activity.uniqueTools.add(toolName)
+    const filePath = e.tool_input?.file_path ?? e.tool_input?.path
     if (typeof filePath === 'string') activity.filesTouched.add(filePath)
 
     recentCalls.push({
-      tool: e.tool ?? 'unknown',
+      tool: toolName ?? 'unknown',
       timestamp: Date.now(),
       success: true,
       filePath: typeof filePath === 'string' ? filePath : undefined,
