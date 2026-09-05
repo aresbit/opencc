@@ -276,7 +276,7 @@ export function register(on: OnRegistrar): void {
   on('tool.call', async ($, e: any, next) => {
     recordEvent({
       type: 'tool_call',
-      tool: e.tool,
+      tool: e.tool_name ?? e.tool,
       timestamp: Date.now(),
     })
     return next(e)
@@ -291,7 +291,7 @@ export function register(on: OnRegistrar): void {
 
     recordEvent({
       type: 'tool_result',
-      tool: e.tool,
+      tool: e.tool_name ?? e.tool,
       success: !isError,
       timestamp: Date.now(),
     })
@@ -301,7 +301,7 @@ export function register(on: OnRegistrar): void {
   on('tool.error', async ($, e: any, next) => {
     recordEvent({
       type: 'tool_error',
-      tool: e.tool,
+      tool: e.tool_name ?? e.tool,
       success: false,
       timestamp: Date.now(),
     })
