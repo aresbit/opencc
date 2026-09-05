@@ -70,6 +70,7 @@ import { register as registerSelect } from './selectHook.js'
 import { register as registerMount } from './mountHook.js'
 import { register as registerMcpBroker } from './mcpBrokerHook.js'
 import { register as registerKvCacheAffinity } from './kvCacheAffinityHook.js'
+import { register as registerProcessPool } from './processPoolHook.js'
 import { register as registerMprotect } from './mprotectHook.js'
 import { register as registerIpc } from './ipcHook.js'
 import { register as registerSudo } from './sudoHook.js'
@@ -102,6 +103,7 @@ export function registerBuiltinPlugins(): void {
     { name: 'mount', id: 'builtin:mount', register: registerMount },
     { name: 'mcpBroker', id: 'builtin:mcpBroker', register: registerMcpBroker },
     { name: 'kvCacheAffinity', id: 'builtin:kvCacheAffinity', register: registerKvCacheAffinity },
+    { name: 'processPool', id: 'builtin:processPool', register: registerProcessPool },
     { name: 'sudo', id: 'builtin:sudo', register: registerSudo },
     { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
     { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace },
@@ -153,6 +155,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:mount',
     'builtin:mcpBroker',
     'builtin:kvCacheAffinity',
+    'builtin:processPool',
     'builtin:sudo',
     'builtin:ctxFork',
     'builtin:ptrace',
@@ -521,3 +524,7 @@ export {
   getKvCacheStats,
   clearKvCacheAffinity,
 } from './kvCacheAffinityHook.js'
+
+// processPool — investigated and NOT built (see file header for why);
+// exposes only the benchmark that grounded that conclusion.
+export { benchmarkSpawnOverhead } from './processPoolHook.js'

@@ -222,12 +222,26 @@ function getUserSnapshotContent(configFile: string): string {
 
       # Now get user function names - filter completion functions (single underscore prefix)
       # but keep double-underscore helpers (e.g. __zsh_like_cd from mise, __pyenv_init)
-      declare -F | cut -d' ' -f3 | grep -vE '^_[^_]' | while read func; do
-        # Encode the function to base64, preserving all special characters
-        encoded_func=$(declare -f "$func" | base64 )
-        # Write the function definition to the snapshot
+      # Batch every matched function into ONE "declare -f" call and ONE base64
+      # encode, instead of forking base64 (plus a subshell for the pipe) once
+      # per function. This snapshot file is re-sourced on EVERY Bash tool call
+      # via the identical eval $(echo '<b64>' | base64 -d) line below —
+      # with completion-heavy environments (nvm, etc. commonly define 100+
+      # functions) the old per-function loop measured ~2.4ms/function here,
+      # adding hundreds of ms to every single command for the life of the
+      # session. Batching preserves the exact same restored functions; only
+      # the number of forks needed to restore them drops from O(functions) to O(1).
+      func_names=$(declare -F | cut -d' ' -f3 | grep -vE '^_[^_]')
+      if [ -n "$func_names" ]; then
+        # Disable globbing for the unquoted expansion below — it exists only
+        # to let IFS word-splitting turn one newline-separated name-per-line
+        # string into separate "declare -f" arguments, not to glob-expand them.
+        set -f
+        encoded_func=$(declare -f $func_names | base64)
+        set +f
+        # Write the combined function definitions to the snapshot
         echo "eval ${LITERAL_BACKSLASH}"${LITERAL_BACKSLASH}$(echo '$encoded_func' | base64 -d)${LITERAL_BACKSLASH}" > /dev/null 2>&1" >> "$SNAPSHOT_FILE"
-      done
+      fi
     `
   }
 
@@ -421,7 +435,8 @@ export const createAndSaveSnapshot = async (
 
   logForDebugging(`Creating shell snapshot for ${shellType} (${binShell})`)
 
-  return new Promise(async resolve => {
+  return new Promise(resolve => {
+    void (async () => {
     try {
       const configFile = getConfigFile(binShell)
       logForDebugging(`Looking for shell config file: ${configFile}`)
@@ -578,5 +593,6 @@ export const createAndSaveSnapshot = async (
       logEvent('tengu_shell_snapshot_error', {})
       resolve(undefined)
     }
+    })()
   })
 }

@@ -359,3 +359,7 @@ export {
   getKvCacheStats,
   clearKvCacheAffinity,
 } from './plugins/kvCacheAffinityHook.js'
+
+// processPool — investigated and NOT built (see plugins/processPoolHook.js
+// header for why); exposes only the benchmark that grounded that conclusion.
+export { benchmarkSpawnOverhead } from './plugins/processPoolHook.js'
