@@ -9,8 +9,20 @@
  * dispatched — the engine skips it silently so that a hook on
  * prompt.submit which calls $.prompt.submit runs the chain excluding
  * itself.
+ *
+ * The guard is scoped to the async context of the dispatch that opened
+ * the frame, NOT global. A global Set is wrong on two counts: a
+ * concurrent dispatch of the same event would see another dispatch's
+ * frame and silently skip that hook (Promise.all over tool calls would
+ * bypass cache/taint/writeGuard), and whichever dispatch finished first
+ * would clear the frame while the other was still inside it, defeating
+ * the guard. AsyncLocalStorage propagates the frame set into nested
+ * dispatches (preserving the intent above) while keeping independent
+ * dispatches isolated. Each frame set is copied rather than mutated, so
+ * there is no release step to get wrong.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type {
   EngineInterface,
   FunctionHookEvent,
@@ -21,17 +33,32 @@ import type {
 import { matchesSubstructural } from './matcher.js'
 import { registry } from './registry.js'
 
-/** Tracks which hook frames are currently executing (recursion guard). */
-const activeFrames = new Set<HookRegistration>()
+/** Frames active in the current dispatch lineage (recursion guard). */
+const frameStorage = new AsyncLocalStorage<ReadonlySet<HookRegistration>>()
+
+const NO_FRAMES: ReadonlySet<HookRegistration> = new Set()
+
+/**
+ * Thrown by ⊥. Distinct from a plugin's own failure so callers can tell
+ * "no handler ran" apart from "a hook threw", instead of swallowing both.
+ */
+export class HookChainBottomError extends Error {
+  readonly event: string
+  constructor(event: FunctionHookEvent | string) {
+    super(
+      `Function hook chain reached bottom (⊥): no handler registered for "${event}".`,
+    )
+    this.name = 'HookChainBottomError'
+    this.event = event
+  }
+}
 
 /**
  * The bottom hook ⊥: below the last callback, next throws.
  * This elides redundant existence checks while keeping the fold uniform.
  */
-function bottomHook(_$: EngineInterface, _e: unknown, _next: NextFunction): never {
-  throw new Error(
-    'Function hook chain reached bottom (⊥): no handler registered for this event.',
-  )
+function bottomHook(event: FunctionHookEvent | string): never {
+  throw new HookChainBottomError(event)
 }
 
 /**
@@ -46,12 +73,15 @@ function buildNext<E, R>(
   controller: AbortController,
 ): NextFunction<E, R> {
   const next = async (e: E): Promise<R> => {
+    // Frames active in this dispatch lineage, not process-wide.
+    const frames = frameStorage.getStore() ?? NO_FRAMES
+
     // Walk forward to find the next non-skipped hook.
     let i = index
     while (i < chain.length) {
       const reg = chain[i]
       // Recursion guard: skip if this hook's frame is already active.
-      if (activeFrames.has(reg)) {
+      if (frames.has(reg)) {
         i++
         continue
       }
@@ -65,7 +95,7 @@ function buildNext<E, R>(
 
     if (i >= chain.length) {
       // Reached bottom — no more hooks.
-      return bottomHook($, e, next as any) as R
+      return bottomHook(event)
     }
 
     const reg = chain[i]
@@ -78,12 +108,13 @@ function buildNext<E, R>(
       controller,
     )
 
-    activeFrames.add(reg)
-    try {
-      return await reg.fn($, e, childNext)
-    } finally {
-      activeFrames.delete(reg)
-    }
+    // Copy-on-enter: the child context owns its frame set, so a sibling
+    // dispatch can never observe or clear this frame.
+    const childFrames = new Set(frames)
+    childFrames.add(reg)
+    return frameStorage.run(childFrames, () => reg.fn($, e, childNext)) as
+      | R
+      | Promise<R>
   }
 
   // Attach dispatch metadata to next.
@@ -128,7 +159,7 @@ export async function dispatch<E = unknown, R = unknown>(
 
   if (effectiveChain.length === 0) {
     // No hooks and no default — bottom throws.
-    bottomHook($, e, null as any)
+    bottomHook(event)
   }
 
   const controller = new AbortController()

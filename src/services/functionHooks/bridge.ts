@@ -12,11 +12,12 @@
 
 import type { HookEvent, HookInput } from 'src/entrypoints/agentSdkTypes.js'
 import type { AggregatedHookResult } from 'src/utils/hooks.js'
-import { dispatch } from './dispatcher.js'
+import { dispatch, HookChainBottomError } from './dispatcher.js'
 import { buildEngineInterface, buildCoreNouns } from './engine.js'
 import { registry } from './registry.js'
-import { REVERSE_ALIASES, isDenyResult, type EngineInterface, type FunctionHookEvent } from './types.js'
+import { REVERSE_ALIASES, isDenyResult, type EngineInterface, type FunctionHookEvent, type HookFn } from './types.js'
 import { registerBuiltinPlugins, resetBuiltinPlugins } from './plugins/index.js'
+import { logError } from 'src/utils/log.js'
 
 let engineInterface: EngineInterface | null = null
 let engineInitPromise: Promise<EngineInterface> | null = null
@@ -95,13 +96,26 @@ export async function* dispatchAlgebraicHooks(
   if (!$) return
 
   try {
+    // Identity ⊥. Bridged events are observational: every built-in hook on
+    // session.end, tool.result, etc. is an "after" hook that awaits next(e)
+    // and then does its real work. Without a default handler the chain
+    // bottoms out in a throw, that throw unwinds through every awaiting
+    // hook, and none of their after-phases run — sleep/dream consolidation
+    // silently produced nothing. Returning the input makes a pass-through
+    // chain a normal completion.
+    const identity: HookFn = (_$, e, _next) => e
+
     const result = await dispatch(
       $,
       dotEvent,
       hookInput,
+      identity,
     )
 
     if (result == null) return
+
+    // Nothing in the chain rewrote the event — pure observers, no-op.
+    if (result === hookInput) return
 
     if (isDenyResult(result)) {
       yield {
@@ -141,9 +155,13 @@ export async function* dispatchAlgebraicHooks(
         }
       }
     }
-  } catch {
-    // Algebraic-effect chain reached bottom (⊥) — no handler. This is
-    // expected when hooks are registered on the event but all were
-    // skipped by matchers or recursion guard. Swallow silently.
+  } catch (error) {
+    // ⊥ is reachable only if every hook was skipped by a matcher or the
+    // recursion guard — expected, nothing ran, nothing to report. Any
+    // other error is a plugin genuinely failing; swallowing those made
+    // broken hooks invisible.
+    if (!(error instanceof HookChainBottomError)) {
+      logError(error)
+    }
   }
 }

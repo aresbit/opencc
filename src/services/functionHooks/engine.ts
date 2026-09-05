@@ -13,7 +13,8 @@
  */
 
 import type { EngineInterface, EngineNoun, FunctionHookEvent, HookFn } from './types.js'
-import { dispatch } from './dispatcher.js'
+import { dispatch, HookChainBottomError } from './dispatcher.js'
+import { logError } from 'src/utils/log.js'
 
 export interface EngineCreateEvent {
   /** Nouns accumulated so far (starts empty). */
@@ -70,8 +71,15 @@ export async function buildEngineInterface(
       { nouns: {} },
       coreHandler as HookFn,
     )
-  } catch {
-    // No hooks on engine.create — just use core nouns.
+  } catch (error) {
+    // coreHandler is the ⊥ of this fold, so this catch cannot mean "no
+    // hooks" — it means a plugin's engine.create hook threw. Fall back to
+    // the core nouns so the engine still boots, but say so: silently
+    // dropping every plugin-contributed noun is how a broken plugin turns
+    // into an unexplained missing capability later.
+    if (!(error instanceof HookChainBottomError)) {
+      logError(error)
+    }
     result = { nouns: coreNouns }
   }
 

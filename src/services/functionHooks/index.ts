@@ -16,7 +16,7 @@
  */
 
 export { registry, HookRegistry } from './registry.js'
-export { dispatch, dispatchWithDefault } from './dispatcher.js'
+export { dispatch, dispatchWithDefault, HookChainBottomError } from './dispatcher.js'
 export { buildEngineInterface, buildCoreNouns } from './engine.js'
 export {
   loadHooksModule,
