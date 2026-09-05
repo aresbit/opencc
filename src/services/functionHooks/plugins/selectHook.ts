@@ -364,17 +364,23 @@ export function register(on: OnRegistrar): void {
   })
 
   // Feed tool completion events into select
-  on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
+  // 'tool.content', not 'tool.result'. The wake-up fired correctly on
+  // tool.result, but `payload: result` was the input EVENT OBJECT rather
+  // than the tool's output, so anything selecting on tool_complete and
+  // reading the payload got the request back instead of the response.
+  on('tool.content', async ($, e: any, next) => {
+    const event = await next(e)
+    const payload =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
 
     fireEvent({
       kind: 'tool_complete',
       id: e.tool_name ?? e.tool ?? 'unknown',
-      payload: result,
+      payload,
       firedAt: Date.now(),
     })
 
-    return result
+    return event
   })
 }
 

@@ -94,6 +94,13 @@ export function register(on: OnRegistrar): void {
   })
 
   // Tag tool results with view metadata
+  // VESTIGIAL: this tags `result._tuiView`, but (a) on tool.result next(e)
+  // returns the event object, so the tag lands on a value the bridge
+  // discards, and (b) nothing in the repository reads `_tuiView` or
+  // `hasCustomResultView()` at all — verified by grep across src/. Wiring it
+  // to tool.content would make the tag land somewhere real and still change
+  // nothing, because there is no consumer. Left as-is and labelled rather
+  // than "fixed", so the next reader does not mistake plumbing for a feature.
   on('tool.result', async ($, e: any, next) => {
     const result = await next(e)
     const agentType = e.agent_type as string | undefined

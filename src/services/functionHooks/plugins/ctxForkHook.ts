@@ -291,6 +291,22 @@ async function rollbackBranch(forkId: string, branchId: string): Promise<string[
 
 // ── Hook Registration ───────────────────────────────────────────
 
+/**
+ * INERT: the tool.call/tool.result handlers below all gate on
+ * `e._forkBranchId`, and nothing in this repository ever assigns that field
+ * (verified by grep across src/). So no file snapshot is ever taken and no
+ * branch tool-call is ever recorded — fork()/resolve() manage session state
+ * correctly, but the automatic snapshotting they advertise does not engage.
+ *
+ * Fixing it needs a design decision rather than a patch: something has to
+ * establish "tool calls happening now belong to branch B". The event object
+ * cannot carry it, because tool.call and tool.result are separate dispatches
+ * with separate objects (the same reason rsiExperimentHook needed a
+ * tool_use_id-keyed map). The natural mechanism is an AsyncLocalStorage
+ * scope entered around a branch's work, which is an API addition callers
+ * would have to adopt — deliberately not invented here, since nothing
+ * currently calls it and unused API is how this file got into this state.
+ */
 export function register(on: OnRegistrar): void {
   // Track file edits within active fork branches for rollback
   on('tool.call', { tool_name: 'Write' }, async ($, e: any, next) => {

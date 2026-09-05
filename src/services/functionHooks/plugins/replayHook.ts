@@ -66,7 +66,7 @@ export function register(on: OnRegistrar): void {
         resultSummary: summarize(result),
         duration: Date.now() - start,
       })
-      return result
+      return event
     } catch (err) {
       record({
         seq,
@@ -82,13 +82,24 @@ export function register(on: OnRegistrar): void {
     }
   })
 
-  on('tool.result', async ($, e: any, next) => {
+  // 'tool.content', not 'tool.result'. On tool.result, next(e) returns the
+  // EVENT OBJECT, so `resultSummary: summarize(result)` was summarizing the
+  // tool's own input event and filing it as the result — an audit log whose
+  // result column recorded the wrong thing entirely. tool.content carries
+  // the real content.
+  //
+  // Coverage caveat, deliberate: tool.content only fires for string content,
+  // so a tool returning image/array blocks is no longer logged here. A
+  // slightly narrower log that is correct beats a complete one that is not.
+  on('tool.content', async ($, e: any, next) => {
     const seq = ++seqCounter
     const start = Date.now()
     const tool = (e.tool_name ?? e.tool) as string | undefined
 
     try {
-      const result = await next(e)
+      const event = await next(e)
+      const result =
+        typeof event === 'string' ? event : (event?.content as string | undefined)
       record({
         seq,
         timestamp: start,
@@ -98,7 +109,7 @@ export function register(on: OnRegistrar): void {
         resultSummary: summarize(result),
         duration: Date.now() - start,
       })
-      return result
+      return event
     } catch (err) {
       record({
         seq,

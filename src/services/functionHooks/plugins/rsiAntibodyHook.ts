@@ -234,21 +234,15 @@ export function register(on: OnRegistrar): void {
   })
 
   // Capture tool results that indicate failure (non-error but bad)
-  on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
-
-    const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
-
-    if (result && typeof result === 'object') {
-      const r = result as Record<string, unknown>
-      if (r.error || r.exitCode !== undefined && r.exitCode !== 0) {
-        const errorStr = String(r.error ?? r.stderr ?? `exit code ${r.exitCode}`)
-        recordFailure(toolName, e.tool_input ?? e.input, errorStr)
-      }
-    }
-
-    return result
-  })
+  // No failure handling here, deliberately. This used to inspect next(e)'s
+  // return for `error`/`exitCode`, but on tool.result next(e) returns the
+  // EVENT OBJECT, which has neither — so the branch was unreachable and no
+  // antibody was ever compiled from this path. It was also the wrong path:
+  // tool.result is bridged from PostToolUse, which fires only on success.
+  // Failures arrive on tool.error (PostToolUseFailure), where this plugin
+  // already registers a handler that receives the real error. Removing the
+  // dead branch rather than moving it avoids double-recording every failure.
+  on('tool.result', async ($, e: any, next) => next(e))
 }
 
 // ── Public API ──────────────────────────────────────────────────

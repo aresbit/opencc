@@ -227,10 +227,23 @@ function checkCriticRules(tool: string, input: unknown): { decision: 'approve' |
 
 // ── Hook Registration ───────────────────────────────────────────
 
+/**
+ * Variant assignments awaiting their outcome, keyed by tool_use_id — the one
+ * identifier the tool.call and tool.result dispatches share.
+ */
+const inFlight = new Map<
+  string,
+  { experimentId: string; variant: number; startedAt: number }
+>()
+const MAX_IN_FLIGHT = 200
+
 export function register(on: OnRegistrar): void {
   // Tag tool calls with experiment variant info
   on('tool.call', async ($, e: any, next) => {
-    const taskType = (e._taskType ?? e._agentType ?? 'general') as string
+    // agent_type is the real field (see createBaseHookInput). _taskType and
+    // _agentType were never set by anything, so taskType was always
+    // 'general' and every tool call landed in one bucket.
+    const taskType = (e.agent_type ?? 'general') as string
 
     const experiment = getOrCreateExperiment(taskType)
     if (experiment) {
@@ -240,6 +253,22 @@ export function register(on: OnRegistrar): void {
         e._experimentId = experiment.strategyId
         e._experimentVariant = variantIdx
         e._experimentLabel = strategy.variants[variantIdx]?.label
+        // tool.call and tool.result are SEPARATE dispatches with separate
+        // event objects, so tagging `e` here is invisible to the result
+        // handler below — that is why no outcome was ever recorded. Keep the
+        // tag for anything reading it within this dispatch, and hand the
+        // assignment across via tool_use_id, which both dispatches share.
+        if (e.tool_use_id) {
+          if (inFlight.size >= MAX_IN_FLIGHT) {
+            const oldest = inFlight.keys().next().value
+            if (oldest !== undefined) inFlight.delete(oldest)
+          }
+          inFlight.set(e.tool_use_id as string, {
+            experimentId: experiment.strategyId,
+            variant: variantIdx,
+            startedAt: Date.now(),
+          })
+        }
       }
     }
 
@@ -257,24 +286,32 @@ export function register(on: OnRegistrar): void {
 
   // Record experiment outcomes from tool results
   on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
-    const start = Date.now()
+    const event = await next(e)
 
-    if (e._experimentId && e._experimentVariant !== undefined) {
-      const isError =
-        result && typeof result === 'object' &&
-        ('error' in (result as any) ||
-         ((result as any).exitCode !== undefined && (result as any).exitCode !== 0))
-
+    // Look the assignment up by tool_use_id rather than off the event: the
+    // tag set during tool.call lives on that dispatch's object, not this one.
+    const assignment = e.tool_use_id
+      ? inFlight.get(e.tool_use_id as string)
+      : undefined
+    if (assignment) {
+      inFlight.delete(e.tool_use_id as string)
+      // tool.result is dispatched from PostToolUse, which only fires on
+      // success — failures arrive on tool.error. The old `isError` check
+      // inspected next(e)'s return, which is the event object and never has
+      // `error`/`exitCode`, so it was always false anyway.
       recordOutcome(
-        e._experimentId,
-        e._experimentVariant,
-        !isError,
-        Date.now() - start,
+        assignment.experimentId,
+        assignment.variant,
+        true,
+        // Duration measured from the call, not from `Date.now()` captured
+        // after awaiting next(e) — that difference was always ~0ms, so every
+        // variant looked equally fast and the experiment could never
+        // distinguish them.
+        Date.now() - assignment.startedAt,
       )
     }
 
-    return result
+    return event
   })
 }
 
