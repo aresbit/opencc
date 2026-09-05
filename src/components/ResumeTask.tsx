@@ -119,7 +119,7 @@ export function ResumeTask({
     return <Box flexDirection="column" padding={1}>
         <Box flexDirection="row">
           <Spinner />
-          <Text bold>Loading Claude Code sessions…</Text>
+          <Text bold>Loading opencc sessions…</Text>
         </Box>
         <Text dimColor>
           {retrying ? 'Retrying…' : 'Fetching your Claude Code sessions…'}
@@ -261,7 +261,7 @@ function renderErrorSpecificGuidance(errorType: LoadErrorType): React.ReactNode 
         </Box>;
     case 'other':
       return <Box marginY={1} flexDirection="row">
-          <Text dimColor>Sorry, Claude Code encountered an error</Text>
+          <Text dimColor>Sorry, opencc encountered an error</Text>
         </Box>;
   }
 }
