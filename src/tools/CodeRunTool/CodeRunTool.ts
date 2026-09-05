@@ -833,6 +833,30 @@ export function createToolProxy(
   }
 }
 
+const MAX_RESOLVE_DEPTH = 8
+
+async function deepResolve(value: unknown, depth = 0): Promise<unknown> {
+  if (depth > MAX_RESOLVE_DEPTH) return value
+
+  if (value instanceof Promise || (value && typeof (value as any).then === 'function')) {
+    return deepResolve(await value, depth + 1)
+  }
+
+  if (Array.isArray(value)) {
+    return Promise.all(value.map(v => deepResolve(v, depth + 1)))
+  }
+
+  if (value !== null && typeof value === 'object' && value.constructor === Object) {
+    const resolved: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) {
+      resolved[k] = await deepResolve(v, depth + 1)
+    }
+    return resolved
+  }
+
+  return value
+}
+
 export const CodeRunTool = buildTool({
   name: CODE_RUN_TOOL_NAME,
   searchHint: 'execute orchestrate parallel tools batch loop aggregate',
@@ -1038,7 +1062,8 @@ return "No issues found";
     const startTime = Date.now()
     try {
       const fn = new AsyncFunction('$', `"use strict";\n${code}`)
-      const result = await fn($)
+      const rawResult = await fn($)
+      const result = await deepResolve(rawResult)
       const elapsed = Date.now() - startTime
 
       return {
