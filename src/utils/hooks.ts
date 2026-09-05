@@ -2151,7 +2151,7 @@ async function* executeHooks({
   )
   if (matchingHooks.length === 0) {
     // No existing-style hooks, but algebraic-effect hooks may still apply.
-    yield* dispatchAlgebraicHooks(hookEvent, hookInput)
+    yield* dispatchAlgebraicHooks(hookEvent, hookInput, toolUseContext?.options?.tools)
     return
   }
 
@@ -2207,7 +2207,7 @@ async function* executeHooks({
       totalDurationMs,
     })
     // Still dispatch through algebraic-effect chain even on the fast-path.
-    yield* dispatchAlgebraicHooks(hookEvent, hookInput)
+    yield* dispatchAlgebraicHooks(hookEvent, hookInput, toolUseContext?.options?.tools)
     return
   }
 
@@ -3109,7 +3109,7 @@ async function* executeHooks({
   // Dispatch through algebraic-effect hook chain (dot-notation events).
   // Runs after existing hooks so algebraic hooks can observe/override
   // the results of command/callback/prompt hooks.
-  yield* dispatchAlgebraicHooks(hookEvent, hookInput)
+  yield* dispatchAlgebraicHooks(hookEvent, hookInput, toolUseContext?.options?.tools)
 
   const totalDurationMs = Date.now() - batchStartTime
   getStatsStore()?.observe('hook_duration_ms', totalDurationMs)

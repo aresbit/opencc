@@ -12,6 +12,7 @@
 
 import type { HookEvent, HookInput } from 'src/entrypoints/agentSdkTypes.js'
 import type { AggregatedHookResult } from 'src/utils/hooks.js'
+import { findToolByName, type Tools } from 'src/Tool.js'
 import { dispatch, HookChainBottomError } from './dispatcher.js'
 import { buildEngineInterface, buildCoreNouns } from './engine.js'
 import { registry } from './registry.js'
@@ -85,6 +86,7 @@ export function hasAlgebraicHooksForEvent(hookEvent: HookEvent): boolean {
 export async function* dispatchAlgebraicHooks(
   hookEvent: HookEvent,
   hookInput: HookInput,
+  tools?: Tools,
 ): AsyncGenerator<AggregatedHookResult> {
   const dotEvent = REVERSE_ALIASES[hookEvent] as FunctionHookEvent | undefined
   if (!dotEvent) return
@@ -94,6 +96,28 @@ export async function* dispatchAlgebraicHooks(
 
   const $ = engineInterface
   if (!$) return
+
+  // MCP server identity lives on the Tool object (mcpInfo.serverName), not
+  // on the hookInput — PreToolUse/PostToolUse/PostToolUseFailure only ever
+  // carry tool_name/tool_input, no matter which server the tool came from.
+  // A broker matching on server identity (e.g. on('tool.call',
+  // {mcpServer: 'ida'}, ...)) needs that looked up and attached here, once,
+  // rather than every plugin re-deriving it by parsing the mcp__<server>__
+  // <tool> name prefix (lossy — server/tool names containing "__" don't
+  // round-trip through that split reliably).
+  let enrichedInput: HookInput = hookInput
+  const toolName = (hookInput as { tool_name?: string }).tool_name
+  if (tools && toolName) {
+    const tool = findToolByName(tools, toolName)
+    if (tool?.mcpInfo) {
+      enrichedInput = {
+        ...hookInput,
+        mcpServer: tool.mcpInfo.serverName,
+        mcpTool: tool.mcpInfo.toolName,
+        isMcp: true,
+      } as HookInput
+    }
+  }
 
   try {
     // Identity ⊥. Bridged events are observational: every built-in hook on
@@ -108,14 +132,14 @@ export async function* dispatchAlgebraicHooks(
     const result = await dispatch(
       $,
       dotEvent,
-      hookInput,
+      enrichedInput,
       identity,
     )
 
     if (result == null) return
 
     // Nothing in the chain rewrote the event — pure observers, no-op.
-    if (result === hookInput) return
+    if (result === enrichedInput) return
 
     if (isDenyResult(result)) {
       yield {
