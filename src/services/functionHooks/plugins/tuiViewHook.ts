@@ -5,82 +5,47 @@
  * views based on agent type and configuration. Intercepts tool.result
  * events to inject custom rendering metadata when a matching view exists.
  *
- * Integration points:
- *   - agent.spawn → set up agent TUI config, activate views
- *   - agent.complete → clear view state, deactivate
- *   - tool.result → tag results with view metadata for renderer
+ * What this hook does and does NOT do — checked against the rest of the
+ * pipeline rather than assumed:
  *
- * Nesting: outermost observation layer (before replay) so custom views
- * see the raw tool results before any other transformation.
+ * Custom views already work WITHOUT this hook. AgentTool.tsx sets the TUI
+ * config for agents whose definition declares `tui`; AgentTool/UI.tsx calls
+ * renderCustomProgressView / renderCustomResultView; and resolveView falls
+ * back to agent-type pattern matching when an agent has no config at all
+ * (the built-in task-dashboard view is registered for '*', so it already
+ * applies everywhere). Two things this hook used to do were therefore
+ * redundant and have been removed:
+ *
+ *   - tagging `result._tuiView` on tool.result, for a consumer that does not
+ *     exist — the renderer resolves views itself
+ *   - "auto-detecting" views by agent type on subagent.start and writing
+ *     them into a config, which only pinned what resolveView's pattern
+ *     fallback would have found anyway, while risking overwriting an
+ *     explicit config AgentTool had just set
+ *
+ * What remains is the one thing nothing else guarantees: cleanup.
+ * AgentTool.tsx does clear view state and config when an agent finishes, but
+ * that call sits inline after finalizeAgentTool rather than in a `finally`,
+ * so an agent that throws or returns early leaks its config and view state
+ * for the rest of the session. subagent.stop fires on completion regardless
+ * of which path got there, which makes this hook a real backstop rather than
+ * a duplicate.
  */
 
 import type { OnRegistrar } from '../types.js'
 import {
   resolveView,
-  setAgentTuiConfig,
   clearAgentTuiConfig,
   clearViewState,
   initBuiltinViews,
 } from '../../tuiRegistry/index.js'
-import type { AgentTuiConfig } from '../../tuiRegistry/types.js'
 
-// ─── Parse TUI config from agent metadata ───────────────────────────
-
-function parseTuiConfig(meta: Record<string, unknown>): AgentTuiConfig | undefined {
-  const tui = meta.tui as Record<string, unknown> | undefined
-  if (!tui) return undefined
-
-  return {
-    views: Array.isArray(tui.views) ? tui.views.filter((v): v is string => typeof v === 'string') : undefined,
-    widgets: Array.isArray(tui.widgets) ? tui.widgets.filter((v): v is string => typeof v === 'string') : undefined,
-    layout: tui.layout === 'compact' || tui.layout === 'expanded' || tui.layout === 'dashboard'
-      ? tui.layout
-      : undefined,
-    interactive: typeof tui.interactive === 'boolean' ? tui.interactive : undefined,
-  }
-}
 
 // ─── Hook registration ─────────────────────────────────────────────
 
 export function register(on: OnRegistrar): void {
   // Ensure built-in views are registered
   initBuiltinViews()
-
-  // Observe agent spawn to set up TUI config. The real dispatched event is
-  // subagent.start (SubagentStart) — 'agent.spawn' is not in the
-  // FunctionHookEvent union and nothing ever dispatches it, so this handler
-  // never ran at all before this fix.
-  on('subagent.start', async ($, e: any, next) => {
-    const agentId = e.agent_id as string | undefined
-    const agentType = e.agent_type as string | undefined
-
-    if (agentId && agentType) {
-      // SubagentStartHookInput carries no metadata field, so this branch
-      // stays unreachable until one is added — the auto-detect fallback
-      // below is what actually sets up TUI config today.
-      const meta = (e.metadata ?? {}) as Record<string, unknown>
-      const explicitConfig = parseTuiConfig(meta)
-
-      if (explicitConfig) {
-        setAgentTuiConfig(agentId, explicitConfig)
-      } else {
-        // Auto-detect: check if any registered views match this agent type
-        const progressView = resolveView(agentType, 'progress')
-        const resultView = resolveView(agentType, 'result')
-
-        if (progressView || resultView) {
-          setAgentTuiConfig(agentId, {
-            views: [
-              ...(progressView ? [progressView.id] : []),
-              ...(resultView ? [resultView.id] : []),
-            ],
-          })
-        }
-      }
-    }
-
-    return next(e)
-  })
 
   // Observe agent completion to clean up. Same fix as subagent.start above —
   // the real dispatched event is subagent.stop (SubagentStop).
@@ -93,28 +58,6 @@ export function register(on: OnRegistrar): void {
     return next(e)
   })
 
-  // Tag tool results with view metadata
-  // VESTIGIAL: this tags `result._tuiView`, but (a) on tool.result next(e)
-  // returns the event object, so the tag lands on a value the bridge
-  // discards, and (b) nothing in the repository reads `_tuiView` or
-  // `hasCustomResultView()` at all — verified by grep across src/. Wiring it
-  // to tool.content would make the tag land somewhere real and still change
-  // nothing, because there is no consumer. Left as-is and labelled rather
-  // than "fixed", so the next reader does not mistake plumbing for a feature.
-  on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
-    const agentType = e.agent_type as string | undefined
-    const agentId = e.agent_id as string | undefined
-
-    if (agentType && agentId) {
-      const resultView = resolveView(agentType, 'result', agentId)
-      if (resultView && result && typeof result === 'object') {
-        ;(result as any)._tuiView = resultView.id
-      }
-    }
-
-    return result
-  })
 }
 
 // ─── Public API ─────────────────────────────────────────────────────

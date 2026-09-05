@@ -18,6 +18,7 @@
  * operation that creates and destroys execution contexts.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { OnRegistrar } from '../types.js'
 
 // ── Types ───────────────────────────────────────────────────────
@@ -292,28 +293,75 @@ async function rollbackBranch(forkId: string, branchId: string): Promise<string[
 // ── Hook Registration ───────────────────────────────────────────
 
 /**
- * INERT: the tool.call/tool.result handlers below all gate on
- * `e._forkBranchId`, and nothing in this repository ever assigns that field
- * (verified by grep across src/). So no file snapshot is ever taken and no
- * branch tool-call is ever recorded — fork()/resolve() manage session state
- * correctly, but the automatic snapshotting they advertise does not engage.
+ * Branch attribution.
  *
- * Fixing it needs a design decision rather than a patch: something has to
- * establish "tool calls happening now belong to branch B". The event object
- * cannot carry it, because tool.call and tool.result are separate dispatches
- * with separate objects (the same reason rsiExperimentHook needed a
- * tool_use_id-keyed map). The natural mechanism is an AsyncLocalStorage
- * scope entered around a branch's work, which is an API addition callers
- * would have to adopt — deliberately not invented here, since nothing
- * currently calls it and unused API is how this file got into this state.
+ * The hooks below need to know which branch a tool call belongs to. They
+ * used to read `e._forkBranchId` off the event, which nothing ever set, so
+ * no snapshot was taken and no branch call recorded — the whole rollback
+ * mechanism was inert.
+ *
+ * The event object cannot carry it anyway: tool.call and tool.result are
+ * separate dispatches with separate objects, so a tag written on one is
+ * invisible to the other (the same defect rsiExperimentHook had).
+ *
+ * Attribution is ambient instead — the branch is a property of "what is
+ * running right now", not of any single event. AsyncLocalStorage is the
+ * right shape for that and is already how dispatcher.ts scopes its
+ * recursion guard. A module-level "current branch" pointer would be wrong
+ * here specifically: ForkOptions.maxConcurrent exists because branches are
+ * meant to run in parallel, and a single pointer would attribute every
+ * concurrent branch's writes to whichever one started last.
  */
+const branchScope = new AsyncLocalStorage<{ forkId: string; branchId: string }>()
+
+/** The branch owning the current async context, if any. */
+function currentBranch(): { forkId: string; branchId: string } | undefined {
+  return branchScope.getStore()
+}
+
+/**
+ * Run `fn` attributed to a branch: file writes inside it get snapshotted for
+ * rollback, and its tool calls are recorded on the branch.
+ *
+ * Concurrent branches each get their own scope, so
+ * `Promise.all(branches.map(b => withBranch(fork.id, b.id, () => work(b))))`
+ * attributes correctly.
+ */
+export function withBranch<T>(
+  forkId: string,
+  branchId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return branchScope.run({ forkId, branchId }, fn)
+}
+
+/**
+ * withBranch plus lifecycle: marks the branch running, records its result or
+ * error, and leaves the branch in a terminal state either way.
+ */
+export async function runBranch<T>(
+  forkId: string,
+  branchId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  begin(forkId, branchId)
+  try {
+    const result = await withBranch(forkId, branchId, fn)
+    complete(forkId, branchId, result)
+    return result
+  } catch (error) {
+    fail(forkId, branchId, error instanceof Error ? error.message : String(error))
+    throw error
+  }
+}
+
 export function register(on: OnRegistrar): void {
   // Track file edits within active fork branches for rollback
   on('tool.call', { tool_name: 'Write' }, async ($, e: any, next) => {
     const filePath = e.tool_input?.file_path as string
-    if (filePath && e._forkBranchId) {
-      const forkId = e._forkId as string
-      const branchId = e._forkBranchId as string
+    const scope = currentBranch()
+    if (filePath && scope) {
+      const { forkId, branchId } = scope
       const session = activeForks.get(forkId)
       if (session) {
         const branch = session.branches.get(branchId)
@@ -330,9 +378,9 @@ export function register(on: OnRegistrar): void {
 
   on('tool.call', { tool_name: 'Edit' }, async ($, e: any, next) => {
     const filePath = e.tool_input?.file_path as string
-    if (filePath && e._forkBranchId) {
-      const forkId = e._forkId as string
-      const branchId = e._forkBranchId as string
+    const scope = currentBranch()
+    if (filePath && scope) {
+      const { forkId, branchId } = scope
       const session = activeForks.get(forkId)
       if (session) {
         const branch = session.branches.get(branchId)
@@ -347,26 +395,30 @@ export function register(on: OnRegistrar): void {
     return next(e)
   })
 
-  // Track tool calls within branches for profiling
-  on('tool.result', async ($, e: any, next) => {
-    const result = await next(e)
+  // Track tool calls within branches for profiling.
+  //
+  // On tool.invoke, not tool.result: elapsed used to read `e._elapsed`, a
+  // field nothing ever set, so every branch profile recorded 0ms and the
+  // profiling data was useless even once attribution worked. tool.invoke
+  // wraps the real execution, so the duration is measurable directly here
+  // instead of needing a start timestamp threaded across two dispatches.
+  on('tool.invoke', async ($, e: any, next) => {
+    const scope = currentBranch()
+    if (!scope) return next(e)
 
-    if (e._forkBranchId) {
-      const forkId = e._forkId as string
-      const branchId = e._forkBranchId as string
-      const session = activeForks.get(forkId)
-      if (session) {
-        const branch = session.branches.get(branchId)
-        if (branch) {
-          branch.toolCalls.push({
-            tool: e.tool_name ?? e.tool ?? 'unknown',
-            elapsed: e._elapsed ?? 0,
-          })
-        }
+    const start = Date.now()
+    try {
+      return await next(e)
+    } finally {
+      const { forkId, branchId } = scope
+      const branch = activeForks.get(forkId)?.branches.get(branchId)
+      if (branch) {
+        branch.toolCalls.push({
+          tool: (e.tool_name ?? e.tool ?? 'unknown') as string,
+          elapsed: Date.now() - start,
+        })
       }
     }
-
-    return result
   })
 }
 

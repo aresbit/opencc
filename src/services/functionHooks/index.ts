@@ -98,6 +98,8 @@ export {
 // ctx.fork — speculative execution
 export {
   fork as ctxFork,
+  withBranch as ctxWithBranch,
+  runBranch as ctxRunBranch,
   resolve as ctxResolve,
   abandon as ctxAbandon,
   getActiveForks,
