@@ -144,6 +144,25 @@ export function buildCoreNouns(): Record<
         return listUIDisabledPlugins()
       },
     },
+    perf: {
+      samples: async (e: { event?: string; limit?: number; offset?: number; sinceSeq?: number }) => {
+        const { getPerfSamples } = await import('./plugins/perfTelescopyHook.js')
+        return getPerfSamples(e)
+      },
+      stats: async () => {
+        const { getPerfStats } = await import('./plugins/perfTelescopyHook.js')
+        return getPerfStats()
+      },
+      sampleCount: async () => {
+        const { getSampleCount } = await import('./plugins/perfTelescopyHook.js')
+        return getSampleCount()
+      },
+      clear: async () => {
+        const { clearPerfTelescopy } = await import('./plugins/perfTelescopyHook.js')
+        clearPerfTelescopy()
+        return { cleared: true }
+      },
+    },
     fs: {
       read: async (e: { path: string }) => {
         const { readFile } = await import('fs/promises')

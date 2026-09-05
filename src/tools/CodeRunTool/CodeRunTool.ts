@@ -858,6 +858,32 @@ export function createToolProxy(
     return _thinkProxy
   }
 
+  // Lazy-load perf telescopy proxy — measure every $ call's timing/bytes/cache-hit rate
+  let _perfProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getPerfProxy() {
+    if (_perfProxy) return _perfProxy
+    _perfProxy = {
+      async samples(opts?: { event?: string; limit?: number; offset?: number; sinceSeq?: number }) {
+        const { getPerfSamples } = await import('../../services/functionHooks/plugins/perfTelescopyHook.js')
+        return getPerfSamples(opts)
+      },
+      async stats() {
+        const { getPerfStats } = await import('../../services/functionHooks/plugins/perfTelescopyHook.js')
+        return getPerfStats()
+      },
+      async sampleCount() {
+        const { getSampleCount } = await import('../../services/functionHooks/plugins/perfTelescopyHook.js')
+        return getSampleCount()
+      },
+      async clear() {
+        const { clearPerfTelescopy } = await import('../../services/functionHooks/plugins/perfTelescopyHook.js')
+        clearPerfTelescopy()
+        return { cleared: true }
+      },
+    }
+    return _perfProxy
+  }
+
   let _prove2meProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
   function getProve2MeProxy() {
     if (_prove2meProxy) return _prove2meProxy
@@ -927,6 +953,7 @@ export function createToolProxy(
     get constitution() { return getConstitutionProxy() },
     get dream() { return getDreamProxy() },
     get think() { return getThinkProxy() },
+    get perf() { return getPerfProxy() },
     get prove2me() { return getProve2MeProxy() },
     _callLog: callLog,
   }
@@ -1114,6 +1141,11 @@ multi-tool sequence detected from your usage patterns).
 \`$.think.traces({ programId?, stepId?, limit?, offset? })\` — get execution traces from think loops.
 \`$.think.results({ limit? })\` — get completed program results.
 \`$.think.stats()\` — get think loop stats (totalPrograms, totalIterations, convergenceRate).
+
+\`$.perf.samples({event?, limit?, offset?, sinceSeq?})\` — raw per-call timing/byte/cache-hit records across every $ call in the session, not just tool calls.
+\`$.perf.stats()\` — aggregated per-event stats (count, avg/p50/p95/max ms, cache hit rate, error rate, total bytes), sorted by total time — the flame graph as a table. Measure with this before assuming where time goes.
+\`$.perf.sampleCount()\` — total samples recorded.
+\`$.perf.clear()\` — reset the telescopy buffer.
 
 \`$.prove2me.analyze(sourceCode, sourceFile?, moduleName?)\` — extract Lean 4 theorem statements from code.
 \`$.prove2me.addTheorem(theoremId, lean4Statement, naturalLanguage, dependencies?, tags?)\` — add a theorem to the DAG.

@@ -65,6 +65,11 @@ export function register(on: OnRegistrar): void {
 
     const cached = cache.get(key)
     if (cached && Date.now() - cached.ts < TTL_MS) {
+      // Tag the shared event object so an outer wildcard hook (perfTelescopy)
+      // can tell a fast return apart from a fast real call — e is the same
+      // object reference all the way up the chain, so this mutation is
+      // visible to hooks that already called next(e) once this returns.
+      e._cacheHit = true
       return cached.result
     }
 

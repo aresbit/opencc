@@ -3,14 +3,20 @@
  *
  * Registration order = nesting order (outermost first):
  *
- *   tuiView → plainLanguage → mount → sudo → ctxFork → ptrace → thinkLoop →
- *   select → scheduler → replay → taintFirewall → mprotect → ipc →
- *   transaction → retry → writeGuard → cache → compress → contextHandle →
- *   autoPermit → knowledge → jitSynthesis → adaptive →
+ *   perfTelescopy → tuiView → plainLanguage → mount → sudo → ctxFork →
+ *   ptrace → thinkLoop → select → scheduler → replay → taintFirewall →
+ *   mprotect → ipc → transaction → retry → writeGuard → cache → compress →
+ *   contextHandle → autoPermit → knowledge → jitSynthesis → adaptive →
  *   rsiConstitution → rsiAntibody → rsiCrystallize → rsiExperiment →
  *   rsiSleep → dream → rsiCurriculum →
  *   uiContextGauge → uiSubagentDashboard → uiGitStatus → uiFold →
  *   uiRsiHeartbeat → ⊥
+ *
+ * perfTelescopy sits ahead of even tuiView: it wraps every other plugin's
+ * hooks (registered as '*'), so a cache hit deep in the chain, a denial
+ * from mount, a rewrite from an antibody guard — all of it shows up as one
+ * consistently-measured span. Any plugin registered before it would be
+ * invisible to its own instrumentation.
  *
  * Design rationale (following OS-kernel analogy):
  *
@@ -44,6 +50,7 @@
  */
 
 import { registry } from '../registry.js'
+import { register as registerPerfTelescopy } from './perfTelescopyHook.js'
 import { register as registerReplay } from './replayHook.js'
 import { register as registerTaintFirewall } from './taintFirewallHook.js'
 import { register as registerTransaction } from './transactionHook.js'
@@ -87,6 +94,7 @@ export function registerBuiltinPlugins(): void {
   registered = true
 
   const plugins = [
+    { name: 'perfTelescopy', id: 'builtin:perfTelescopy', register: registerPerfTelescopy },
     { name: 'tuiView', id: 'builtin:tuiView', register: registerTuiView },
     { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
     { name: 'mount', id: 'builtin:mount', register: registerMount },
@@ -135,6 +143,7 @@ export function registerBuiltinPlugins(): void {
 export function resetBuiltinPlugins(): void {
   registered = false
   for (const id of [
+    'builtin:perfTelescopy',
     'builtin:tuiView',
     'builtin:plainLanguage',
     'builtin:mount',
@@ -470,3 +479,13 @@ export {
   getLastAntibodyBlock,
   clearRsiHeartbeat,
 } from './uiRsiHeartbeatHook.js'
+
+// perfTelescopy — measure every $ call before optimizing anything
+export {
+  getPerfSamples,
+  getPerfStats,
+  getSampleCount as getPerfSampleCount,
+  clearPerfTelescopy,
+  type PerfSample,
+  type PerfEventStats,
+} from './perfTelescopyHook.js'

@@ -323,3 +323,13 @@ export { isFoldRevealed, setFoldRevealed, type ToolResultFoldProps } from './plu
 export { getCrystalCount, getLastAntibodyBlock, clearRsiHeartbeat } from './plugins/uiRsiHeartbeatHook.js'
 export type { ContextGaugeProps } from './plugins/uiContextGaugeHook.js'
 export type { SubagentDashboardProps } from './plugins/uiSubagentDashboardHook.js'
+
+// perfTelescopy — measure every $ call before optimizing anything
+export {
+  getPerfSamples,
+  getPerfStats,
+  getSampleCount as getPerfSampleCount,
+  clearPerfTelescopy,
+  type PerfSample,
+  type PerfEventStats,
+} from './plugins/perfTelescopyHook.js'
