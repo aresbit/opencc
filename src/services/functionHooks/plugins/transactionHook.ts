@@ -89,6 +89,49 @@ function looksLikeTestFailure(resultStr: string): boolean {
   return failureIndicators.some(p => p.test(resultStr))
 }
 
+/**
+ * Rollback is OFF by default.
+ *
+ * This hook overwrites files on disk from snapshots when a test command's
+ * output looks like a failure. That is a destructive action taken on a regex
+ * match, so it must be an explicit choice rather than something that starts
+ * happening because a reading bug got fixed.
+ *
+ * History worth keeping, because a plain `git revert` of that fix would be
+ * the wrong move: the pre-fix code read `JSON.stringify(event)` instead of
+ * the command's output, and the serialized event embeds tool_input.command.
+ * Since snapshotFile() opens a transaction implicitly on any Write/Edit,
+ * a command like `bun test 2>&1 | grep -i fail`, or a path such as
+ * tests/test_failure_handling.py, matched /\bFAIL(?:ED|URE)?\b/ and rolled
+ * the user's edits back WHILE THE TESTS WERE PASSING. So the old code was a
+ * narrow landmine, not merely inert. Reading the real output is the fix;
+ * this flag is what makes acting on it consensual.
+ *
+ * Snapshots are still taken while disabled — they cost only memory, and they
+ * are what makes rollbackManual() usable on demand. shadowRollbacks counts
+ * how often an automatic rollback WOULD have fired, so the false-positive
+ * rate can be measured before anyone turns this on.
+ */
+let rollbackEnabled = false
+let shadowRollbacks = 0
+
+export function setTransactionRollbackEnabled(on: boolean): boolean {
+  rollbackEnabled = on
+  return rollbackEnabled
+}
+
+export function getTransactionStats(): {
+  rollbackEnabled: boolean
+  shadowRollbacks: number
+  activeSnapshots: number
+} {
+  return {
+    rollbackEnabled,
+    shadowRollbacks,
+    activeSnapshots: activeTx?.snapshots.size ?? 0,
+  }
+}
+
 export function register(on: OnRegistrar): void {
   on('tool.call', { tool_name: 'Write' }, async ($, e: any, next) => {
     const filePath = e.tool_input?.file_path as string
@@ -126,6 +169,12 @@ export function register(on: OnRegistrar): void {
     const resultStr = result
 
     if (looksLikeTestFailure(resultStr) && activeTx.snapshots.size > 0) {
+      if (!rollbackEnabled) {
+        // Measure, don't act. The transaction stays open so a deliberate
+        // rollbackManual() can still use its snapshots.
+        shadowRollbacks++
+        return event
+      }
       const tx = activeTx
       activeTx = null
 

@@ -9,7 +9,8 @@
  * runtime; encoded/split/transformed leaks are caught via base64 and
  * URL-encoding checks.
  *
- * Failure policy: FAIL-CLOSED — if the hook errors, the call is blocked.
+ * Failure policy: FAIL-CLOSED when blocking is enabled. Blocking is off by
+ * default — see setTaintBlockingEnabled below.
  */
 
 import type { OnRegistrar } from '../types.js'
@@ -67,6 +68,39 @@ function containsTainted(text: string): TaintEntry | undefined {
   return undefined
 }
 
+/**
+ * Blocking is OFF by default; scanning is not.
+ *
+ * The scanner had never worked (it read next(e)'s return on tool.result,
+ * which is the event object, so `typeof result === 'string'` was always
+ * false and no secret was ever recorded). Fixing it means the deny path
+ * below — which was always live but had an empty taint set — can now start
+ * blocking Bash/WebFetch calls. Turning that on as a side effect of a
+ * reading fix is not a decision this hook gets to make for the user.
+ *
+ * So: keep recording (in-memory only, no behavior change), and count how
+ * often a block WOULD have fired. That gives the false-positive rate — these
+ * patterns match any 20+ character value after a key-ish name, which will
+ * catch things that are not secrets — before anything actually gets blocked.
+ *
+ * setTaintBlockingEnabled(true) turns on real enforcement.
+ */
+let blockingEnabled = false
+let shadowBlocks = 0
+
+export function setTaintBlockingEnabled(on: boolean): boolean {
+  blockingEnabled = on
+  return blockingEnabled
+}
+
+export function getTaintStats(): {
+  blockingEnabled: boolean
+  shadowBlocks: number
+  tracked: number
+} {
+  return { blockingEnabled, shadowBlocks, tracked: taintedValues.size }
+}
+
 export function register(on: OnRegistrar): void {
   // 'tool.content', not 'tool.result'. On tool.result, next(e) bottoms out
   // in an identity function and returns the EVENT OBJECT, never a string —
@@ -108,6 +142,10 @@ export function register(on: OnRegistrar): void {
     const taint = containsTainted(serialized)
 
     if (taint) {
+      if (!blockingEnabled) {
+        shadowBlocks++
+        return next(e)
+      }
       return {
         deny: `Blocked: ${tool} call contains a tainted secret originally found in ${taint.source}. ` +
           `Remove the secret value from your command and try again.`,

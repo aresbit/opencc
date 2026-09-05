@@ -209,7 +209,7 @@ export function resetBuiltinPlugins(): void {
 }
 
 // Cache
-export { clearCache, getCacheMtimeStats, setCacheEnabled, isCacheEnabled } from './cacheHook.js'
+export { clearCache, getCacheMtimeStats, getCacheStats, setCacheEnabled, isCacheEnabled } from './cacheHook.js'
 
 // Auto-permit
 export { isAutoPermitted, getApprovedCount, clearApproved } from './autoPermitHook.js'
@@ -233,10 +233,10 @@ export {
 } from './contextShuntHook.js'
 
 // Taint firewall
-export { getTaintedCount, isTainted, clearTainted } from './taintFirewallHook.js'
+export { getTaintedCount, isTainted, clearTainted, setTaintBlockingEnabled, getTaintStats } from './taintFirewallHook.js'
 
 // Transaction
-export { getActiveTransaction, rollbackManual, clearTransaction } from './transactionHook.js'
+export { getActiveTransaction, rollbackManual, clearTransaction, setTransactionRollbackEnabled, getTransactionStats } from './transactionHook.js'
 
 // Event sourcing / replay
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './replayHook.js'
