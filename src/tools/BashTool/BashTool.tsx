@@ -698,6 +698,14 @@ export const BashTool = buildTool({
         if (result.code !== 0) {
           stdoutAccumulator.append(`Exit code ${result.code}`);
         }
+        // result.stderr carries watchdog-generated notices (size-cap kill,
+        // timeout) set in ShellCommand.ts — distinct from process stderr,
+        // which is already merged into result.stdout above. Surface it so
+        // e.g. a SIGKILL from the output-size watchdog reads as an actual
+        // explanation instead of a bare "Exit code 137".
+        if (result.stderr) {
+          stdoutAccumulator.append(EOL + result.stderr);
+        }
       }
       if (!preventCwdChanges) {
         const appState = getAppState();

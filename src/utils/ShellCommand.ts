@@ -175,6 +175,17 @@ class ShellCommandImpl implements ShellCommand {
       }
     }
 
+    // File mode (bash commands): child writes directly to the fd with no
+    // JS involvement, so nothing caps it in-process. Previously this watchdog
+    // only started once a task was backgrounded — a FOREGROUND command was
+    // bounded only by its timeout (default up to tens of minutes), during
+    // which a runaway process (e.g. `yes > file`, an accidental infinite
+    // loop writing to stdout) could fill the disk long before timing out.
+    // Starting the watchdog immediately closes that gap for the common case.
+    if (taskOutput.stdoutToFile) {
+      this.#startSizeWatchdog()
+    }
+
     this.result = this.#createResultPromise()
   }
 
@@ -236,6 +247,10 @@ class ShellCommandImpl implements ShellCommand {
   }
 
   #startSizeWatchdog(): void {
+    // Idempotent: called from both the constructor (foreground) and
+    // background() (transition to backgrounded) — only one interval should
+    // ever be live at a time.
+    if (this.#sizeWatchdog !== null) return
     this.#sizeWatchdog = setInterval(() => {
       void this.taskOutput.getFileSize().then(
         size => {
@@ -243,7 +258,7 @@ class ShellCommandImpl implements ShellCommand {
           // (process exited on its own) — otherwise we'd mislabel stderr.
           if (
             size > this.#maxOutputBytes &&
-            this.#status === 'backgrounded' &&
+            (this.#status === 'backgrounded' || this.#status === 'running') &&
             this.#sizeWatchdog !== null
           ) {
             this.#killedForSize = true
@@ -316,7 +331,7 @@ class ShellCommandImpl implements ShellCommand {
 
     if (this.#killedForSize) {
       result.stderr = prependStderr(
-        `Background command killed: output file exceeded ${MAX_TASK_OUTPUT_BYTES_DISPLAY}`,
+        `Command killed: output exceeded ${MAX_TASK_OUTPUT_BYTES_DISPLAY} disk cap`,
         result.stderr,
       )
     } else if (code === SIGTERM) {
@@ -351,9 +366,10 @@ class ShellCommandImpl implements ShellCommand {
       this.#status = 'backgrounded'
       this.#cleanupListeners()
       if (this.taskOutput.stdoutToFile) {
-        // File mode: child writes directly to the fd with no JS involvement.
-        // The foreground timeout is gone, so watch file size to prevent
-        // a stuck append loop from filling the disk (768GB incident).
+        // The watchdog is already running (started in the constructor) but
+        // #cleanupListeners() above just cleared it along with the foreground
+        // timeout; restart it so a stuck append loop still gets caught now
+        // that there's no timeout backstopping this task at all (768GB incident).
         this.#startSizeWatchdog()
       } else {
         // Pipe mode: spill the in-memory buffer so readers can find it on disk.
