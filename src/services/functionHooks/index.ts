@@ -48,7 +48,7 @@ export {
 } from './bridge.js'
 
 // Built-in plugin utilities
-export { clearCache } from './plugins/cacheHook.js'
+export { clearCache, getCacheMtimeStats } from './plugins/cacheHook.js'
 export { isAutoPermitted, getApprovedCount, clearApproved } from './plugins/autoPermitHook.js'
 export {
   queryFiles,

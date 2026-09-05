@@ -191,7 +191,7 @@ export function resetBuiltinPlugins(): void {
 }
 
 // Cache
-export { clearCache } from './cacheHook.js'
+export { clearCache, getCacheMtimeStats } from './cacheHook.js'
 
 // Auto-permit
 export { isAutoPermitted, getApprovedCount, clearApproved } from './autoPermitHook.js'
