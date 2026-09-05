@@ -53,6 +53,7 @@ import { register as registerIpc } from './ipcHook.js'
 import { register as registerSudo } from './sudoHook.js'
 import { register as registerPtrace } from './ptraceHook.js'
 import { register as registerScheduler } from './schedulerHook.js'
+import { register as registerThinkLoop } from './thinkLoopHook.js'
 import { register as registerRsiConstitution } from './rsiConstitutionHook.js'
 import { register as registerRsiAntibody } from './rsiAntibodyHook.js'
 import { register as registerRsiCrystallize } from './rsiCrystallizeHook.js'
@@ -74,6 +75,7 @@ export function registerBuiltinPlugins(): void {
     { name: 'sudo', id: 'builtin:sudo', register: registerSudo },
     { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
     { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace },
+    { name: 'thinkLoop', id: 'builtin:thinkLoop', register: registerThinkLoop },
     { name: 'select', id: 'builtin:select', register: registerSelect },
     { name: 'scheduler', id: 'builtin:scheduler', register: registerScheduler },
     { name: 'replay', id: 'builtin:replay', register: registerReplay },
@@ -115,6 +117,7 @@ export function resetBuiltinPlugins(): void {
     'builtin:sudo',
     'builtin:ctxFork',
     'builtin:ptrace',
+    'builtin:thinkLoop',
     'builtin:select',
     'builtin:scheduler',
     'builtin:replay',
@@ -395,3 +398,19 @@ export {
   getStats as getSchedulerStats,
   clearScheduler,
 } from './schedulerHook.js'
+
+// thinkLoop — eval/apply interpreter for deliberative reasoning
+export {
+  loop as thinkLoop,
+  step as thinkStep,
+  reflect as thinkReflect,
+  getTraces as getThinkTraces,
+  getResults as getThinkResults,
+  getStats as getThinkStats,
+  clearThinkLoop,
+  type ThinkProgram,
+  type ThinkExpr,
+  type ThinkResult,
+  type ThinkTrace,
+  type ReflectResult,
+} from './thinkLoopHook.js'

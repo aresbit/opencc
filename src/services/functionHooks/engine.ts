@@ -662,6 +662,32 @@ export function buildCoreNouns(): Record<
         return getActivity()
       },
     },
+    think: {
+      loop: async (e: { program: import('./plugins/thinkLoopHook.js').ThinkProgram; externalApply?: (fn: string, args: unknown[]) => Promise<unknown> }) => {
+        const { loop } = await import('./plugins/thinkLoopHook.js')
+        return loop(e.program, e.externalApply)
+      },
+      step: async (e: { expr: import('./plugins/thinkLoopHook.js').ThinkExpr; env?: Record<string, unknown>; externalApply?: (fn: string, args: unknown[]) => Promise<unknown> }) => {
+        const { step } = await import('./plugins/thinkLoopHook.js')
+        return step(e.expr, e.env, e.externalApply)
+      },
+      reflect: async (e: { result: unknown; criteria: string }) => {
+        const { reflect } = await import('./plugins/thinkLoopHook.js')
+        return reflect(e.result, e.criteria)
+      },
+      traces: async (e: { programId?: string; stepId?: string; limit?: number; offset?: number }) => {
+        const { getTraces } = await import('./plugins/thinkLoopHook.js')
+        return getTraces(e)
+      },
+      results: async (e: { limit?: number }) => {
+        const { getResults } = await import('./plugins/thinkLoopHook.js')
+        return getResults(e)
+      },
+      stats: async () => {
+        const { getStats } = await import('./plugins/thinkLoopHook.js')
+        return getStats()
+      },
+    },
     budget: {
       getrlimit: async (e: { agentId: string }) => {
         const { getrlimit } = await import('./plugins/schedulerHook.js')

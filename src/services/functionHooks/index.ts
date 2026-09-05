@@ -285,3 +285,19 @@ export {
   getStats as getSchedulerStats,
   clearScheduler,
 } from './plugins/schedulerHook.js'
+
+// thinkLoop — eval/apply interpreter for deliberative reasoning
+export {
+  loop as thinkLoop,
+  step as thinkStep,
+  reflect as thinkReflect,
+  getTraces as getThinkTraces,
+  getResults as getThinkResults,
+  getStats as getThinkStats,
+  clearThinkLoop,
+  type ThinkProgram,
+  type ThinkExpr,
+  type ThinkResult,
+  type ThinkTrace,
+  type ReflectResult,
+} from './plugins/thinkLoopHook.js'

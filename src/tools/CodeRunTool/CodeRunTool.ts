@@ -760,6 +760,39 @@ export function createToolProxy(
     return _dreamProxy
   }
 
+  // Lazy-load thinkLoop proxy for deliberative reasoning loops
+  let _thinkProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getThinkProxy() {
+    if (_thinkProxy) return _thinkProxy
+    _thinkProxy = {
+      async loop(program: unknown) {
+        const { loop } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return loop(program as any)
+      },
+      async step(expr: unknown, env?: unknown) {
+        const { step } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return step(expr as any, env as any)
+      },
+      async reflect(result: unknown, criteria: unknown) {
+        const { reflect } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return reflect(result, String(criteria))
+      },
+      async traces(opts?: { programId?: string; stepId?: string; limit?: number; offset?: number }) {
+        const { getTraces } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return getTraces(opts)
+      },
+      async results(opts?: { limit?: number }) {
+        const { getResults } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return getResults(opts)
+      },
+      async stats() {
+        const { getStats } = await import('../../services/functionHooks/plugins/thinkLoopHook.js')
+        return getStats()
+      },
+    }
+    return _thinkProxy
+  }
+
   let _prove2meProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
   function getProve2MeProxy() {
     if (_prove2meProxy) return _prove2meProxy
@@ -828,6 +861,7 @@ export function createToolProxy(
     get curriculum() { return getCurriculumProxy() },
     get constitution() { return getConstitutionProxy() },
     get dream() { return getDreamProxy() },
+    get think() { return getThinkProxy() },
     get prove2me() { return getProve2MeProxy() },
     _callLog: callLog,
   }
@@ -995,6 +1029,13 @@ multi-tool sequence detected from your usage patterns).
 \`$.dream.configure({ minToolCalls?, minEventDelta?, cooldownMs?, enabled? })\` — adjust dream thresholds.
 \`$.dream.recentCalls({tool?, limit?, offset?})\` — dump raw tool call log. Returns [{tool, timestamp, success, filePath?}].
 \`$.dream.activity()\` — get full current activity state: uniqueTools[], filesTouched[], errorPatterns[], counters.
+
+\`$.think.loop(program)\` — run a ThinkProgram (eval/apply loop with steps, guards, refinement, convergence).
+\`$.think.step(expr, env?)\` — evaluate a single ThinkExpr in an environment. Expr types: literal, ref, call, seq, branch, loop, let, reflect.
+\`$.think.reflect(result, criteria)\` — meta-cognitive check: returns { satisfied, feedback, score, iteration, elapsed }.
+\`$.think.traces({ programId?, stepId?, limit?, offset? })\` — get execution traces from think loops.
+\`$.think.results({ limit? })\` — get completed program results.
+\`$.think.stats()\` — get think loop stats (totalPrograms, totalIterations, convergenceRate).
 
 \`$.prove2me.analyze(sourceCode, sourceFile?, moduleName?)\` — extract Lean 4 theorem statements from code.
 \`$.prove2me.addTheorem(theoremId, lean4Statement, naturalLanguage, dependencies?, tags?)\` — add a theorem to the DAG.
