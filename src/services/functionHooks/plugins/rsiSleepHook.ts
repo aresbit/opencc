@@ -312,7 +312,7 @@ export function register(on: OnRegistrar): void {
     recordEvent({
       type: 'subagent',
       timestamp: Date.now(),
-      metadata: { agentId: e.agentId },
+      metadata: { agentId: e.agent_id },
     })
     return next(e)
   })

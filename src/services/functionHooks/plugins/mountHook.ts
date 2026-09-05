@@ -237,7 +237,7 @@ function getAgentNamespace(agentId: string): string {
 export function register(on: OnRegistrar): void {
   // Intercept tool.call — deny calls to tools not in the agent's namespace
   on('tool.call', async ($, e: any, next) => {
-    const agentId = e._agentId as string | undefined
+    const agentId = e.agent_id as string | undefined
     if (!agentId) return next(e) // No agent context = root namespace
 
     const nsId = getAgentNamespace(agentId)
@@ -271,13 +271,15 @@ export function register(on: OnRegistrar): void {
 
   // When a subagent spawns, create a child namespace
   on('subagent.start', async ($, e: any, next) => {
-    const agentId = e.agentId as string | undefined
-    const parentAgentId = e.parentAgentId as string | undefined
-
+    const agentId = e.agent_id as string | undefined
+    // SubagentStartHookInput carries only the new subagent's own agent_id —
+    // there is no parent-agent-id field in the hookInput shape, so a nested
+    // subagent's namespace always inherits from root rather than its
+    // spawning agent's namespace. (parentAgentId was previously read from a
+    // field that never existed either, so this is not a behavior change —
+    // just made explicit instead of silently reading undefined.)
     if (agentId) {
-      const parentNsId = parentAgentId
-        ? getAgentNamespace(parentAgentId)
-        : ROOT_NS_ID
+      const parentNsId = ROOT_NS_ID
 
       try {
         const childNs = createNamespace(`agent:${agentId}`, parentNsId)
@@ -292,7 +294,7 @@ export function register(on: OnRegistrar): void {
   on('subagent.stop', async ($, e: any, next) => {
     const result = await next(e)
 
-    const agentId = e.agentId as string | undefined
+    const agentId = e.agent_id as string | undefined
     if (agentId) {
       const nsId = agentNamespaceMap.get(agentId)
       if (nsId && nsId !== ROOT_NS_ID) {

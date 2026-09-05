@@ -46,13 +46,18 @@ export function register(on: OnRegistrar): void {
   // Ensure built-in views are registered
   initBuiltinViews()
 
-  // Observe agent spawn to set up TUI config
-  on('agent.spawn', async ($, e: any, next) => {
-    const agentId = e.agentId as string | undefined
-    const agentType = e.agentType as string | undefined
+  // Observe agent spawn to set up TUI config. The real dispatched event is
+  // subagent.start (SubagentStart) — 'agent.spawn' is not in the
+  // FunctionHookEvent union and nothing ever dispatches it, so this handler
+  // never ran at all before this fix.
+  on('subagent.start', async ($, e: any, next) => {
+    const agentId = e.agent_id as string | undefined
+    const agentType = e.agent_type as string | undefined
 
     if (agentId && agentType) {
-      // Check for explicit TUI config in agent metadata
+      // SubagentStartHookInput carries no metadata field, so this branch
+      // stays unreachable until one is added — the auto-detect fallback
+      // below is what actually sets up TUI config today.
       const meta = (e.metadata ?? {}) as Record<string, unknown>
       const explicitConfig = parseTuiConfig(meta)
 
@@ -77,9 +82,10 @@ export function register(on: OnRegistrar): void {
     return next(e)
   })
 
-  // Observe agent completion to clean up
-  on('agent.complete', async ($, e: any, next) => {
-    const agentId = e.agentId as string | undefined
+  // Observe agent completion to clean up. Same fix as subagent.start above —
+  // the real dispatched event is subagent.stop (SubagentStop).
+  on('subagent.stop', async ($, e: any, next) => {
+    const agentId = e.agent_id as string | undefined
     if (agentId) {
       clearViewState(agentId)
       clearAgentTuiConfig(agentId)
@@ -90,8 +96,8 @@ export function register(on: OnRegistrar): void {
   // Tag tool results with view metadata
   on('tool.result', async ($, e: any, next) => {
     const result = await next(e)
-    const agentType = e._agentType as string | undefined
-    const agentId = e._agentId as string | undefined
+    const agentType = e.agent_type as string | undefined
+    const agentId = e.agent_id as string | undefined
 
     if (agentType && agentId) {
       const resultView = resolveView(agentType, 'result', agentId)

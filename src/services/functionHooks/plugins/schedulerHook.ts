@@ -263,7 +263,7 @@ export function register(on: OnRegistrar): void {
 
   // Track tool call budgets
   on('tool.call', async ($, e: any, next) => {
-    const agentId = (e._agentId ?? 'main') as string
+    const agentId = (e.agent_id ?? 'main') as string
 
     // Check tool call budget
     const budgetResult = checkBudget(agentId, 'toolCalls')

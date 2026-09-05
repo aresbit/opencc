@@ -198,7 +198,7 @@ function logElevation(
 export function register(on: OnRegistrar): void {
   // Intercept tool calls for sudo policy evaluation
   on('tool.call', async ($, e: any, next) => {
-    const agentId = (e._agentId ?? 'main') as string
+    const agentId = (e.agent_id ?? 'main') as string
     const toolName = (e.tool_name ?? e.tool ?? 'unknown') as string
 
     // Determine resource from tool input

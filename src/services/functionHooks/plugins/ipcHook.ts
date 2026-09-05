@@ -281,7 +281,7 @@ export function register(on: OnRegistrar): void {
   // Check locks on file writes
   on('tool.call', { tool_name: 'Write' }, async ($, e: any, next) => {
     const filePath = e.tool_input?.file_path as string
-    const agentId = (e._agentId ?? 'main') as string
+    const agentId = (e.agent_id ?? 'main') as string
 
     if (filePath) {
       const activeLocks = getActiveLocks(filePath)
@@ -301,7 +301,7 @@ export function register(on: OnRegistrar): void {
 
   on('tool.call', { tool_name: 'Edit' }, async ($, e: any, next) => {
     const filePath = e.tool_input?.file_path as string
-    const agentId = (e._agentId ?? 'main') as string
+    const agentId = (e.agent_id ?? 'main') as string
 
     if (filePath) {
       const activeLocks = getActiveLocks(filePath)

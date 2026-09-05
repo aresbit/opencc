@@ -328,8 +328,8 @@ export function register(on: OnRegistrar): void {
 
     fireEvent({
       kind: 'subagent',
-      id: e.agentId ?? 'unknown',
-      agentId: e.agentId,
+      id: e.agent_id ?? 'unknown',
+      agentId: e.agent_id,
       payload: result,
       firedAt: Date.now(),
     })

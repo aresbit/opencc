@@ -212,7 +212,7 @@ function addCapture(session: TraceSession, capture: TraceCapture): void {
 export function register(on: OnRegistrar): void {
   // Intercept tool.call for traced agents
   on('tool.call', async ($, e: any, next) => {
-    const agentId = e._agentId as string | undefined
+    const agentId = e.agent_id as string | undefined
     if (!agentId) return next(e)
 
     const session = traceSessions.get(agentId)
@@ -265,7 +265,7 @@ export function register(on: OnRegistrar): void {
 
   // Capture tool errors
   on('tool.error', async ($, e: any, next) => {
-    const agentId = e._agentId as string | undefined
+    const agentId = e.agent_id as string | undefined
     if (agentId) {
       const session = traceSessions.get(agentId)
       if (session) {
@@ -285,7 +285,7 @@ export function register(on: OnRegistrar): void {
   on('subagent.stop', async ($, e: any, next) => {
     const result = await next(e)
 
-    const agentId = e.agentId as string | undefined
+    const agentId = e.agent_id as string | undefined
     if (agentId) {
       detach(agentId)
     }
