@@ -34,8 +34,8 @@
  * - cache: serves cached results (stores post-compress/handle values)
  * - compress: lossy truncation for moderate-sized results (12K+)
  * - contextShunt: replaces contextHandle's preview with a worker-model
- *   summary so the payload never enters context (OFF by default — it is the
- *   only transform here that calls a model)
+ *   summary so the payload never enters context (ON, and the only transform
+ *   here that calls a model — $.shunt.disable() to turn it off)
  * - contextHandle: lossless handle-ization for large results (16K+), on
  *   tool.content — the event whose resume value is what the model sees
  * - autoPermit: observational — marks approved patterns

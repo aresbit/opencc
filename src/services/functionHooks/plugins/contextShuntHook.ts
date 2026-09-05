@@ -54,13 +54,27 @@
  * summary, reusing the store contextHandle already populated. Nothing is
  * duplicated.
  *
- * DEFAULT OFF. Every other transform in this chain is cheap and
- * deterministic; this one makes a network call to a model, so it costs
- * seconds and worker tokens, and it is lossy in a way a preview is not.
- * Enable deliberately with setShuntConfig({ enabled: true }).
+ * ON by default, deliberately, and it is the only transform in this chain
+ * that makes a network call — every other one is cheap and deterministic.
+ * What that buys and costs, stated plainly so the tradeoff is visible at the
+ * point of decision:
+ *
+ *   + a large tool result stops entering context, and since context bytes
+ *     are re-sent every turn, that saving compounds for the rest of the
+ *     session
+ *   - one worker round-trip (up to timeoutMs) per distinct large result,
+ *     charged in worker tokens
+ *   - the summary is lossy where the preview it replaces was exact bytes;
+ *     exact bytes remain available through deref(handle, start, end)
+ *
+ * Turn it off with setShuntConfig({ enabled: false }) or $.shunt.disable().
+ * getShuntStats() is how to tell whether it is actually working: a session
+ * with summarized === 0 and failures > 0 means the worker is unreachable and
+ * every result quietly fell back to contextHandle's preview.
  *
  * Fail-open at every step: disabled, no handle, worker error, timeout, empty
- * response — all return contextHandle's output unchanged.
+ * response — all return contextHandle's output unchanged, which is exactly
+ * the behavior that existed before this hook.
  */
 
 import type { OnRegistrar } from '../types.js'
@@ -70,7 +84,7 @@ import { asSystemPrompt } from '../../../utils/systemPromptType.js'
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
 
 export interface ShuntConfig {
-  /** Off by default — this one calls a model. */
+  /** On. Disable with setShuntConfig({ enabled: false }) or $.shunt.disable(). */
   enabled: boolean
   /** Only summarize content at least this large (chars). */
   minChars: number
@@ -83,7 +97,7 @@ export interface ShuntConfig {
 }
 
 const DEFAULT_CONFIG: ShuntConfig = {
-  enabled: false,
+  enabled: true,
   minChars: 16384,
   tools: null,
   timeoutMs: 15_000,
