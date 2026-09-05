@@ -263,9 +263,9 @@ export {
   getDreamStats,
   getRecentCalls as getDreamRecentCalls,
   getActivity as getDreamActivity,
-  getDreamConfig,
-  setDreamConfig,
-  resetDreamConfig,
+  getConfig as getDreamConfig,
+  setConfig as setDreamConfig,
+  resetConfig as resetDreamConfig,
   clearDream,
   type ToolCallRecord,
 } from './plugins/dreamHook.js'
@@ -363,3 +363,8 @@ export {
 // processPool — investigated and NOT built (see plugins/processPoolHook.js
 // header for why); exposes only the benchmark that grounded that conclusion.
 export { benchmarkSpawnOverhead } from './plugins/processPoolHook.js'
+
+// commandCompilation — investigated and NOT built (see
+// plugins/commandCompilationHook.js header for why); exposes only the
+// benchmark that grounded that conclusion.
+export { benchmarkPipelineOverhead } from './plugins/commandCompilationHook.js'
