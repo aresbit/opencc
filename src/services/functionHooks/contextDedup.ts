@@ -1,5 +1,11 @@
 /**
- * KV-cache affinity — instrumentation, not enforcement.
+ * Context de-duplication + prompt-cache telemetry.
+ *
+ * NOT a hook. This was registered as a plugin with an empty register(),
+ * which made it look like part of the chain while contributing nothing to
+ * it. Its one real integration point is a direct call from
+ * processUserInput.ts, so it lives here as a plain module instead of being
+ * carried in the plugin registry.
  *
  * The proposal's concern: hooks injecting volatile content (timestamps,
  * git status) into the prompt prefix can invalidate Anthropic's prompt
@@ -43,11 +49,10 @@
  * assembly today, and adding one is a context.ts change, not a plugin.
  */
 
-import type { OnRegistrar } from '../types.js'
 import {
   getTotalCacheReadInputTokens,
   getTotalCacheCreationInputTokens,
-} from '../../../bootstrap/state.js'
+} from '../../bootstrap/state.js'
 
 const seenAdditionalContext = new Map<string, { firstSeenAt: number; repeatCount: number }>()
 const MAX_TRACKED = 200
@@ -63,16 +68,6 @@ function hashKey(text: string): string {
   return `${text.length}:${checksum}`
 }
 
-/**
- * No event registration — this plugin's real integration point is
- * shouldDedupContext(), called directly from
- * processUserInput.ts where hookResult.additionalContexts actually
- * becomes message content (the one place hook-injected prompt content is
- * produced). There is nothing to gate on tool.call/session.end/etc. for
- * what this plugin does, so register() is a deliberate no-op rather than
- * a hook registered for the sake of matching every other plugin's shape.
- */
-export function register(_on: OnRegistrar): void {}
 
 /**
  * Call with an about-to-be-injected additionalContext string. Returns

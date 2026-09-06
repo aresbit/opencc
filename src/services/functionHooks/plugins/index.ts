@@ -1,57 +1,64 @@
 /**
  * Built-in algebraic-effect hook plugins.
  *
- * Registration order = nesting order (outermost first):
+ * Every plugin here earns its slot: it either changes what happens in the
+ * chain, or its state is reachable from $. Anything that did neither has
+ * been deleted rather than kept as documentation with a register() that
+ * registers nothing.
  *
- *   perfTelescopy → tuiView → plainLanguage → mount → mcpBroker → sudo →
- *   ctxFork → ptrace → thinkLoop → select → scheduler → replay → taintFirewall →
- *   mprotect → ipc → transaction → retry → writeGuard → cache → compress →
- *   contextShunt → contextHandle → autoPermit → knowledge → jitSynthesis →
- *   adaptive →
- *   rsiConstitution → rsiAntibody → rsiCrystallize → rsiExperiment →
- *   rsiSleep → dream → rsiCurriculum →
- *   uiContextGauge → uiSubagentDashboard → uiGitStatus → uiFold →
- *   uiRsiHeartbeat → ⊥
+ * ── How they compose ──────────────────────────────────────────────────
  *
- * perfTelescopy sits ahead of even tuiView: it wraps every other plugin's
- * hooks (registered as '*'), so a cache hit deep in the chain, a denial
- * from mount, a rewrite from an antibody guard — all of it shows up as one
- * consistently-measured span. Any plugin registered before it would be
- * invisible to its own instrumentation.
+ * Registration order is nesting order, outermost first, but ordering only
+ * matters between plugins sharing an event. Grouped by the event they
+ * contend on:
  *
- * Design rationale (following OS-kernel analogy):
+ * tool.call (bridged from PreToolUse — allow / deny / rewrite input /
+ * inject context; a returned value other than those is dropped):
+ *   mount → mcpBroker → sudo → ctxFork → ptrace → scheduler → replay →
+ *   taintFirewall → ipc → transaction → writeGuard → knowledge →
+ *   jitSynthesis → adaptive → rsi*
+ *   Guards sit outermost so a denial short-circuits before observers spend
+ *   work; adaptive is innermost so it sees the input every guard allowed.
  *
- * - tuiView: observational, outermost — tags events with UI metadata
- * - plainLanguage: prompt enhancer — injects ISO 24495 plain-language directives
- * - mount: namespace enforcement — denies tool calls outside agent's mount table
- * - ctxFork: speculative execution — tracks branch file snapshots for rollback
- * - select: event multiplexing — feeds subagent/file/timer events into poll sets
- * - replay (audit): sees raw I/O including taint redactions
- * - taintFirewall: blocks exfiltration before any transformation
- * - transaction: snapshots before edits, rollback wraps everything inside
- * - retry: retries transient errors in any inner layer
- * - writeGuard: rejects bad writes before caching
- * - cache: serves cached results (stores post-compress/handle values)
- * - compress: lossy truncation for moderate-sized results (12K+)
- * - contextShunt: replaces contextHandle's preview with a worker-model
- *   summary so the payload never enters context (ON, and the only transform
- *   here that calls a model — $.shunt.disable() to turn it off)
- * - contextHandle: lossless handle-ization for large results (16K+), on
- *   tool.content — the event whose resume value is what the model sees
- * - autoPermit: observational — marks approved patterns
- * - knowledge: observational — indexes findings
- * - adaptive: innermost — learns from failures at the bottom
+ * tool.invoke (⊥ is the real tool execution — this is where a hook can
+ * REPLACE the computation or re-run it):
+ *   ctxFork → retry → cache → adaptive
+ *   retry outside cache: a retry should be able to hit the cache on its
+ *   second attempt. cache outside adaptive: a served hit is not a failure
+ *   to learn from.
  *
- * UI ring — synchronous ui.slot.render / ui.press hooks, dispatched by
- * uiDispatcher.ts (not dispatcher.ts) from inside React render. None of
- * these touch tool.call/session.end/etc., so their order relative to the
- * plugins above is irrelevant; they only compete with each other, and each
- * owns a distinct slot id:
- * - uiContextGauge: renders "context-gauge" — token/cost watermark bar
- * - uiSubagentDashboard: renders "subagent-dashboard" — running-agent grid
- * - uiGitStatus: renders "git-status" — branch/uncommitted/background count
- * - uiFold: renders "tool-result" — height-clamps oversized tool output
- * - uiRsiHeartbeat: renders "rsi-heartbeat" + toasts on antibody/crystal events
+ * tool.content (the resume value becomes what the model sees):
+ *   plainLanguage → select → replay → taintFirewall → mprotect →
+ *   transaction → compress → contextShunt → contextHandle → knowledge
+ *   contextHandle runs innermost and turns a large result into
+ *   "[handle:…] + preview"; contextShunt wraps it and upgrades that preview
+ *   to a worker-model summary; compress wraps both and only ever sees what
+ *   slipped past them (the 12K-16K band). Scanners (taint, mprotect) sit
+ *   outside the narrowing so they inspect full content, not a summary.
+ *
+ * tool.error / session.* / subagent.*: observers only, order irrelevant.
+ *
+ * perfTelescopy registers '*' and is first, so it wraps every hook above:
+ * a cache hit deep in the chain, a denial from mount, a rewrite from an
+ * antibody guard all surface as one consistently-measured span.
+ *
+ * ── Off by default (they act, so acting is opt-in) ────────────────────
+ *
+ * - cache: shadow mode; measures hit rate, serves nothing. Read is never
+ *   served even when enabled — FileReadTool dedups repeat reads better.
+ * - transaction: records what it would have rolled back; does not write.
+ * - taintFirewall: records secrets and would-be blocks; does not block.
+ * - contextShunt is the exception — ON, and the only hook here that makes
+ *   a network call.
+ *
+ * ── UI ring ───────────────────────────────────────────────────────────
+ *
+ * Synchronous ui.slot.render / ui.press hooks dispatched by uiDispatcher.ts
+ * from inside React render. They touch none of the events above, so their
+ * order relative to the rest is irrelevant; each owns a distinct slot id:
+ * uiContextGauge ("context-gauge"), uiSubagentDashboard
+ * ("subagent-dashboard"), uiGitStatus ("git-status"), uiFold
+ * ("tool-result"), uiRsiHeartbeat ("rsi-heartbeat" + toasts).
  */
 
 import { registry } from '../registry.js'
@@ -65,7 +72,6 @@ import { register as registerCache } from './cacheHook.js'
 import { register as registerCompress } from './compressHook.js'
 import { register as registerContextHandle } from './contextHandleHook.js'
 import { register as registerContextShunt } from './contextShuntHook.js'
-import { register as registerAutoPermit } from './autoPermitHook.js'
 import { register as registerKnowledge } from './knowledgeHook.js'
 import { register as registerAdaptive } from './adaptiveHintHook.js'
 import { register as registerJitSynthesis } from './jitSynthesisHook.js'
@@ -75,9 +81,6 @@ import { register as registerCtxFork } from './ctxForkHook.js'
 import { register as registerSelect } from './selectHook.js'
 import { register as registerMount } from './mountHook.js'
 import { register as registerMcpBroker } from './mcpBrokerHook.js'
-import { register as registerKvCacheAffinity } from './kvCacheAffinityHook.js'
-import { register as registerProcessPool } from './processPoolHook.js'
-import { register as registerCommandCompilation } from './commandCompilationHook.js'
 import { register as registerMprotect } from './mprotectHook.js'
 import { register as registerIpc } from './ipcHook.js'
 import { register as registerSudo } from './sudoHook.js'
@@ -109,9 +112,6 @@ export function registerBuiltinPlugins(): void {
     { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
     { name: 'mount', id: 'builtin:mount', register: registerMount },
     { name: 'mcpBroker', id: 'builtin:mcpBroker', register: registerMcpBroker },
-    { name: 'kvCacheAffinity', id: 'builtin:kvCacheAffinity', register: registerKvCacheAffinity },
-    { name: 'processPool', id: 'builtin:processPool', register: registerProcessPool },
-    { name: 'commandCompilation', id: 'builtin:commandCompilation', register: registerCommandCompilation },
     { name: 'sudo', id: 'builtin:sudo', register: registerSudo },
     { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
     { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace },
@@ -133,7 +133,6 @@ export function registerBuiltinPlugins(): void {
     // shunt must come first to see handle-ized output from next(e).
     { name: 'contextShunt', id: 'builtin:contextShunt', register: registerContextShunt },
     { name: 'contextHandle', id: 'builtin:contextHandle', register: registerContextHandle },
-    { name: 'autoPermit', id: 'builtin:autoPermit', register: registerAutoPermit },
     { name: 'knowledge', id: 'builtin:knowledge', register: registerKnowledge },
     { name: 'jitSynthesis', id: 'builtin:jitSynthesis', register: registerJitSynthesis },
     { name: 'adaptive', id: 'builtin:adaptive', register: registerAdaptive },
@@ -167,9 +166,6 @@ export function resetBuiltinPlugins(): void {
     'builtin:plainLanguage',
     'builtin:mount',
     'builtin:mcpBroker',
-    'builtin:kvCacheAffinity',
-    'builtin:processPool',
-    'builtin:commandCompilation',
     'builtin:sudo',
     'builtin:ctxFork',
     'builtin:ptrace',
@@ -187,7 +183,6 @@ export function resetBuiltinPlugins(): void {
     'builtin:compress',
     'builtin:contextShunt',
     'builtin:contextHandle',
-    'builtin:autoPermit',
     'builtin:knowledge',
     'builtin:jitSynthesis',
     'builtin:adaptive',
@@ -210,9 +205,6 @@ export function resetBuiltinPlugins(): void {
 
 // Cache
 export { clearCache, getCacheMtimeStats, getCacheStats, setCacheEnabled, isCacheEnabled } from './cacheHook.js'
-
-// Auto-permit
-export { isAutoPermitted, getApprovedCount, clearApproved } from './autoPermitHook.js'
 
 // Knowledge graph
 export { queryFiles, getRecentFiles, getFileSymbols, getStats as getKnowledgeStats, clearKnowledge } from './knowledgeHook.js'
@@ -547,17 +539,3 @@ export {
   type McpCallRecord,
 } from './mcpBrokerHook.js'
 
-// kvCacheAffinity — prompt-cache hit-rate telemetry + additionalContext dedup
-export {
-  shouldDedupContext,
-  getKvCacheStats,
-  clearKvCacheAffinity,
-} from './kvCacheAffinityHook.js'
-
-// processPool — investigated and NOT built (see file header for why);
-// exposes only the benchmark that grounded that conclusion.
-export { benchmarkSpawnOverhead } from './processPoolHook.js'
-
-// commandCompilation — investigated and NOT built (see file header for why);
-// exposes only the benchmark that grounded that conclusion.
-export { benchmarkPipelineOverhead } from './commandCompilationHook.js'

@@ -946,6 +946,40 @@ export function createToolProxy(
     return _kvCacheProxy
   }
 
+  // replay + knowledge were recording into memory nothing could read —
+  // exported APIs with zero consumers. Exposing them on $ is what makes them
+  // worth registering at all.
+  let _replayProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getReplayProxy() {
+    if (_replayProxy) return _replayProxy
+    const load = () => import('../../services/functionHooks/plugins/replayHook.js')
+    _replayProxy = {
+      async log(tool?: unknown) {
+        const m = await load()
+        return typeof tool === 'string' ? m.getToolEvents(tool) : m.getEventLog()
+      },
+      async errors() { return (await load()).getErrors() },
+      async timing() { return (await load()).getTimingStats() },
+      async export() { return (await load()).exportLog() },
+      async clear() { (await load()).clearLog(); return { ok: true } },
+    }
+    return _replayProxy
+  }
+
+  let _knowledgeProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
+  function getKnowledgeProxy() {
+    if (_knowledgeProxy) return _knowledgeProxy
+    const load = () => import('../../services/functionHooks/plugins/knowledgeHook.js')
+    _knowledgeProxy = {
+      async files(pattern: unknown) { return (await load()).queryFiles(String(pattern)) },
+      async recent() { return (await load()).getRecentFiles() },
+      async symbols(file: unknown) { return (await load()).getFileSymbols(String(file)) },
+      async stats() { return (await load()).getStats() },
+      async clear() { (await load()).clearKnowledge(); return { ok: true } },
+    }
+    return _knowledgeProxy
+  }
+
   // Lazy-load context-shunt proxy — worker-model summaries in place of payloads
   let _shuntProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
   function getShuntProxy() {
@@ -1050,6 +1084,8 @@ export function createToolProxy(
     get mcpBroker() { return getMcpBrokerProxy() },
     get kvCache() { return getKvCacheProxy() },
     get shunt() { return getShuntProxy() },
+    get replay() { return getReplayProxy() },
+    get knowledge() { return getKnowledgeProxy() },
     get prove2me() { return getProve2MeProxy() },
     _callLog: callLog,
   }
@@ -1256,6 +1292,8 @@ multi-tool sequence detected from your usage patterns).
 Note: MCP connections are already a process-wide singleton (one connection per server, shared by every subagent) regardless of policy — 'singleton' here adds serialization on top of that sharing, it does not change how many connections exist. 'per-session'/'isolate' can only deny a conflicting call; a hook cannot route a call to a different connection, so true per-connection isolation isn't achievable at this layer.
 
 \`$.kvCache.stats()\` — prompt-cache hit rate for this session (cacheReadInputTokens, cacheCreationInputTokens, hitRate) from real API usage data. Repeated additionalContext from a UserPromptSubmit hook is auto-deduped to a short reference after the first occurrence.
+
+\`$.replay.log(tool?)\` / \`.errors()\` / \`.timing()\` — the audit trail of every tool call this session (sequence, input/result summaries, durations, errors). \`$.knowledge.files(pattern)\` / \`.recent()\` / \`.symbols(file)\` — what greps matched and what files were read.
 
 \`$.shunt.enable()\` / \`$.shunt.disable()\` / \`$.shunt.config({minChars, tools, timeoutMs})\` / \`$.shunt.stats()\` — context shunt. When enabled, a tool result over ~16K chars is sent to a cheap worker model and only its summary enters context; the full text stays retrievable with exact bytes via \`deref(handle, start, end)\`. stats() reports charsSaved — characters that never entered context (and so are never re-sent on later turns), alongside summarized/cacheHits/failures. ON by default; it costs one worker call per distinct large result and the summary is lossy where the preview it replaced was exact bytes, so use $.shunt.disable() if that tradeoff is wrong for a given task.
 

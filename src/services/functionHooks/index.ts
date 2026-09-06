@@ -49,7 +49,6 @@ export {
 
 // Built-in plugin utilities
 export { clearCache, getCacheMtimeStats, getCacheStats, setCacheEnabled, isCacheEnabled } from './plugins/cacheHook.js'
-export { isAutoPermitted, getApprovedCount, clearApproved } from './plugins/autoPermitHook.js'
 export {
   queryFiles,
   getRecentFiles,
@@ -74,6 +73,9 @@ export {
 // tool.content — the transform point where a hook's resume value becomes
 // what the model actually sees (see plugins/contextShuntHook.js header).
 export { applyToolContentHooks, type ToolContentEvent } from './toolContent.js'
+
+// Context de-duplication (a plain module, not a hook — see contextDedup.ts)
+export { shouldDedupContext, getKvCacheStats, clearKvCacheAffinity } from './contextDedup.js'
 
 // tool.invoke — the event whose ⊥ actually runs the tool, so a hook can
 // replace the computation instead of only allowing/denying it.
@@ -375,18 +377,3 @@ export {
   type McpCallRecord,
 } from './plugins/mcpBrokerHook.js'
 
-// kvCacheAffinity — prompt-cache hit-rate telemetry + additionalContext dedup
-export {
-  shouldDedupContext,
-  getKvCacheStats,
-  clearKvCacheAffinity,
-} from './plugins/kvCacheAffinityHook.js'
-
-// processPool — investigated and NOT built (see plugins/processPoolHook.js
-// header for why); exposes only the benchmark that grounded that conclusion.
-export { benchmarkSpawnOverhead } from './plugins/processPoolHook.js'
-
-// commandCompilation — investigated and NOT built (see
-// plugins/commandCompilationHook.js header for why); exposes only the
-// benchmark that grounded that conclusion.
-export { benchmarkPipelineOverhead } from './plugins/commandCompilationHook.js'

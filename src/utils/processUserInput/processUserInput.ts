@@ -7,7 +7,7 @@ import type {
 import { randomUUID } from 'crypto'
 import type { QuerySource } from 'src/constants/querySource.js'
 import { logEvent } from 'src/services/analytics/index.js'
-import { shouldDedupContext } from 'src/services/functionHooks/plugins/kvCacheAffinityHook.js'
+import { shouldDedupContext } from 'src/services/functionHooks/contextDedup.js'
 import { getContentText } from 'src/utils/messages.js'
 import {
   findCommand,
