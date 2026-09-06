@@ -114,14 +114,39 @@ const DEFAULT_CONFIG: ShuntConfig = {
 
 let config: ShuntConfig = { ...DEFAULT_CONFIG }
 
-const SUMMARY_SYSTEM_PROMPT = `You are summarizing a tool result so a coding agent can decide what to do next WITHOUT reading the full text. The full text remains retrievable by line range, so your job is orientation, not reproduction.
+/**
+ * Why this prompt asks the summary to QUOTE rather than only point.
+ *
+ * Measured with the eval harness (eval/harness.ts), sweeping the shunt
+ * threshold against how much verbatim content a summary carries, with a
+ * deref round trip priced at 2000 chars:
+ *
+ *   summary carries        best threshold   total cost   vs shunt off
+ *   nothing verbatim              16384       296,764         -3.5%
+ *   ~10 quoted lines               8192       250,739        -18.5%
+ *   ~30 quoted lines               2048        93,603        -69.6%
+ *
+ * The mechanism is not subtle: a fact present in the summary is free, and a
+ * fact merely pointed at costs a deref — another tool call, another turn,
+ * the whole conversation re-sent. At the richest setting `recoverable` fell
+ * to zero, meaning the summary alone answered every probed fact.
+ *
+ * The previous version of this prompt said "your job is orientation, not
+ * reproduction", which is exactly the top row: the shipped configuration was
+ * sitting in the one regime where the shunt barely pays for itself. A longer
+ * summary does cost more context per result, and the numbers above already
+ * charge for that — it wins anyway, because eliminating round trips is worth
+ * more than the characters the quotes cost.
+ */
+const SUMMARY_SYSTEM_PROMPT = `You are summarizing a tool result so a coding agent can work from the summary alone. The full text stays retrievable by line range, but every retrieval costs a round trip — so the summary should carry the facts, not just point at them.
 
 Produce, in plain text:
 1. One line: what this content is.
 2. A map of its parts, each as "LINE_START-LINE_END  name — one clause". Cover the whole content; merge trivial regions. Aim for 5-20 entries.
-3. One line "Notable:" only if something would surprise the reader (an error, a TODO, a surprising dependency). Omit otherwise.
+3. "Key lines:" — the distinctive lines a reader would otherwise have to fetch, quoted VERBATIM and prefixed with their line number. Prefer signatures, exported names, error strings, config values, thresholds, and anything surprising. Include as many as the content warrants; err on the side of quoting.
+4. One line "Notable:" only if something would surprise the reader (an error, a TODO, a surprising dependency). Omit otherwise.
 
-Rules: line numbers must be accurate — they are used to fetch exact bytes later. Never invent content. No markdown fences, no preamble, no closing remarks.`
+Rules: line numbers must be accurate — they are used to fetch exact bytes later. Quotes must be exact; never paraphrase a quoted line and never invent content. No markdown fences, no preamble, no closing remarks.`
 
 /**
  * The worker is a swappable handler, not a hardcoded call.

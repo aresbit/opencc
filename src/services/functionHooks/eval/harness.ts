@@ -52,7 +52,7 @@ import type {
  * over the content — without a network call, so two runs of the same trace
  * differ only by configuration.
  */
-function stubSummary(content: string): string {
+function structuralSummary(content: string): string {
   const lines = content.split('\n').length
   const buckets = Math.min(12, Math.max(3, Math.ceil(lines / 200)))
   const per = Math.ceil(lines / buckets)
@@ -64,6 +64,33 @@ function stubSummary(content: string): string {
     rows.push(`${start}-${end}  section ${i + 1} — replayed content`)
   }
   return rows.join('\n')
+}
+
+/**
+ * A summarizer that quotes what it describes, which is what a real one does
+ * with code: it names the symbols and cites the lines it is summarizing.
+ * Lines are taken evenly across the body so the model is not just "keeps the
+ * head", which contextHandle's preview already does.
+ */
+function extractiveSummary(content: string, keep: number): string {
+  const all = content.split('\n')
+  const salient = all
+    .map((text, i) => ({ text: text.trim(), line: i + 1 }))
+    .filter(l => l.text.length >= 24 && l.text.length <= 200 && /[A-Za-z_]{4,}/.test(l.text))
+  const rows = [structuralSummary(content), 'Key lines:']
+  const n = Math.min(keep, salient.length)
+  for (let i = 0; i < n; i++) {
+    const pick = salient[Math.floor(((i + 0.5) / n) * salient.length)]!
+    rows.push(`  ${pick.line}: ${pick.text}`)
+  }
+  return rows.join('\n')
+}
+
+function summaryFor(spec: EvalConfig['summarizer'], content: string): string {
+  if (spec && typeof spec === 'object') {
+    return extractiveSummary(content, spec.extractLines)
+  }
+  return structuralSummary(content)
 }
 
 /**
@@ -124,7 +151,7 @@ export async function runTrace(
   setShuntSummarizer(
     config.summarizer === 'real'
       ? null
-      : async ({ content }) => stubSummary(content),
+      : async ({ content }) => summaryFor(config.summarizer, content),
   )
 
   const metrics: EvalMetrics = {

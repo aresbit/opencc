@@ -126,12 +126,28 @@ export interface EvalConfig {
   /** Whether cacheHook actually serves hits, as opposed to only counting them. */
   cacheServing?: boolean
   /**
-   * 'stub' keeps runs deterministic and free; 'real' calls the configured
-   * worker model and therefore costs tokens and varies between runs. Default
-   * is 'stub' — an optimizer needs reproducibility more than it needs the
-   * real summarizer's exact wording.
+   * Which summarizer the shunt runs under.
+   *
+   * 'real' calls the configured worker model: faithful, but nondeterministic
+   * and it costs tokens, so it cannot be swept.
+   *
+   * The rest are models OF a summarizer, and the distinction matters because
+   * summary fidelity is what decides the shunt's whole case. A summary that
+   * carries a needed fact verbatim leaves it `direct` and free; one that
+   * only points at it leaves it `recoverable` and charges a round trip. So
+   * this is not a testing detail — it is the dominant uncertainty, and it is
+   * a sweepable axis rather than one fixed guess:
+   *
+   *   'structural'  line ranges only, no content. The pessimistic bound:
+   *                 no probe can ever be direct through it.
+   *   { extractLines: n }  keeps n salient lines verbatim alongside the
+   *                 ranges, modelling a summarizer that quotes what it
+   *                 describes — which is what a real one does with code.
+   *
+   * 'stub' is 'structural', kept as a name so existing callers still read
+   * as the conservative case.
    */
-  summarizer?: 'stub' | 'real'
+  summarizer?: 'stub' | 'structural' | 'real' | { extractLines: number }
 }
 
 /**
