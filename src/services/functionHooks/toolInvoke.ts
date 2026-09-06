@@ -67,13 +67,20 @@ export async function invokeToolThroughHooks<T>(
   const $ = getEngine()
   if (!$) return run()
 
-  let ran = false
+  // `completed` is set only after run() RESOLVES, never before awaiting it.
+  // Setting it on entry conflates "the tool threw" with "the tool finished
+  // and then a hook threw", and the catch below would then swallow a genuine
+  // tool error and return undefined — which downstream reads as
+  // `result.data` on undefined. Every throwing tool (a WebFetch on a failed
+  // request, a Bash non-zero exit) hit that path.
+  let completed = false
   let realResult: T | undefined
 
   const bottom: HookFn = async () => {
-    ran = true
-    realResult = await run()
-    return realResult
+    const value = await run()
+    completed = true
+    realResult = value
+    return value
   }
 
   try {
@@ -81,9 +88,9 @@ export async function invokeToolThroughHooks<T>(
 
     if (result == null) {
       // Nothing came back. If the tool never ran, the chain simply had
-      // nothing to say — run it. If it did run, a hook discarded a real
+      // nothing to say — run it. If it did complete, a hook discarded a real
       // result; keep the result rather than the plugin's mistake.
-      return ran ? (realResult as T) : await run()
+      return completed ? (realResult as T) : await run()
     }
 
     return result as T
@@ -91,11 +98,15 @@ export async function invokeToolThroughHooks<T>(
     // ⊥ is supplied above, so this should be unreachable; if the chain
     // still bottoms out, run the tool rather than failing the call.
     if (error instanceof HookChainBottomError) {
-      return ran ? (realResult as T) : await run()
+      return completed ? (realResult as T) : await run()
     }
-    // After-phase plugin bug — the tool already did its work.
-    if (ran) return realResult as T
-    // A hook deliberately aborted the call before it happened.
-    throw error
+    // The tool itself failed, or a hook aborted before it ran. Either way
+    // the error is the real outcome and must reach the caller, which is what
+    // routes it to PostToolUseFailure / tool.error and renders it properly.
+    if (!completed) throw error
+    // The tool finished and something in an after-phase threw. Discarding a
+    // completed tool's result over a plugin bug would report a successful
+    // side effect as a failure, so the real result wins.
+    return realResult as T
   }
 }
