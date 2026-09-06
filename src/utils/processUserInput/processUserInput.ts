@@ -240,7 +240,7 @@ export async function processUserInput({
           // A hook re-injecting the identical reminder text every turn pays
           // its full token cost again each time even though it's a new
           // appended message (not a cache-prefix issue — see
-          // kvCacheAffinityHook.ts's header for why the prefix itself is
+          // contextDedup.ts's header for why the prefix itself is
           // fine here). Collapse an exact repeat to a short reference
           // instead of the full text.
           content: hookResult.additionalContexts.map(text => {

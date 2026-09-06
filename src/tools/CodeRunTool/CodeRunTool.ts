@@ -939,7 +939,7 @@ export function createToolProxy(
     if (_kvCacheProxy) return _kvCacheProxy
     _kvCacheProxy = {
       async stats() {
-        const { getKvCacheStats } = await import('../../services/functionHooks/plugins/kvCacheAffinityHook.js')
+        const { getKvCacheStats } = await import('../../services/functionHooks/contextDedup.js')
         return getKvCacheStats()
       },
     }

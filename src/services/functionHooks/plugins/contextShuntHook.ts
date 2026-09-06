@@ -36,8 +36,9 @@
  *    With a transformable resume you let the command run and narrow the
  *    RESULT — zero shell parsing, nothing slips through, and it covers
  *    Bash/Grep/MCP output identically. (This session measured the input-side
- *    concern separately and found pipeline-stage cost immaterial — see
- *    commandCompilationHook.ts.)
+ *    concern separately and found pipeline-stage cost immaterial: a
+ *    single command, a 2-stage pipeline and a 4-stage pipeline all measured
+ *    the same, so there was nothing there to rewrite for.)
  *
  * 2. Summary AND exact bytes, not summary alone. Portal reports it cannot
  *    delegate edits, because worker summaries lack reliable line numbers, so
