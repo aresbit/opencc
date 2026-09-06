@@ -102,6 +102,18 @@ export interface ShuntConfig {
   timeoutMs: number
   /** Never send more than this much text to the worker. */
   maxInputChars: number
+  /**
+   * Ceiling on simultaneous worker calls.
+   *
+   * StreamingToolExecutor runs concurrency-safe tools in parallel, so
+   * several large results can land at once and each one wants a summary.
+   * Unbounded, that is N simultaneous requests to the worker model —
+   * measured at 25 in a concurrency test, which is a rate-limit and cost
+   * spike, and slower per call besides since they contend. Excess calls
+   * queue rather than being dropped: a summary deferred is still a summary,
+   * whereas skipping one silently falls back to the preview.
+   */
+  maxConcurrentWorkers: number
 }
 
 const DEFAULT_CONFIG: ShuntConfig = {
@@ -110,6 +122,7 @@ const DEFAULT_CONFIG: ShuntConfig = {
   tools: null,
   timeoutMs: 15_000,
   maxInputChars: 200_000,
+  maxConcurrentWorkers: 4,
 }
 
 let config: ShuntConfig = { ...DEFAULT_CONFIG }
@@ -192,6 +205,41 @@ function hashContent(text: string): string {
 const summaryCache = new Map<string, string>()
 const MAX_CACHED_SUMMARIES = 200
 
+/**
+ * Summaries currently being produced, keyed by content identity.
+ *
+ * summaryCache only helps AFTER a call finishes, so two results with
+ * identical content arriving together both missed it and both paid a worker
+ * call. Sharing the in-flight promise makes concurrent duplicates cost one
+ * call instead of N — which matters precisely in the parallel-tool case
+ * this limit exists for.
+ */
+const inFlightSummaries = new Map<string, Promise<string>>()
+
+/** Simple FIFO semaphore over worker calls. */
+let activeWorkers = 0
+const workerQueue: Array<() => void> = []
+
+async function acquireWorkerSlot(): Promise<void> {
+  if (activeWorkers < config.maxConcurrentWorkers) {
+    activeWorkers++
+    return
+  }
+  await new Promise<void>(resolve => workerQueue.push(resolve))
+  activeWorkers++
+}
+
+function releaseWorkerSlot(): void {
+  activeWorkers--
+  const next = workerQueue.shift()
+  if (next) next()
+}
+
+/** Observable so a test or an operator can see the limiter working. */
+export function getWorkerConcurrency(): { active: number; queued: number; limit: number } {
+  return { active: activeWorkers, queued: workerQueue.length, limit: config.maxConcurrentWorkers }
+}
+
 const stats = {
   summarized: 0,
   cacheHits: 0,
@@ -267,11 +315,29 @@ async function summarize(
     return cached
   }
 
+  // Coalesce concurrent duplicates onto one worker call.
+  const existing = inFlightSummaries.get(key)
+  if (existing) {
+    stats.cacheHits++
+    const shared = await existing.catch(() => '')
+    return shared || null
+  }
+
+  const work = (async () => {
+    await acquireWorkerSlot()
+    try {
+      const signal = AbortSignal.timeout(config.timeoutMs)
+      return summarizer
+        ? ((await summarizer({ content: full, toolName, inputHint, signal })) ?? '').trim()
+        : await summarizeWithHaiku(full, toolName, inputHint, signal)
+    } finally {
+      releaseWorkerSlot()
+    }
+  })()
+  inFlightSummaries.set(key, work)
+
   try {
-    const signal = AbortSignal.timeout(config.timeoutMs)
-    const text = summarizer
-      ? ((await summarizer({ content: full, toolName, inputHint, signal })) ?? '').trim()
-      : await summarizeWithHaiku(full, toolName, inputHint, signal)
+    const text = await work
 
     if (!text) {
       stats.failures++
@@ -289,6 +355,8 @@ async function summarize(
     // contextHandle's exact-bytes preview — strictly no worse than before.
     stats.failures++
     return null
+  } finally {
+    inFlightSummaries.delete(key)
   }
 }
 

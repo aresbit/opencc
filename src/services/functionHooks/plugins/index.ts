@@ -224,6 +224,7 @@ export {
   setShuntConfig,
   resetShuntConfig,
   getShuntStats,
+  getWorkerConcurrency,
   setShuntSummarizer,
   clearShunt,
   type ShuntConfig,
