@@ -87,7 +87,14 @@ import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
 export interface ShuntConfig {
   /** On. Disable with setShuntConfig({ enabled: false }) or $.shunt.disable(). */
   enabled: boolean
-  /** Only summarize content at least this large (chars). */
+  /**
+   * Only summarize content at least this large (chars).
+   *
+   * The effective threshold is max(minChars, contextHandle's threshold):
+   * this hook only ever sees results contextHandle already turned into a
+   * handle, so a value below that one raises nothing. Use
+   * setHandleThreshold() to move the floor.
+   */
   minChars: number
   /** Restrict to these tool names; null means every tool. */
   tools: string[] | null

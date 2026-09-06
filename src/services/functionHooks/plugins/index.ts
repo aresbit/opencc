@@ -62,6 +62,7 @@
  */
 
 import { registry } from '../registry.js'
+import { register as registerTraceRecorder } from '../eval/recorder.js'
 import { register as registerPerfTelescopy } from './perfTelescopyHook.js'
 import { register as registerReplay } from './replayHook.js'
 import { register as registerTaintFirewall } from './taintFirewallHook.js'
@@ -108,6 +109,10 @@ export function registerBuiltinPlugins(): void {
 
   const plugins = [
     { name: 'perfTelescopy', id: 'builtin:perfTelescopy', register: registerPerfTelescopy },
+    // Ahead of every tool.content hook: a trace must capture what the tools
+    // produced, not what the current configuration delivered, or replaying it
+    // would measure that configuration's output a second time.
+    { name: 'traceRecorder', id: 'builtin:traceRecorder', register: registerTraceRecorder },
     { name: 'tuiView', id: 'builtin:tuiView', register: registerTuiView },
     { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
     { name: 'mount', id: 'builtin:mount', register: registerMount },
@@ -162,6 +167,7 @@ export function resetBuiltinPlugins(): void {
   registered = false
   for (const id of [
     'builtin:perfTelescopy',
+    'builtin:traceRecorder',
     'builtin:tuiView',
     'builtin:plainLanguage',
     'builtin:mount',
@@ -210,7 +216,7 @@ export { clearCache, getCacheMtimeStats, getCacheStats, setCacheEnabled, isCache
 export { queryFiles, getRecentFiles, getFileSymbols, getStats as getKnowledgeStats, clearKnowledge } from './knowledgeHook.js'
 
 // Context handles (virtual memory)
-export { deref, derefFull, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles } from './contextHandleHook.js'
+export { deref, derefFull, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles, getHandleThreshold, setHandleThreshold } from './contextHandleHook.js'
 
 // Context shunt — worker-model summary replaces the payload in context
 export {
@@ -539,3 +545,14 @@ export {
   type McpCallRecord,
 } from './mcpBrokerHook.js'
 
+// Evaluation substrate — record a trace, replay it under different hook
+// configurations, compare the cost. See eval/types.ts for why.
+export {
+  startRecording,
+  stopRecording,
+  isRecording,
+  getRecordingStats,
+  recordStep,
+} from '../eval/recorder.js'
+export { runTrace, compareConfigs, formatResults, lastCacheStats } from '../eval/harness.js'
+export type { Trace, TraceStep, EvalConfig, EvalMetrics, EvalResult } from '../eval/types.js'

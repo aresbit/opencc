@@ -42,7 +42,26 @@ interface HandleEntry {
 }
 
 const handleStore = new Map<string, HandleEntry>()
-const THRESHOLD = 16384
+
+/**
+ * Results at or below this size are passed through untouched.
+ *
+ * Configurable rather than constant because it silently gates everything
+ * downstream: contextShunt only ever sees results this hook already
+ * handle-ized, so a shunt minChars below this value could never engage and
+ * the knob looked live while doing nothing. Measuring the chain means being
+ * able to move this, not just the knobs that sit behind it.
+ */
+let THRESHOLD = 16384
+
+export function setHandleThreshold(chars: number): number {
+  THRESHOLD = Math.max(0, Math.floor(chars))
+  return THRESHOLD
+}
+
+export function getHandleThreshold(): number {
+  return THRESHOLD
+}
 const PREVIEW_LINES = 50
 const MAX_HANDLES = 100
 

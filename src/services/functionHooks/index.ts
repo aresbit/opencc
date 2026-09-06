@@ -56,7 +56,7 @@ export {
   getStats as getKnowledgeStats,
   clearKnowledge,
 } from './plugins/knowledgeHook.js'
-export { deref, derefFull, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles } from './plugins/contextHandleHook.js'
+export { deref, derefFull, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles, getHandleThreshold, setHandleThreshold } from './plugins/contextHandleHook.js'
 
 // Context shunt — worker-model summary replaces the payload in context
 export {
@@ -80,6 +80,18 @@ export { shouldDedupContext, getKvCacheStats, clearKvCacheAffinity } from './con
 // tool.invoke — the event whose ⊥ actually runs the tool, so a hook can
 // replace the computation instead of only allowing/denying it.
 export { invokeToolThroughHooks, type ToolInvokeEvent } from './toolInvoke.js'
+
+// Evaluation substrate — record a trace, replay it under different hook
+// configurations, compare the cost. See eval/types.ts for why.
+export {
+  startRecording,
+  stopRecording,
+  isRecording,
+  getRecordingStats,
+  recordStep,
+} from './eval/recorder.js'
+export { runTrace, compareConfigs, formatResults, lastCacheStats } from './eval/harness.js'
+export type { Trace, TraceStep, EvalConfig, EvalMetrics, EvalResult } from './eval/types.js'
 export { getTaintedCount, isTainted, clearTainted, setTaintBlockingEnabled, getTaintStats } from './plugins/taintFirewallHook.js'
 export { getActiveTransaction, rollbackManual, clearTransaction, setTransactionRollbackEnabled, getTransactionStats } from './plugins/transactionHook.js'
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './plugins/replayHook.js'
