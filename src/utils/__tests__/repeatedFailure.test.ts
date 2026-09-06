@@ -1,8 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import {
 	applyRepeatedFailureNotice,
 	findRepeatedFailure,
 	isRutMessage,
+	MAX_NOTICES_PER_PATTERN,
+	resetRepeatedFailureLedger,
 } from "../repeatedFailure.js";
 import type { Message } from "../../types/message.js";
 
@@ -142,6 +144,9 @@ describe("findRepeatedFailure", () => {
 });
 
 describe("applyRepeatedFailureNotice", () => {
+	// The injection budget is module state shared by every test in this file.
+	beforeEach(resetRepeatedFailureLedger);
+
 	test("appends a notice naming the call and the error", () => {
 		const result_ = applyRepeatedFailureNotice(failingRun(3));
 
@@ -201,5 +206,69 @@ describe("applyRepeatedFailureNotice", () => {
 
 	test("honours a custom threshold", () => {
 		expect(applyRepeatedFailureNotice(failingRun(2), 2).notified).toBe(true);
+	});
+
+	test("stops injecting after the notice has been shown three times", () => {
+		const stuck = failingRun(3);
+		for (let i = 0; i < MAX_NOTICES_PER_PATTERN; i++) {
+			expect(applyRepeatedFailureNotice(stuck).notified).toBe(true);
+		}
+
+		// Fourth pass: the pattern is still in the transcript and still stuck,
+		// but it has been said enough.
+		const aged = applyRepeatedFailureNotice(stuck);
+		expect(aged.notified).toBe(false);
+		expect(aged.messages.filter(isRutMessage)).toHaveLength(0);
+	});
+
+	test("does not warn about a pattern the model has already moved past", () => {
+		const messages: Message[] = [...failingRun(3, "Bash", { command: "old" })];
+		// Different, successful calls since — the rut is history, not behaviour.
+		for (let i = 0; i < 10; i++) {
+			const id = `moved_${i}`;
+			messages.push(call("Read", { file_path: `m${i}.ts` }, id));
+			messages.push(result(id, "ok", false));
+		}
+
+		// Still inside the 40-call lookback window, so the old rule would fire.
+		expect(applyRepeatedFailureNotice(messages).notified).toBe(false);
+	});
+
+	test("an exhausted pattern does not mask a different live one", () => {
+		const first = failingRun(3, "Bash", { command: "aaa" });
+		for (let i = 0; i < MAX_NOTICES_PER_PATTERN; i++) {
+			applyRepeatedFailureNotice(first);
+		}
+		expect(applyRepeatedFailureNotice(first).notified).toBe(false);
+
+		const both = [...first, ...failingRun(3, "Bash", { command: "bbb" })];
+		const out = applyRepeatedFailureNotice(both);
+		expect(out.notified).toBe(true);
+		expect(out.failure?.inputPreview).toContain("bbb");
+	});
+
+	test("refills the budget once the pattern goes quiet and returns", () => {
+		const stuck = failingRun(3, "Bash", { command: "flaky" });
+		for (let i = 0; i < MAX_NOTICES_PER_PATTERN; i++) {
+			applyRepeatedFailureNotice(stuck);
+		}
+		expect(applyRepeatedFailureNotice(stuck).notified).toBe(false);
+
+		// The model moves on: the pattern stops being live and its budget is
+		// retired along with it.
+		const movedOn: Message[] = [...stuck];
+		for (let i = 0; i < 10; i++) {
+			const id = `q_${i}`;
+			movedOn.push(call("Read", { file_path: `q${i}.ts` }, id));
+			movedOn.push(result(id, "ok", false));
+		}
+		expect(applyRepeatedFailureNotice(movedOn).notified).toBe(false);
+
+		// A fresh episode of the same call is a new rut, and is warned about.
+		const relapse = [
+			...movedOn,
+			...failingRun(3, "Bash", { command: "flaky" }),
+		];
+		expect(applyRepeatedFailureNotice(relapse).notified).toBe(true);
 	});
 });

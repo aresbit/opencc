@@ -20,10 +20,26 @@ interface FailureRecord {
   hint: string
   count: number
   lastSeen: number
+  /** How many times this hint has been attached to a tool call. */
+  shown: number
 }
 
 const failureMemory = new Map<string, FailureRecord>()
 const MAX_MEMORY = 200
+
+/**
+ * How many times one hint may be injected before it ages out.
+ *
+ * Without this the ledger is write-mostly: a signature that failed once keeps
+ * a hint attached to every matching call until a matching call succeeds, and
+ * signatures are coarse enough (`Bash:<argv0>:<flags>`) that the fix for the
+ * failure often arrives as a differently-shaped command that never decays the
+ * old entry. The result is a stale warning riding along on unrelated tool
+ * results indefinitely — text pushed into the model's context on a loop, which
+ * is the opposite of a hint. Three deliveries is enough for a hint to have
+ * done its work or to have failed to.
+ */
+const MAX_INJECTIONS = 3
 
 function extractSignature(tool: string, input: Record<string, unknown>): string {
   switch (tool) {
@@ -94,9 +110,18 @@ export function register(on: OnRegistrar): void {
     if (!tool) return next(e)
 
     const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
-    const memory = failureMemory.get(extractSignature(tool, input))
+    const sig = extractSignature(tool, input)
+    const memory = failureMemory.get(sig)
 
     const result = await next(e)
+    // Aged out: the hint has been said its three times. Drop the record rather
+    // than merely skipping it, so a later failure of the same shape starts
+    // over with a fresh hint and a fresh budget instead of being permanently
+    // silent.
+    if (memory && memory.shown >= MAX_INJECTIONS) {
+      failureMemory.delete(sig)
+      return result
+    }
     if (!memory) return result
 
     // Never swallow an inner hook's decision to block: a deny returned by
@@ -105,6 +130,7 @@ export function register(on: OnRegistrar): void {
       return result
     }
 
+    memory.shown++
     return {
       additionalContext:
         `Heads up — a previous ${tool} call with this shape failed ` +
@@ -153,6 +179,9 @@ export function register(on: OnRegistrar): void {
         hint: deriveHint(tool, input, err),
         count: (existing?.count ?? 0) + 1,
         lastSeen: Date.now(),
+        // A fresh failure refills the budget: the hint is describing live
+        // behaviour again, so it has earned the right to be said again.
+        shown: 0,
       })
 
       throw err
