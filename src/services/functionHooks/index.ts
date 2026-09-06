@@ -92,6 +92,13 @@ export {
 } from './eval/recorder.js'
 export { runTrace, compareConfigs, formatResults, rankConfigs, sensitivity, lastCacheStats } from './eval/harness.js'
 export { autoProbes, withAutoProbes } from './eval/probes.js'
+export {
+  optimize,
+  optimizeAcrossPrices,
+  formatOptimizeResult,
+  totalCostObjective,
+} from './eval/optimizer.js'
+export type { SearchSpace, Objective, Candidate, OptimizeResult } from './eval/optimizer.js'
 export type { Trace, TraceStep, EvalConfig, EvalMetrics, EvalResult, ProbeOutcome } from './eval/types.js'
 export { getTaintedCount, isTainted, clearTainted, setTaintBlockingEnabled, getTaintStats } from './plugins/taintFirewallHook.js'
 export { getActiveTransaction, rollbackManual, clearTransaction, setTransactionRollbackEnabled, getTransactionStats } from './plugins/transactionHook.js'
