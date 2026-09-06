@@ -8,7 +8,18 @@
 
 import type { OnRegistrar } from '../types.js'
 
-const THRESHOLD_CHARS = 12_000
+/**
+ * Exported because contextHandle's threshold must not sit above it.
+ *
+ * This hook is the only component in the chain that discards content with
+ * no way back — it keeps a head and a tail and drops the middle, and unlike
+ * handle-ization there is no store to deref from. So any size band that
+ * reaches compress WITHOUT having been handle-ized first is destroyed
+ * irrecoverably. Measured: with handle at 16K and compress at 12K, that 4K
+ * band cost 17 of 230 probed facts outright, while handle-izing from 4K lost
+ * none. contextHandle defaults to this value to keep the band empty.
+ */
+export const THRESHOLD_CHARS = 12_000
 const KEEP_HEAD = 4_000
 const KEEP_TAIL = 2_000
 

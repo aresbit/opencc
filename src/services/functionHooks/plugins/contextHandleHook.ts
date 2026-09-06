@@ -30,6 +30,7 @@
  */
 
 import type { OnRegistrar } from '../types.js'
+import { THRESHOLD_CHARS as COMPRESS_THRESHOLD } from './compressHook.js'
 
 interface HandleEntry {
   content: string
@@ -51,8 +52,18 @@ const handleStore = new Map<string, HandleEntry>()
  * handle-ized, so a shunt minChars below this value could never engage and
  * the knob looked live while doing nothing. Measuring the chain means being
  * able to move this, not just the knobs that sit behind it.
+ *
+ * Defaults to compressHook's threshold rather than to a number of its own,
+ * and MUST NOT be raised above it. compress is lossy with no recovery path;
+ * this hook is lossless with one. Content in a band above this threshold but
+ * below compress's reaches compress un-handle-ized and its middle is gone
+ * for good. The old hand-picked 16384 opened exactly that band against
+ * compress's 12000, and evaluation measured the result: 17 of 230 probed
+ * facts unrecoverable, where handle-izing earlier lost none. Tying the
+ * default to compress's constant makes the chain lossless by construction
+ * instead of by coincidence.
  */
-let THRESHOLD = 16384
+let THRESHOLD = COMPRESS_THRESHOLD
 
 export function setHandleThreshold(chars: number): number {
   THRESHOLD = Math.max(0, Math.floor(chars))

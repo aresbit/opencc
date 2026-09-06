@@ -90,8 +90,9 @@ export {
   getRecordingStats,
   recordStep,
 } from './eval/recorder.js'
-export { runTrace, compareConfigs, formatResults, lastCacheStats } from './eval/harness.js'
-export type { Trace, TraceStep, EvalConfig, EvalMetrics, EvalResult } from './eval/types.js'
+export { runTrace, compareConfigs, formatResults, rankConfigs, sensitivity, lastCacheStats } from './eval/harness.js'
+export { autoProbes, withAutoProbes } from './eval/probes.js'
+export type { Trace, TraceStep, EvalConfig, EvalMetrics, EvalResult, ProbeOutcome } from './eval/types.js'
 export { getTaintedCount, isTainted, clearTainted, setTaintBlockingEnabled, getTaintStats } from './plugins/taintFirewallHook.js'
 export { getActiveTransaction, rollbackManual, clearTransaction, setTransactionRollbackEnabled, getTransactionStats } from './plugins/transactionHook.js'
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './plugins/replayHook.js'

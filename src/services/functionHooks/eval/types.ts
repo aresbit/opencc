@@ -15,45 +15,54 @@
  * what each one costs. That turns "should shunt be on?" and "is the Grep
  * cache worth keeping?" from opinions into measurements.
  *
- * ── First run, and what it overturned ─────────────────────────────────
+ * ── What it found ────────────────────────────────────────────────────
  *
- * Trace: 46 steps reading this repo's own functionHooks sources plus six
- * repeated Greps. 378,573 raw chars. Deterministic stub summarizer.
+ * Trace: 46 steps over this repo's own functionHooks sources plus repeated
+ * Greps. ~389K raw chars, 230 auto-derived probes, stub summarizer,
+ * a deref priced at 2000 chars.
  *
- *   no hooks at all      288,316    0.0%    0 worker calls
- *   handle only @16K     280,939    2.6%    0
- *   handle only @4K       90,447   68.6%    0
- *   handle only @1K       87,264   69.7%    0
- *   shunt @16K           276,844    4.0%    2
- *   shunt @4K             32,094   88.9%   34
- *   shunt @1K             15,522   94.6%   45
+ *   config            ctxChars   saved  recall  direct  lost  worker  ok
+ *   no hooks            299,209    0.0%   89.1%   89.1%    25       0   ✗
+ *   old default @16K    291,832    2.5%   92.6%   88.7%    17       0   ✗
+ *   new default @12K    264,595   11.6%  100.0%   83.0%     0       0   ✓
+ *   handle @4K           93,641   68.7%  100.0%   41.3%     0       0   ✓
+ *   shunt  @4K           34,716   88.4%  100.0%   26.1%     0      34   ✓
+ *   shunt  @1K           15,523   94.8%  100.0%    2.2%     0      45   ✓
  *
- * Three things this contradicts, all of them previously asserted here:
+ * 1. Narrowing LESS lost more. compressHook is the only component that
+ *    discards content with no way back, and it fires at 12K while
+ *    handle-ization fired at 16K — so the band between them reached
+ *    compress un-handle-ized and its middle was destroyed. 17 of 230 facts,
+ *    unrecoverable. Tying the handle threshold to compress's closes it:
+ *    17 lost -> 0. This finding does not depend on the summarizer, so it is
+ *    the one acted on.
+ * 2. Ranking on cost alone picks a degenerate winner. shunt @1K preserves
+ *    everything and is by far the cheapest in delivered characters — while
+ *    leaving 2.2% of facts directly readable, i.e. demanding a deref round
+ *    trip for almost every fact needed. Pricing a deref at all reverses it.
+ * 3. The claim that the shunt delivers most of the reduction does not
+ *    survive. Handle-ization alone reaches 68.7% with zero model calls;
+ *    the shunt's extra reduction is paid for in round trips and, once those
+ *    are priced, never wins on this workload. The earlier "99.8%" came from
+ *    one pathological synthetic input; at the shipped threshold on a real
+ *    trace it was 3.8%.
  *
- * 1. The shipped 16K threshold captures almost nothing on this workload —
- *    2.6%. The knob was set by hand and never checked against a workload.
- * 2. Most of the available reduction is contextHandle's, not the shunt's.
- *    Handle-ization at 4K gets 68.6% with ZERO model calls; the shunt adds
- *    another 20 points for 34 worker calls. The expensive component buys
- *    the smaller share.
- * 3. The "99.8% context reduction" claimed for the shunt came from a single
- *    pathological 100KB synthetic input. On a realistic trace at the
- *    shipped threshold it is 4.0%.
+ * Winner is stable: the new default takes it at 2000, 8000 and 32000 chars
+ * per deref, flipping only when a round trip is priced at or near zero.
  *
- * ── What this harness deliberately does NOT measure ───────────────────
+ * ── Known bias, stated rather than buried ────────────────────────────
  *
- * Task quality. Every number above is a COST metric. Nothing here checks
- * whether the model could still do its job on the narrowed context, and a
- * cost-only objective has an obvious degenerate optimum: deliver nothing,
- * save everything. That is why the 16K default has NOT been changed on the
- * strength of this table — 4K looks strictly better on cost while being
- * completely unmeasured on quality, and choosing it now would repeat the
- * mistake this file exists to stop.
+ * The stub summarizer emits a line-range map with no content in it, so a
+ * probe can never come back `direct` through a summary. That is
+ * structurally unfair to the shunt: a real summary might carry the fact
+ * itself. So the honest reading of row 3 is "not justified by this
+ * evidence, with the evidence known to be biased against it" — not
+ * "useless". Re-running with summarizer:'real' is what would settle it, at
+ * the cost of determinism and tokens.
  *
- * The missing half is a success metric over real tasks: run the same task
- * set under each configuration and score completion. Until that exists,
- * this harness can rule options OUT (16K demonstrably captures little) but
- * cannot rule one IN.
+ * Other limits: one trace, Read-heavy, from a single repository; probes are
+ * auto-derived distinctive lines standing in for facts some task actually
+ * needed.
  *
  * The reason this is cheap to build rather than a rewrite: the effects are
  * already swappable. `invokeToolThroughHooks(meta, run)` takes the tool
@@ -79,6 +88,18 @@ export interface TraceStep {
   durationMs?: number
   /** Present when the recorded call failed. */
   error?: string
+  /**
+   * Facts a task actually needed out of this result, as exact substrings.
+   *
+   * This is the quality half of the evaluation. Narrowing is only
+   * legitimate if what the work needed is still obtainable afterwards, so
+   * each probe is checked against what the model received and, failing
+   * that, against what it could still fetch with deref().
+   *
+   * autoProbes() derives a reasonable set from content when a trace has not
+   * been hand-labelled.
+   */
+  probes?: string[]
 }
 
 export interface Trace {
@@ -113,6 +134,17 @@ export interface EvalConfig {
   summarizer?: 'stub' | 'real'
 }
 
+/**
+ * What happened to one probed fact after narrowing.
+ *
+ * - direct:      present verbatim in what the model received. Free.
+ * - recoverable: not in context, but reachable via deref() from a handle
+ *                that WAS delivered. Costs a round trip, loses nothing.
+ * - lost:        neither. Narrowing destroyed information with no path
+ *                back, which no context saving justifies.
+ */
+export type ProbeOutcome = 'direct' | 'recoverable' | 'lost'
+
 export interface EvalMetrics {
   /**
    * The headline. Total characters delivered into the model's context across
@@ -131,6 +163,30 @@ export interface EvalMetrics {
   hookMs: number
   /** Steps whose replay raised. */
   errors: number
+
+  // ── Quality ─────────────────────────────────────────────────────────
+  /** Probed facts across the trace. Zero when a trace carries no probes. */
+  probesTotal: number
+  /** Still present verbatim in the delivered context. */
+  probesDirect: number
+  /** Gone from context but still fetchable via deref(). */
+  probesRecoverable: number
+  /**
+   * Unreachable by either route. A configuration with any of these is
+   * disqualified regardless of how cheap it is — it is saving context by
+   * destroying information, which is the degenerate optimum a cost-only
+   * metric would happily select.
+   */
+  probesLost: number
+  /** (direct + recoverable) / total. The property narrowing must preserve. */
+  recall: number
+  /**
+   * direct / total. Not a correctness measure — a measure of friction.
+   * Recoverable facts cost the model an extra deref round trip, so between
+   * two configurations that both lose nothing, the one needing fewer
+   * derefs is the better one to work in.
+   */
+  directRate: number
 }
 
 export interface EvalResult {
@@ -138,4 +194,10 @@ export interface EvalResult {
   metrics: EvalMetrics
   /** contextChars relative to the baseline run, as a fraction removed. */
   contextReduction?: number
+  /**
+   * False when the configuration lost information. Cost comparisons between
+   * a disqualified configuration and a qualifying one are meaningless, so
+   * this gates the ranking rather than being weighed against cost.
+   */
+  qualified: boolean
 }
