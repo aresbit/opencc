@@ -48,7 +48,15 @@ function extractSignature(tool: string, input: Record<string, unknown>): string 
 function deriveHint(tool: string, input: Record<string, unknown>, error: unknown): string {
   const errStr = String(error)
 
-  if (errStr.includes('invalid option') && errStr.includes('-P')) {
+  // GNU grep reports a bad short option as `invalid option -- 'P'` (quoted,
+  // with a space after the dashes) and a bad long option as
+  // `unrecognized option '--pcre'`. The previous check required the literal
+  // substring '-P', which neither form contains, so this rule could never
+  // fire against real grep output. Match the option token in either shape.
+  if (
+    /(?:invalid|unrecognized) option/.test(errStr) &&
+    /['-]P\b/.test(errStr)
+  ) {
     return 'grep -P (Perl regex) not available here; use -E for extended regex'
   }
   if (errStr.includes('No such file or directory')) {
@@ -77,22 +85,50 @@ function deriveHint(tool: string, input: Record<string, unknown>, error: unknown
 }
 
 export function register(on: OnRegistrar): void {
+  // Deliver the hint. `additionalContext` is one of the few results the
+  // PreToolUse bridge actually honors, so the hint reaches the model as a
+  // message. The previous version assigned `e._adaptiveHint`, a field with
+  // no reader anywhere in the repo — the hint was computed and dropped.
   on('tool.call', async ($, e: any, next) => {
     const tool = (e.tool_name ?? e.tool) as string
     if (!tool) return next(e)
 
     const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
-    const sig = extractSignature(tool, input)
-    const memory = failureMemory.get(sig)
+    const memory = failureMemory.get(extractSignature(tool, input))
 
-    if (memory) {
-      e._adaptiveHint = memory.hint
-      e._failureCount = memory.count
+    const result = await next(e)
+    if (!memory) return result
+
+    // Never swallow an inner hook's decision to block: a deny returned by
+    // mount/sudo/taint must survive this hook replacing the return value.
+    if (result && typeof result === 'object' && 'deny' in (result as object)) {
+      return result
     }
+
+    return {
+      additionalContext:
+        `Heads up — a previous ${tool} call with this shape failed ` +
+        `${memory.count} time(s). ${memory.hint}`,
+    }
+  })
+
+  // Learn from failures. This was on tool.call, where next(e) bottoms out in
+  // an identity function and therefore never throws, so the catch below was
+  // unreachable and not one failure was ever recorded. tool.invoke's bottom
+  // is the real tool execution, so a failing tool actually lands here.
+  on('tool.invoke', async ($, e: any, next) => {
+    const tool = (e.tool_name ?? e.tool) as string
+    if (!tool) return next(e)
+
+    const input = (e.tool_input ?? e.input ?? {}) as Record<string, unknown>
+    const sig = extractSignature(tool, input)
 
     try {
       const result = await next(e)
 
+      // Success decays the memory: a shape that starts working again should
+      // stop warning about itself.
+      const memory = failureMemory.get(sig)
       if (memory) {
         memory.count = Math.max(0, memory.count - 1)
         if (memory.count === 0) failureMemory.delete(sig)
@@ -112,21 +148,12 @@ export function register(on: OnRegistrar): void {
         if (oldestKey) failureMemory.delete(oldestKey)
       }
 
-      const hint = deriveHint(tool, input, err)
       const existing = failureMemory.get(sig)
-      if (existing) {
-        existing.count++
-        existing.lastSeen = Date.now()
-        existing.hint = hint
-      } else {
-        failureMemory.set(sig, {
-          pattern: sig,
-          errorSummary: String(err).slice(0, 200),
-          hint,
-          count: 1,
-          lastSeen: Date.now(),
-        })
-      }
+      failureMemory.set(sig, {
+        hint: deriveHint(tool, input, err),
+        count: (existing?.count ?? 0) + 1,
+        lastSeen: Date.now(),
+      })
 
       throw err
     }

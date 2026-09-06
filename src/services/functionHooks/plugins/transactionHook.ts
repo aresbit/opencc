@@ -170,9 +170,14 @@ export function register(on: OnRegistrar): void {
 
     if (looksLikeTestFailure(resultStr) && activeTx.snapshots.size > 0) {
       if (!rollbackEnabled) {
-        // Measure, don't act. The transaction stays open so a deliberate
-        // rollbackManual() can still use its snapshots.
+        // Measure, don't act — but close the transaction exactly as the
+        // enabled path does. Returning early without clearing activeTx left
+        // it open for the rest of the session: every later edit joined the
+        // same transaction (so rollbackManual would revert far more than the
+        // user expected), its snapshots grew without bound, and every
+        // subsequent failing test re-counted the same stale transaction.
         shadowRollbacks++
+        activeTx = null
         return event
       }
       const tx = activeTx

@@ -22,6 +22,7 @@ import { stat } from 'fs/promises'
 import type { OnRegistrar } from '../types.js'
 
 interface CacheEntry {
+  /** undefined when the entry exists only for hit-rate measurement. */
   result: unknown
   ts: number
   mtimeMs: number
@@ -208,7 +209,10 @@ export function register(on: OnRegistrar): void {
       if (fresh) {
         stat_(tool).hits++
         // Serving is opt-in AND excludes Read, which upstream dedups better.
-        if (enabled && SERVABLE.has(tool)) {
+        // `cached.result !== undefined` matters because entries recorded in
+        // shadow mode carry no payload: without it, flipping serving on
+        // mid-session would hand a caller `undefined` as a tool result.
+        if (enabled && SERVABLE.has(tool) && cached.result !== undefined) {
           // Tag the shared event object so an outer wildcard hook
           // (perfTelescopy) can tell a fast return apart from a fast real
           // call — e is the same reference all the way up the chain.
@@ -236,7 +240,17 @@ export function register(on: OnRegistrar): void {
     }
 
     evictStale()
-    cache.set(key, { result, ts: Date.now(), mtimeMs })
+    // Store the payload ONLY if it could actually be served. Measuring a hit
+    // rate needs the key, not the value — and in shadow mode (the default)
+    // nothing is ever served, so keeping up to MAX_ENTRIES full file contents
+    // alive would be pure memory cost for a statistic. Read is never served
+    // even when serving is on, so its payload is never worth holding either.
+    const servable = enabled && SERVABLE.has(tool)
+    cache.set(key, {
+      result: servable ? result : undefined,
+      ts: Date.now(),
+      mtimeMs,
+    })
 
     return result
   })

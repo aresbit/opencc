@@ -46,6 +46,7 @@
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { getEngine } from './bridge.js'
 import { dispatch, HookChainBottomError } from './dispatcher.js'
+import { logError } from '../../utils/log.js'
 
 export interface ToolContentEvent {
   tool_name: string
@@ -97,7 +98,12 @@ export async function applyToolContentHooks(
     // ⊥ means no hook matched — normal, nothing to narrow.
     if (error instanceof HookChainBottomError) return block
     // A plugin genuinely failed. The tool result matters more than the
-    // optimization, so send the original rather than propagating.
+    // optimization, so send the original rather than propagating — but LOG
+    // it: swallowing silently is how a broken narrowing hook stays invisible
+    // while quietly doing nothing, which is the exact failure mode this
+    // whole event was added to eliminate. bridge.ts logs non-⊥ errors for
+    // the same reason.
+    logError(error)
     return block
   }
 }
