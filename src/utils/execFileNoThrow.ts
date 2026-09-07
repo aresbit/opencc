@@ -106,45 +106,74 @@ export function execFileNoThrowWithCwd(
   },
 ): Promise<{ stdout: string; stderr: string; code: number; error?: string }> {
   return new Promise(resolve => {
-    // Use execa for cross-platform .bat/.cmd compatibility on Windows
-    execa(file, args, {
-      maxBuffer,
-      signal: abortSignal,
-      timeout: finalTimeout,
-      cwd: finalCwd,
-      env: finalEnv,
-      shell,
-      stdin: finalStdin,
-      input: finalInput,
-      reject: false, // Don't throw on non-zero exit codes
-    })
-      .then(result => {
-        if (result.failed) {
-          if (finalPreserveOutput) {
-            const errorCode = result.exitCode ?? 1
-            void resolve({
-              stdout: result.stdout || '',
-              stderr: result.stderr || '',
-              code: errorCode,
-              error: getErrorMessage(
-                result as unknown as ExecaResultWithError,
-                errorCode,
-              ),
-            })
+    // The .catch below is attached to execa's promise, so it cannot see a
+    // throw from the execa() CALL itself — an option execa rejects is thrown
+    // synchronously, before any process exists, and escapes this executor as a
+    // rejection of the outer promise. That made a function documented as
+    // "always resolves (never throws)" throw at every caller that passed an
+    // abortSignal. Wrapping the call restores the contract for the whole class
+    // of synchronous failure, not just the one that was hit.
+    try {
+      // Use execa for cross-platform .bat/.cmd compatibility on Windows
+      execa(file, args, {
+        maxBuffer,
+        // `cancelSignal`, not `signal`. execa 9 renamed it — `signal` now means
+        // "which signal to send", and passing an AbortSignal under that name
+        // throws TypeError before the process is ever spawned. It throws only
+        // when the value is present, so this failed exactly for the callers that
+        // asked to be cancellable and stayed invisible for everyone else: the
+        // file-suggestion index called `git ls-files` with an abortSignal, got a
+        // TypeError instead of a process, and silently fell back to scanning the
+        // whole tree with ripgrep on every startup.
+        cancelSignal: abortSignal,
+        timeout: finalTimeout,
+        cwd: finalCwd,
+        env: finalEnv,
+        shell,
+        stdin: finalStdin,
+        input: finalInput,
+        reject: false, // Don't throw on non-zero exit codes
+      })
+        .then(result => {
+          if (result.failed) {
+            if (finalPreserveOutput) {
+              const errorCode = result.exitCode ?? 1
+              void resolve({
+                stdout: result.stdout || '',
+                stderr: result.stderr || '',
+                code: errorCode,
+                error: getErrorMessage(
+                  result as unknown as ExecaResultWithError,
+                  errorCode,
+                ),
+              })
+            } else {
+              void resolve({
+                stdout: '',
+                stderr: '',
+                code: result.exitCode ?? 1,
+              })
+            }
           } else {
-            void resolve({ stdout: '', stderr: '', code: result.exitCode ?? 1 })
+            void resolve({
+              stdout: result.stdout,
+              stderr: result.stderr,
+              code: 0,
+            })
           }
-        } else {
-          void resolve({
-            stdout: result.stdout,
-            stderr: result.stderr,
-            code: 0,
-          })
-        }
+        })
+        .catch((error: ExecaError) => {
+          logError(error)
+          void resolve({ stdout: '', stderr: '', code: 1 })
+        })
+    } catch (error) {
+      logError(error as Error)
+      void resolve({
+        stdout: '',
+        stderr: '',
+        code: 1,
+        error: error instanceof Error ? error.message : String(error),
       })
-      .catch((error: ExecaError) => {
-        logError(error)
-        void resolve({ stdout: '', stderr: '', code: 1 })
-      })
+    }
   })
 }
