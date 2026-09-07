@@ -81,6 +81,14 @@ const activeSelects = new Map<string, {
   reject: (error: Error) => void
   startedAt: number
   timeoutHandle?: ReturnType<typeof setTimeout>
+  /**
+   * Handles for this select's own source timers/pollers. Cleared when the
+   * select settles so a source that never fired cannot fire into the void
+   * afterwards and be buffered as a stale event for a later select with the
+   * same kind+id — a stale buffered timer wakes that select instantly for no
+   * reason.
+   */
+  cleanups: Array<() => void>
 }>()
 
 const eventBuffer = new Map<string, { payload: unknown; firedAt: number }>()
@@ -123,10 +131,13 @@ function matchesSource(event: { kind: EventSourceKind; id?: string; agentId?: st
 
 // ── Core Operations ─────────────────────────────────────────────
 
-function setupTimerSource(selectId: string, source: EventSource): void {
+function setupTimerSource(
+  state: { cleanups: Array<() => void> },
+  source: EventSource,
+): void {
   if (source.kind !== 'timer' || !source.timeout) return
 
-  setTimeout(() => {
+  const handle = setTimeout(() => {
     fireEvent({
       kind: 'timer',
       id: source.id,
@@ -134,6 +145,7 @@ function setupTimerSource(selectId: string, source: EventSource): void {
       firedAt: Date.now(),
     })
   }, source.timeout)
+  state.cleanups.push(() => clearTimeout(handle))
 }
 
 function fireEvent(event: {
@@ -187,6 +199,14 @@ function fireEvent(event: {
   }
 }
 
+function releaseSelectHandles(state: {
+  timeoutHandle?: ReturnType<typeof setTimeout>
+  cleanups: Array<() => void>
+}): void {
+  if (state.timeoutHandle) clearTimeout(state.timeoutHandle)
+  for (const cleanup of state.cleanups) cleanup()
+}
+
 function resolveSelect(
   selectId: string,
   result: SelectResult | SelectResult[],
@@ -194,7 +214,7 @@ function resolveSelect(
   const state = activeSelects.get(selectId)
   if (!state) return
 
-  if (state.timeoutHandle) clearTimeout(state.timeoutHandle)
+  releaseSelectHandles(state)
   activeSelects.delete(selectId)
   state.resolve(result)
 }
@@ -203,7 +223,7 @@ function rejectSelect(selectId: string, error: Error): void {
   const state = activeSelects.get(selectId)
   if (!state) return
 
-  if (state.timeoutHandle) clearTimeout(state.timeoutHandle)
+  releaseSelectHandles(state)
   activeSelects.delete(selectId)
   state.reject(error)
 }
@@ -272,6 +292,7 @@ async function runSelect(options: SelectOptions): Promise<SelectResult | SelectR
       reject,
       startedAt,
       timeoutHandle: undefined as ReturnType<typeof setTimeout> | undefined,
+      cleanups: [] as Array<() => void>,
     }
 
     // Set up timeout
@@ -289,7 +310,7 @@ async function runSelect(options: SelectOptions): Promise<SelectResult | SelectR
     // Set up timer sources
     for (const source of options.sources) {
       if (source.kind === 'timer') {
-        setupTimerSource(selectId, source)
+        setupTimerSource(state, source)
       }
     }
 
@@ -318,6 +339,7 @@ async function runSelect(options: SelectOptions): Promise<SelectResult | SelectR
           } catch { /* predicate failed, keep polling */ }
         }
       }, DEFAULT_POLL_INTERVAL)
+      state.cleanups.push(() => clearInterval(pollInterval))
     }
   })
 }
