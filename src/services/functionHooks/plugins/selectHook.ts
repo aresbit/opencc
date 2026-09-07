@@ -90,6 +90,8 @@ const MAX_ACTIVE_SELECTS = 10
 const MAX_SOURCES_PER_SELECT = 20
 const DEFAULT_POLL_INTERVAL = 100 // ms
 const DEFAULT_TIMEOUT = 600_000 // 10 minutes
+/** Delay before rejecting an over-cap select, so a retry loop cannot spin. */
+const OVERLOAD_BACKPRESSURE_MS = 50
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -210,7 +212,20 @@ function rejectSelect(selectId: string, error: Error): void {
 
 async function runSelect(options: SelectOptions): Promise<SelectResult | SelectResult[]> {
   if (activeSelects.size >= MAX_ACTIVE_SELECTS) {
-    throw new Error(`Too many active selects (max ${MAX_ACTIVE_SELECTS})`)
+    // Backpressure, not just a diagnostic. This rejection is a resource cap,
+    // and the natural way to consume select() is a loop that catches and
+    // retries — so an immediate synchronous throw hands that caller an
+    // infinite loop made entirely of microtasks, which starves the macrotask
+    // queue and takes stdin, timers and rendering down with it. That is
+    // exactly how a session came up unable to accept input. Yielding a real
+    // tick first cannot fix a caller that ignores backpressure, but it does
+    // mean the cap degrades into slowness rather than a frozen process.
+    await new Promise<void>(resolve => setTimeout(resolve, OVERLOAD_BACKPRESSURE_MS))
+    throw new Error(
+      `Too many active selects (max ${MAX_ACTIVE_SELECTS}). ` +
+        'A caller is starting selects faster than they resolve — check that ' +
+        'the loop owning them is not being recreated on every render.',
+    )
   }
 
   if (options.sources.length === 0) {

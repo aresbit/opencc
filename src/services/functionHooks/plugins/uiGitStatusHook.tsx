@@ -78,9 +78,14 @@ export interface GitStatusProps {
 }
 
 export function register(on: OnRegistrar): void {
-  startPolling()
-
   on('ui.slot.render', { slotId: 'git-status' }, ($, e: any, _next) => {
+    // Start on first render of the slot, not at registration. Registration
+    // happens during startup for every session, so polling from there spawns
+    // three git subprocesses every four seconds whether or not anything is
+    // showing the result — and each change bumps the UI epoch, which re-renders
+    // the tree. On a slow filesystem that is startup work and repaint churn
+    // bought for nothing.
+    startPolling()
     if (!cached.branch) return e.node
 
     const props = e.props as GitStatusProps | undefined

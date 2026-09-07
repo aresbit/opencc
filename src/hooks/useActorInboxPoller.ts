@@ -15,6 +15,12 @@ const CROSS_PROCESS_POLL_MS = 5_000
 
 const ANNOUNCE_INTERVAL_MS = 30_000
 
+/** Backoff bounds for a select() that keeps failing. */
+const MIN_BACKOFF_MS = 250
+const MAX_BACKOFF_MS = 10_000
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
 /** Delivered per turn, so one noisy sender cannot bury the user's own prompt. */
 const MAX_ENVELOPES_PER_TURN = 20
 
@@ -98,6 +104,21 @@ export function useActorInboxPoller({
     }
   }, [isLoading, focusedInputDialog, onSubmitMessage])
 
+  // The loop must not be torn down and recreated when `deliver` changes
+  // identity, which it does on every render (isLoading, focusedInputDialog and
+  // onSubmitMessage are all unstable). Holding it in a ref keeps the effect's
+  // dependencies to `enabled` alone, so exactly one loop exists per session.
+  //
+  // This is not a tidiness point. Teardown can only set `cancelled`; it cannot
+  // retract a select() already waiting in the engine, so that select keeps its
+  // slot until it times out. One loop per render meant selects accumulating to
+  // the engine's cap of 10, after which every select() threw synchronously —
+  // and a catch-and-retry loop around a synchronous throw never yields to the
+  // macrotask queue, so stdin, timers and rendering all stopped. The symptom
+  // was a session that opened and then would not accept input at all.
+  const deliverRef = useRef(deliver)
+  deliverRef.current = deliver
+
   useEffect(() => {
     if (!enabled) return
 
@@ -109,6 +130,8 @@ export function useActorInboxPoller({
       let cancelled = false
 
       const loop = async () => {
+        let consecutiveFailures = 0
+
         while (!cancelled) {
           try {
             await $.select.wait({
@@ -118,19 +141,43 @@ export function useActorInboxPoller({
               ],
               timeout: CROSS_PROCESS_POLL_MS + 1_000,
             })
+            consecutiveFailures = 0
           } catch {
-            // select timeout or cancellation — expected, retry
+            // A timeout is the ordinary case; a rejected select (cancelled, or
+            // the engine refusing another one) is not, and repeating it at
+            // full speed is what starved the event loop. Back off instead.
+            consecutiveFailures++
           }
-          if (!cancelled) await deliver()
+
+          if (cancelled) return
+
+          if (consecutiveFailures > 0) {
+            await sleep(
+              Math.min(MAX_BACKOFF_MS, MIN_BACKOFF_MS * 2 ** (consecutiveFailures - 1)),
+            )
+            if (cancelled) return
+          }
+
+          await deliverRef.current()
+
+          // An unconditional yield to the macrotask queue. deliver() usually
+          // awaits real I/O, but it returns without awaiting anything while a
+          // query is running or a dialog is focused — precisely the startup
+          // state — so nothing else guarantees this loop ever lets a keypress
+          // through. One tick per iteration costs nothing and makes a spin
+          // impossible no matter why select() returns early.
+          await sleep(0)
         }
       }
 
-      loop()
-      return () => { cancelled = true }
+      void loop()
+      return () => {
+        cancelled = true
+      }
     }
 
     // ── Fallback: setInterval polling (no engine) ──
-    const timer = setInterval(() => void deliver(), CROSS_PROCESS_POLL_MS)
+    const timer = setInterval(() => void deliverRef.current(), CROSS_PROCESS_POLL_MS)
     return () => clearInterval(timer)
-  }, [enabled, deliver])
+  }, [enabled])
 }
