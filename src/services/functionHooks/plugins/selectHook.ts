@@ -27,6 +27,7 @@ export type EventSourceKind =
   | 'user_input'
   | 'file_change'
   | 'tool_complete'
+  | 'actor_rx'
   | 'custom'
 
 export interface EventSource {
@@ -110,6 +111,8 @@ function matchesSource(event: { kind: EventSourceKind; id?: string; agentId?: st
     case 'file_change':
       return true
     case 'tool_complete':
+      return !source.id || event.id === source.id
+    case 'actor_rx':
       return !source.id || event.id === source.id
     case 'custom':
       return event.id === source.id
@@ -361,6 +364,25 @@ export function register(on: OnRegistrar): void {
     })
 
     return result
+  })
+
+  // Feed actor tx events into select so local actor_rx selects wake
+  // instantly instead of waiting for the next poll cycle.
+  on('actor.tx', async ($, e: any, next) => {
+    const envelope = await next(e)
+
+    // The destination address is the select source id. Any select
+    // waiting on {kind: "actor_rx", id: toAddress} wakes immediately.
+    if (e.to || envelope?.to) {
+      fireEvent({
+        kind: 'actor_rx' as EventSourceKind,
+        id: e.to ?? envelope.to,
+        payload: envelope,
+        firedAt: Date.now(),
+      })
+    }
+
+    return envelope
   })
 
   // Feed tool completion events into select
