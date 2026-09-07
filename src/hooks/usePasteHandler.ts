@@ -11,6 +11,7 @@ import {
 } from '../utils/imagePaste.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { getPlatform } from '../utils/platform.js'
+import { logForDebugging } from '../utils/debug.js'
 
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100
@@ -108,6 +109,9 @@ export function usePasteHandler({
         ) => {
           pastePendingRef.current = false
           setPasteState(({ chunks }) => {
+            logForDebugging(
+              `[Paste] flush timer fired: ${chunks.length} chunk(s), ${chunks.reduce((n, c) => n + c.length, 0)} chars`,
+            )
             // Join chunks and filter out orphaned focus sequences
             // These can appear when focus events split during paste
             const pastedText = chunks
@@ -250,6 +254,16 @@ export function usePasteHandler({
     }
 
     // Check if we should handle as paste (from bracketed paste, large input, or continuation)
+    // Paste with no onPaste handler falls through to onInput as one giant
+    // keystroke. Worth saying out loud: it is the difference between "paste
+    // did nothing" and "paste went somewhere unexpected", and the two look
+    // identical from the outside.
+    if (!onPaste && (isFromPaste || input.length > PASTE_THRESHOLD)) {
+      logForDebugging(
+        `[Paste] no onPaste handler; ${input.length} chars routed to onInput instead`,
+      )
+    }
+
     const shouldHandleAsPaste =
       onPaste &&
       (input.length > PASTE_THRESHOLD ||
@@ -258,6 +272,10 @@ export function usePasteHandler({
         isFromPaste)
 
     if (shouldHandleAsPaste) {
+      logForDebugging(
+        `[Paste] buffering chunk: len=${input.length} isPasted=${isFromPaste} ` +
+          `pending=${pastePendingRef.current} imagePath=${hasImageFilePath}`,
+      )
       pastePendingRef.current = true
       setPasteState(({ chunks, timeoutId }) => {
         return {

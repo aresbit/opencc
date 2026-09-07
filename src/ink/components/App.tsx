@@ -342,6 +342,19 @@ export default class App extends PureComponent<Props, State> {
     try {
       let chunk;
       while ((chunk = this.props.stdin.read() as string | null) !== null) {
+        // Say whether the terminal actually sends bracketed-paste markers.
+        // Without this the two failure modes are indistinguishable from the
+        // outside: a terminal that never emits \e[200~ (so the text arrives as
+        // ordinary keystrokes) and a paste that arrives correctly but is lost
+        // further down. Cheap: one indexOf per chunk, only on chunks big
+        // enough to be a paste.
+        if (chunk.length > 16) {
+          const hasStart = chunk.includes('\u001b[200~');
+          const hasEnd = chunk.includes('\u001b[201~');
+          if (hasStart || hasEnd || chunk.length > 200) {
+            logForDebugging(`[Paste] stdin chunk: ${chunk.length} chars, PASTE_START=${hasStart} PASTE_END=${hasEnd}`);
+          }
+        }
         // Process the input chunk
         this.processInput(chunk);
       }
