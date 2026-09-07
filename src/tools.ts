@@ -46,6 +46,7 @@ import { EvalApplyTool } from './tools/EvalApplyTool/EvalApplyTool.js'
 import { ActorTool } from './tools/ActorTool/ActorTool.js'
 import { SSHRemoteTool } from './tools/SSHRemoteTool/SSHRemoteTool.js'
 import { CodeRunTool } from './tools/CodeRunTool/CodeRunTool.js'
+import { DerefTool } from './tools/DerefTool/DerefTool.js'
 import { Prove2MeTool } from './tools/Prove2MeTool/Prove2MeTool.js'
 import { getSyntheticTools } from './services/functionHooks/plugins/jitSynthesisHook.js'
 // Dead code elimination: conditional import for ant-only tools
@@ -308,6 +309,11 @@ export function getAllBaseTools(): Tools {
     McpFsExecTool,
     CodeActTool,
     CodeRunTool,
+    // The recovery path for handle-ized tool results. contextHandleHook and
+    // contextShuntHook both point the model at it by name on every large
+    // result, so it has to be registered unconditionally or those results are
+    // narrowed with nothing to narrow back from.
+    DerefTool,
     Prove2MeTool,
     ActionTool,
     ...(OverflowTestTool ? [OverflowTestTool] : []),

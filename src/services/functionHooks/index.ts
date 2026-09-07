@@ -56,7 +56,7 @@ export {
   getStats as getKnowledgeStats,
   clearKnowledge,
 } from './plugins/knowledgeHook.js'
-export { deref, derefFull, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles, getHandleThreshold, setHandleThreshold } from './plugins/contextHandleHook.js'
+export { deref, derefFull, describeHandle, markHandleShunted, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles, getHandleThreshold, setHandleThreshold } from './plugins/contextHandleHook.js'
 
 // Context shunt — worker-model summary replaces the payload in context
 export {

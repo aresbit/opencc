@@ -216,7 +216,7 @@ export { clearCache, getCacheMtimeStats, getCacheStats, setCacheEnabled, isCache
 export { queryFiles, getRecentFiles, getFileSymbols, getStats as getKnowledgeStats, clearKnowledge } from './knowledgeHook.js'
 
 // Context handles (virtual memory)
-export { deref, derefFull, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles, getHandleThreshold, setHandleThreshold } from './contextHandleHook.js'
+export { deref, derefFull, describeHandle, markHandleShunted, peekHandle, listHandles, getHandleCount, getHandleUtilization, clearHandles, getHandleThreshold, setHandleThreshold } from './contextHandleHook.js'
 
 // Context shunt — worker-model summary replaces the payload in context
 export {

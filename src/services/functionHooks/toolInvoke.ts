@@ -44,6 +44,7 @@
 
 import { getEngine } from './bridge.js'
 import { dispatch, HookChainBottomError } from './dispatcher.js'
+import { logError } from '../../utils/log.js'
 import type { HookFn } from './types.js'
 
 export interface ToolInvokeEvent {
@@ -90,6 +91,24 @@ export async function invokeToolThroughHooks<T>(
       // Nothing came back. If the tool never ran, the chain simply had
       // nothing to say — run it. If it did complete, a hook discarded a real
       // result; keep the result rather than the plugin's mistake.
+      return completed ? (realResult as T) : await run()
+    }
+
+    // A tool result is an envelope (`{ data, ... }`) that the caller reads
+    // fields off immediately. A hook returning a bare string — the natural
+    // mistake for a cache or substitute handler, and what cacheHook's hit path
+    // was written to do — type-checks nowhere and produces `undefined` where
+    // `result.data` was expected, several frames from the plugin that caused
+    // it. That is the shape of the WebFetch crash this file was already fixed
+    // for once; catching it here keeps a plugin bug from presenting as a tool
+    // failure.
+    if (typeof result !== 'object') {
+      logError(
+        new Error(
+          `tool.invoke hook returned ${typeof result} for ${meta.tool_name}; ` +
+            'a replacement must be the tool\'s own result object. Ignoring it.',
+        ),
+      )
       return completed ? (realResult as T) : await run()
     }
 

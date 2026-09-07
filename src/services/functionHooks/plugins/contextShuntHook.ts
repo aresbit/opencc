@@ -44,7 +44,7 @@
  *    delegate edits, because worker summaries lack reliable line numbers, so
  *    the main model has to re-read anyway. This hook composes with
  *    contextHandleHook: the full text is already in the handle store, so the
- *    summary ships with a `deref(handle, start, end)` token. Orientation is
+ *    summary ships with a Deref-tool token. Orientation is
  *    lossy and cheap; editing pulls exact bytes on demand. That is the
  *    "骨架视图 + 惰性重读凭证" shape, and it falls out of the data flow rather
  *    than needing another special case.
@@ -66,7 +66,9 @@
  *   - one worker round-trip (up to timeoutMs) per distinct large result,
  *     charged in worker tokens
  *   - the summary is lossy where the preview it replaces was exact bytes;
- *     exact bytes remain available through deref(handle, start, end)
+ *     exact bytes remain available through the Deref tool. That tool has to
+ *     stay registered for this hook to be honest: without it the summary is
+ *     not a narrowing of the result, it is a replacement of it.
  *
  * Turn it off with setShuntConfig({ enabled: false }) or $.shunt.disable().
  * getShuntStats() is how to tell whether it is actually working: a session
@@ -79,7 +81,7 @@
  */
 
 import type { OnRegistrar } from '../types.js'
-import { peekHandle } from './contextHandleHook.js'
+import { markHandleShunted, peekHandle } from './contextHandleHook.js'
 import { queryHaiku } from '../../api/claude.js'
 import { asSystemPrompt } from '../../../utils/systemPromptType.js'
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
@@ -216,7 +218,24 @@ const MAX_CACHED_SUMMARIES = 200
  */
 const inFlightSummaries = new Map<string, Promise<string>>()
 
-/** Simple FIFO semaphore over worker calls. */
+/**
+ * FIFO semaphore over worker calls.
+ *
+ * The slot is HANDED to the next waiter rather than released and re-acquired.
+ * The previous version decremented and then woke a waiter, which leaves the
+ * count one below the truth between the wake and the waiter resuming; a caller
+ * entering acquire() in that window would see a free slot, take it, and be
+ * joined by the waiter a microtask later.
+ *
+ * Stated honestly: that window is not currently reachable. Resolving the
+ * waiter's promise queues a microtask, and every caller of this semaphore
+ * arrives on its own microtask afterwards, so the waiter always resumes first
+ * — a stress test of both versions could not make the old one exceed the
+ * limit. The hand-off is here because the invariant should hold as a property
+ * of the semaphore rather than of who happens to call it: a synchronous
+ * acquire anywhere in this file's future would break the old version silently,
+ * and this one costs nothing.
+ */
 let activeWorkers = 0
 const workerQueue: Array<() => void> = []
 
@@ -225,14 +244,18 @@ async function acquireWorkerSlot(): Promise<void> {
     activeWorkers++
     return
   }
+  // Woken by releaseWorkerSlot, which passes its slot along without ever
+  // dropping the count, so no third party can slip in ahead.
   await new Promise<void>(resolve => workerQueue.push(resolve))
-  activeWorkers++
 }
 
 function releaseWorkerSlot(): void {
-  activeWorkers--
   const next = workerQueue.shift()
-  if (next) next()
+  if (next) {
+    next()
+    return
+  }
+  activeWorkers--
 }
 
 /** Observable so a test or an operator can see the limiter working. */
@@ -414,10 +437,14 @@ export function register(on: OnRegistrar): void {
     const lineCount = full.split('\n').length
     const shunted = [
       `[handle:${handle}] ${toolName} result — ${lineCount} lines, ${full.length} chars (full text NOT in context)`,
-      `Summarized by a worker model. To read exact bytes: deref("${handle}", startLine, endLine)`,
+      `Summarized by a worker model. The full text is retained: use the Deref tool (handle="${handle}", start_line, end_line) to read any range of it verbatim. Line numbers below are 1-based and match Deref's.`,
       '',
       summary,
     ].join('\n')
+
+    // The bytes are now out of context and this handle is the only copy, so
+    // it must stop being first in line for eviction.
+    markHandleShunted(handle)
 
     stats.summarized++
     stats.charsIn += full.length

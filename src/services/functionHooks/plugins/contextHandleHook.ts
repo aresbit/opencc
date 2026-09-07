@@ -5,8 +5,9 @@
  * in a session-scoped handle store. The model receives a compact
  * handle reference with a preview (first N lines) and metadata.
  *
- * Other code can call deref(handle, start, end) to retrieve slices
- * without polluting the context window.
+ * The model retrieves slices with the Deref tool (src/tools/DerefTool);
+ * in-process callers use deref(handle, start, end) directly. Both are
+ * 1-based and inclusive.
  *
  * Sits INSIDE compress: large results get handle-ized (lossless) first;
  * only moderate-sized results that slip through fall to compress (lossy).
@@ -40,6 +41,12 @@ interface HandleEntry {
   inputSummary: string
   derefCount: number
   lastDerefAt: number | null
+  /**
+   * True when a downstream hook removed this content from context entirely
+   * (contextShuntHook replaces the preview with a summary). The store is then
+   * the ONLY copy, which inverts the eviction rule below.
+   */
+  shunted: boolean
 }
 
 const handleStore = new Map<string, HandleEntry>()
@@ -85,23 +92,46 @@ function generateHandle(): string {
   return `res_${hex}_${rand}`
 }
 
+/**
+ * Eviction order, in bands, oldest first within each band:
+ *
+ *   1. never dereferenced, still previewed in context   ← purest waste
+ *   2. dereferenced, still previewed in context
+ *   3. shunted (content is NOT in context)              ← evict last
+ *
+ * Band 1 was originally the whole rule, on the reasoning that content nobody
+ * has touched is the purest waste to reclaim. contextShuntHook broke that
+ * reasoning without changing it: once a result is shunted, its bytes are gone
+ * from context and this store holds the only copy, so a never-dereferenced
+ * shunted handle is not waste — it is the entire recoverable content, and it
+ * was first in line to be deleted. That turned "lossless with a recovery
+ * path" into silent, unrecoverable loss for any summarized result the model
+ * had not yet gone back to. Handles still carrying a preview are safe to drop
+ * by comparison: the preview stays in the transcript either way.
+ */
 function evictOldest(): void {
   if (handleStore.size < MAX_HANDLES) return
-  // Prefer evicting a handle nobody has dereferenced yet over one that's
-  // actually in use, even if the unused one is younger — content nobody
-  // has touched is the purest waste to reclaim first.
   let victimKey: string | undefined
   let victimScore = Infinity
   for (const [key, entry] of handleStore) {
-    // Dereferenced handles sort after all never-used ones regardless of
-    // age, by adding a large offset; within each group, oldest first.
-    const score = entry.derefCount > 0 ? entry.createdAt + 1e15 : entry.createdAt
+    const band = entry.shunted ? 2e15 : entry.derefCount > 0 ? 1e15 : 0
+    const score = band + entry.createdAt
     if (score < victimScore) {
       victimScore = score
       victimKey = key
     }
   }
   if (victimKey) handleStore.delete(victimKey)
+}
+
+/**
+ * Record that this handle's content no longer appears in context, so eviction
+ * treats it as the only copy. Called by contextShuntHook after it replaces the
+ * preview with a summary.
+ */
+export function markHandleShunted(handle: string): void {
+  const entry = handleStore.get(handle)
+  if (entry) entry.shunted = true
 }
 
 function summarizeInput(input: Record<string, unknown>): string {
@@ -148,6 +178,7 @@ export function register(on: OnRegistrar): void {
       inputSummary: summarizeInput(input),
       derefCount: 0,
       lastDerefAt: null,
+      shunted: false,
     })
 
     const preview = lines.slice(0, PREVIEW_LINES).join('\n')
@@ -158,20 +189,61 @@ export function register(on: OnRegistrar): void {
     return [
       `[handle:${handle}] ${tool} result — ${lines.length} lines, ${result.length} chars`,
       `Source: ${summarizeInput(input)}`,
-      `Use deref("${handle}", startLine?, endLine?) to retrieve slices.`,
+      `Full text retained. Use the Deref tool (handle="${handle}") to read any line range; line numbers below are 1-based.`,
       '',
       preview + suffix,
     ].join('\n')
   })
 }
 
-export function deref(handle: string, startLine = 0, endLine?: number): string | null {
+/**
+ * Fetch a line range from a handle. Line numbers are 1-based and INCLUSIVE of
+ * both ends, matching every line number this system shows the model: the
+ * preview starts at line 1, contextShuntHook line-numbers the worker's input
+ * from 1, and the summary's ranges and quoted "Key lines:" carry those same
+ * numbers.
+ *
+ * It was 0-based exclusive, while advertising itself with those 1-based
+ * numbers — so a model asking for the range a summary pointed at got the
+ * neighbouring lines instead. Silently off by one is the worst version of
+ * this to have: the content comes back, it just is not the content that was
+ * asked for, and the caller has no way to notice.
+ *
+ * Out-of-range values are clamped rather than rejected; an empty range
+ * returns an empty string.
+ */
+export function deref(
+  handle: string,
+  startLine?: number,
+  endLine?: number,
+): string | null {
   const entry = handleStore.get(handle)
   if (!entry) return null
   entry.derefCount++
   entry.lastDerefAt = Date.now()
-  const end = endLine ?? entry.lines.length
-  return entry.lines.slice(startLine, end).join('\n')
+  const from = Math.max(1, Math.floor(startLine ?? 1))
+  const to = Math.min(entry.lines.length, Math.floor(endLine ?? entry.lines.length))
+  if (to < from) return ''
+  return entry.lines.slice(from - 1, to).join('\n')
+}
+
+/** Metadata for a handle without touching its content or its deref count. */
+export function describeHandle(handle: string): {
+  tool: string
+  lines: number
+  chars: number
+  inputSummary: string
+  shunted: boolean
+} | null {
+  const entry = handleStore.get(handle)
+  if (!entry) return null
+  return {
+    tool: entry.tool,
+    lines: entry.lines.length,
+    chars: entry.content.length,
+    inputSummary: entry.inputSummary,
+    shunted: entry.shunted,
+  }
 }
 
 /**
