@@ -218,6 +218,27 @@ function resolveTools(nsId: string): ResolvedTool[] {
   return resolved
 }
 
+/**
+ * Whether any mount anywhere claims to provide this tool.
+ *
+ * The mount table governs MCP servers: `mount -t mcp gmail /comms/gmail` lists
+ * that server's tools. Built-in tools (Read, Bash, Grep, …) are ambient — the
+ * header calls the root namespace the one that "contains all built-in tools",
+ * but nothing ever mounts them, because there is no server to mount.
+ *
+ * So "absent from this namespace's mounts" cannot mean "denied": it is also
+ * true of every built-in. Only a tool some mount actually provides can be
+ * meaningfully withheld by leaving that mount out.
+ */
+function isMountedTool(toolName: string): boolean {
+  for (const ns of namespaces.values()) {
+    for (const [, mount] of ns.mounts) {
+      if (mount.tools.includes(toolName)) return true
+    }
+  }
+  return false
+}
+
 function isToolVisible(nsId: string, toolName: string): boolean {
   const ns = namespaces.get(nsId)
   if (!ns) return true // No namespace = everything visible
@@ -225,7 +246,13 @@ function isToolVisible(nsId: string, toolName: string): boolean {
   for (const [, mount] of ns.mounts) {
     if (mount.tools.includes(toolName)) return true
   }
-  return false
+
+  // Regression this guards: `subagent.start` gives every subagent a child of
+  // the root namespace, and root has no mounts, so the child inherits an empty
+  // mount table. Returning false here denied that agent *every* tool — Read
+  // included — which is the opposite of the `fail-open: agent uses root`
+  // intent stated where the namespace is created.
+  return !isMountedTool(toolName)
 }
 
 function getAgentNamespace(agentId: string): string {
@@ -350,6 +377,15 @@ export function unbindAgent(agentId: string): void {
 
 export function resolve(nsId?: string): ResolvedTool[] {
   return resolveTools(nsId ?? ROOT_NS_ID)
+}
+
+/**
+ * The visibility rule the `tool.call` interceptor applies. Exported so the
+ * built-ins-stay-reachable regression can be pinned directly instead of a
+ * test restating the rule and passing whatever the source does.
+ */
+export function isVisible(nsId: string, toolName: string): boolean {
+  return isToolVisible(nsId, toolName)
 }
 
 export function listMounts(nsId?: string): MountPoint[] {
