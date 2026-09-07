@@ -55,10 +55,17 @@
  * summary, reusing the store contextHandle already populated. Nothing is
  * duplicated.
  *
- * ON by default, deliberately, and it is the only transform in this chain
- * that makes a network call — every other one is cheap and deterministic.
- * What that buys and costs, stated plainly so the tradeoff is visible at the
- * point of decision:
+ * OFF by default. It was on, and it should not have been: it is the only
+ * transform in this chain that makes a network call, the only one that is
+ * lossy in a way a later read cannot undo without a round trip, and the only
+ * one whose output depends on a model's judgement rather than on a rule you
+ * can read. Defaults should be the behaviour someone gets without opting in,
+ * and silently routing a user's file contents through a second model and
+ * replacing what they see with its summary is not that.
+ *
+ * Enable it with setShuntConfig({ enabled: true }) or $.shunt.enable(). What
+ * that buys and costs, stated plainly so the tradeoff is visible at the point
+ * of decision:
  *
  *   + a large tool result stops entering context, and since context bytes
  *     are re-sent every turn, that saving compounds for the rest of the
@@ -70,7 +77,6 @@
  *     stay registered for this hook to be honest: without it the summary is
  *     not a narrowing of the result, it is a replacement of it.
  *
- * Turn it off with setShuntConfig({ enabled: false }) or $.shunt.disable().
  * getShuntStats() is how to tell whether it is actually working: a session
  * with summarized === 0 and failures > 0 means the worker is unreachable and
  * every result quietly fell back to contextHandle's preview.
@@ -88,7 +94,7 @@ import { asSystemPrompt } from '../../../utils/systemPromptType.js'
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
 
 export interface ShuntConfig {
-  /** On. Disable with setShuntConfig({ enabled: false }) or $.shunt.disable(). */
+  /** Off. Enable with setShuntConfig({ enabled: true }) or $.shunt.enable(). */
   enabled: boolean
   /**
    * Only summarize content at least this large (chars).
@@ -120,7 +126,7 @@ export interface ShuntConfig {
 }
 
 const DEFAULT_CONFIG: ShuntConfig = {
-  enabled: true,
+  enabled: false,
   minChars: 16384,
   tools: null,
   timeoutMs: 15_000,
