@@ -158,7 +158,7 @@ function globToRegExp(pattern: string): RegExp {
       }
       continue
     }
-    if ('.*+?^${}()|[]\\'.includes(ch)) {
+    if (/[.*+?^${}()|[\]\\]/.test(ch)) {
       source += `\\${ch}`
     } else {
       source += ch
