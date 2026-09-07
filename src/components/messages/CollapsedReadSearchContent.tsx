@@ -113,11 +113,11 @@ function VerboseToolUse(t0) {
       } else {
         t8 = $[23];
       }
-      t1 = <Box key={content.id} flexDirection="column" marginTop={1} backgroundColor={bg}><Box flexDirection="row">{t8}<Text><Text bold={true}>{userFacingName}</Text>{toolUseMessage && <Text>({toolUseMessage})</Text>}</Text>{input && tool.renderToolUseTag?.(input)}</Box>{isResolved && !isError && toolResult !== undefined && <Box>{tool.renderToolResultMessage?.(toolResult, [], {
-            verbose: true,
-            tools,
-            theme
-          })}</Box>}</Box>;
+      const rawResult = isResolved && !isError && toolResult !== undefined
+        ? tool.renderToolResultMessage?.(toolResult, [], { verbose: true, tools, theme })
+        : undefined;
+      const safeResult = typeof rawResult === 'string' ? <Text>{rawResult}</Text> : rawResult;
+      t1 = <Box key={content.id} flexDirection="column" marginTop={1} backgroundColor={bg}><Box flexDirection="row">{t8}<Text><Text bold={true}>{userFacingName}</Text>{toolUseMessage && <Text>({toolUseMessage})</Text>}</Text>{input && tool.renderToolUseTag?.(input)}</Box>{safeResult && <Box>{safeResult}</Box>}</Box>;
     }
     $[0] = bg;
     $[1] = content.id;
