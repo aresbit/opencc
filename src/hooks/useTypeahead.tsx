@@ -350,6 +350,13 @@ function hasCommandWithArguments(isAtEndWithWhitespace: boolean, value: string) 
 /**
  * Hook for handling typeahead functionality for both commands and file paths
  */
+/**
+ * Characters appearing in one update that mark the change as an insertion
+ * rather than typing. Deliberately well above IME commit sizes and well below
+ * anything a person produces with a single keystroke.
+ */
+const BULK_INSERT_CHARS = 20;
+
 export function useTypeahead({
   commands,
   onInputChange,
@@ -895,6 +902,7 @@ export function useTypeahead({
     if (dismissedForInputRef.current === input) {
       return;
     }
+    const previousInput = prevInputRef.current ?? '';
     // When the actual input text changes (not just updateSuggestions being recreated),
     // reset the search token ref so the same query can be re-fetched.
     // This fixes: type @readme.md, clear, retype @readme.md → no suggestions.
@@ -904,8 +912,26 @@ export function useTypeahead({
     }
     // Clear the dismissed state when input changes
     dismissedForInputRef.current = null;
+
+    // A jump of this many characters at once is not someone typing. Typing
+    // grows the input one character at a time; even an IME commits a handful.
+    // A paste arrives whole.
+    //
+    // Completion is a response to what someone is in the middle of writing, so
+    // running it over text that was dropped in wholesale offers to complete a
+    // token the user never typed and is not looking at. That is not merely
+    // useless: a non-empty suggestion list makes Enter a no-op (see
+    // PromptInput's submit guard), so pasting anything whose tail happens to
+    // look like a path or an @mention leaves the prompt unable to be sent,
+    // with no visible reason. Reported as "paste does not work" — the text was
+    // there, it just could not be submitted.
+    if (input.length - previousInput.length >= BULK_INSERT_CHARS) {
+      clearSuggestions();
+      return;
+    }
+
     void updateSuggestions(input);
-  }, [input, updateSuggestions]);
+  }, [input, updateSuggestions, clearSuggestions]);
 
   // Handle tab key press - complete suggestions or trigger file suggestions
   const handleTab = useCallback(async () => {

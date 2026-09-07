@@ -1073,6 +1073,16 @@ function PromptInput({
     const hasDirectorySuggestions = suggestionsState.suggestions.length > 0 && suggestionsState.suggestions.every(s => s.description === 'directory');
     if (suggestionsState.suggestions.length > 0 && !isSubmittingSlashCommand && !hasDirectorySuggestions) {
       logForDebugging(`[onSubmit] early return: suggestions showing (count=${suggestionsState.suggestions.length})`);
+      // Swallowing Enter with no feedback is indistinguishable from the app
+      // being wedged — which is how this surfaced: a paste whose tail looked
+      // like a path opened the completion list, and from then on Enter did
+      // nothing at all, with nothing on screen explaining why. The list itself
+      // is visible, but nothing connects it to the key that stopped working.
+      addNotification({
+        key: 'suggestions-block-submit',
+        text: 'Press Esc to dismiss the completion list, then Enter to send',
+        timeoutMs: 3000,
+      });
       return; // Don't submit, user needs to clear suggestions first
     }
 
@@ -1102,7 +1112,7 @@ function PromptInput({
       clearBuffer,
       resetHistory
     });
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, addNotification, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification]);
   const {
     suggestions,
     selectedSuggestion,
