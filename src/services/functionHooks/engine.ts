@@ -103,6 +103,54 @@ export function buildCoreNouns(): Record<
   Record<string, (...args: any[]) => any>
 > {
   return {
+    actor: {
+      self: async (e: { address: string }) => {
+        const { LocalActorMailbox } = await import('../../actor/LocalActorMailbox.js')
+        await new LocalActorMailbox().announce(e.address)
+        return { success: true, self: e.address, message: `Actor address: ${e.address}` }
+      },
+      peers: async (e: { address: string; team?: string; staleAfterMs?: number }) => {
+        const { LocalActorMailbox } = await import('../../actor/LocalActorMailbox.js')
+        const { parseActorAddress } = await import('../../actor/types.js')
+        const mailbox = new LocalActorMailbox()
+        const staleMs = e.staleAfterMs ?? 10 * 60 * 1000
+        const peers = (await mailbox.list()).filter(entry => {
+          if (entry.address !== e.address && entry.lastSeenAt && Date.now() - Date.parse(entry.lastSeenAt) > staleMs) return false
+          if (!e.team?.trim()) return true
+          return parseActorAddress(entry.address).team === e.team.trim()
+        })
+        return {
+          success: true, self: e.address, peers,
+          message: peers.length ? `Peers:\n${peers.map((p: any) => `- ${p.address} (${p.unread} unread)`).join('\n')}` : 'No announced actor peers.',
+        }
+      },
+      tx: async (e: { address: string; to: string; payload: unknown; kind?: string; correlationId?: string; replyTo?: string; ttlMs?: number; metadata?: Record<string, unknown> }) => {
+        const { ActorRuntime } = await import('../../actor/ActorRuntime.js')
+        const runtime = new ActorRuntime(e.address)
+        return runtime.tx(e.to, e.payload, { kind: e.kind, correlationId: e.correlationId, replyTo: e.replyTo, ttlMs: e.ttlMs, metadata: e.metadata })
+      },
+      rx: async (e: { address: string; timeoutMs?: number; limit?: number; signal?: AbortSignal }) => {
+        const { ActorRuntime } = await import('../../actor/ActorRuntime.js')
+        const runtime = new ActorRuntime(e.address)
+        return runtime.rx({ timeoutMs: e.timeoutMs, limit: e.limit, signal: e.signal })
+      },
+      resource_offer: async (e: { address: string; resourceId: string; capacity?: number; metadata?: Record<string, unknown> }) => {
+        const { ActorResourceRegistry } = await import('../../actor/ActorResourceRegistry.js')
+        return new ActorResourceRegistry().publish({ id: e.resourceId, owner: e.address, capacity: e.capacity, metadata: e.metadata })
+      },
+      resource_list: async () => {
+        const { ActorResourceRegistry } = await import('../../actor/ActorResourceRegistry.js')
+        return new ActorResourceRegistry().list()
+      },
+      resource_acquire: async (e: { address: string; resourceId: string; units?: number; ttlMs?: number; note?: string }) => {
+        const { ActorResourceRegistry } = await import('../../actor/ActorResourceRegistry.js')
+        return new ActorResourceRegistry().acquire({ resourceId: e.resourceId, holder: e.address, units: e.units, ttlMs: e.ttlMs, note: e.note })
+      },
+      resource_release: async (e: { address: string; leaseId: string }) => {
+        const { ActorResourceRegistry } = await import('../../actor/ActorResourceRegistry.js')
+        return new ActorResourceRegistry().release({ leaseId: e.leaseId, actor: e.address })
+      },
+    },
     tool: {
       call: async (e: { tool: string; input: unknown }) => {
         // Default: delegate to the existing tool execution path.

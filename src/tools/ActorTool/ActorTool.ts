@@ -1,10 +1,12 @@
 import { z } from 'zod/v4'
 import {
   createCurrentActorRuntime,
+  getCurrentActorAddress,
 } from '../../actor/currentActor.js'
 import { LocalActorMailbox } from '../../actor/LocalActorMailbox.js'
 import { ActorResourceRegistry } from '../../actor/ActorResourceRegistry.js'
 import { parseActorAddress } from '../../actor/types.js'
+import { getEngine } from '../../services/functionHooks/bridge.js'
 import {
   buildTool,
   type ToolDef,
@@ -107,6 +109,31 @@ function jsonSafe(value: unknown): unknown {
   }
 }
 
+function formatResourceList(listed: any[]): string {
+  return listed.length
+    ? listed
+        .map(
+          (resource: any) =>
+            `${resource.id}: ${resource.available}/${resource.capacity} available; owner=${resource.owner}` +
+            (resource.leases.length
+              ? `; leases=${resource.leases.map((lease: any) => `${lease.holder}:${lease.units} until ${lease.expiresAt}`).join(', ')}`
+              : ''),
+        )
+        .join('\n')
+    : 'No shared compute resources have been offered.'
+}
+
+function formatEnvelopes(envelopes: any[]): string {
+  return envelopes.length
+    ? `Received ${envelopes.length} envelope(s):\n${envelopes
+        .map(
+          (envelope: any) =>
+            `- ${envelope.from} -> ${envelope.to} [${envelope.kind}${envelope.correlationId ? ` #${envelope.correlationId}` : ''}] ${preview(envelope.payload)}`,
+        )
+        .join('\n')}`
+    : 'No actor envelopes received.'
+}
+
 function preview(value: unknown, max = 160): string {
   const rendered =
     typeof value === 'string' ? value : JSON.stringify(jsonSafe(value))
@@ -193,39 +220,41 @@ Addresses are actor://team/name locally or ws://host:port/ws#team/name remotely.
     return `actor ${input.action}`
   },
   async call(input: Input, context) {
-    const runtime = createCurrentActorRuntime()
+    const $ = getEngine()
+    const self = getCurrentActorAddress()
+
+    // Announce on every action so peers discover us even without the
+    // background inbox poller.
     const mailbox = new LocalActorMailbox()
-    const resources = new ActorResourceRegistry()
-    // Calling the tool is deliberate actor participation. Announce on every
-    // action so peers can discover plain sessions too, even when the REPL's
-    // background inbox poller is disabled.
-    await mailbox.announce(runtime.self)
+    await mailbox.announce(self)
+
+    // ── Dispatch through $.actor.* when the engine is up ──
+    // Each branch delegates to the engine noun, which runs the hook chain
+    // (mprotect, audit, rate-limit, …) with ActorRuntime at ⊥.
+    // Falls back to direct runtime calls when the engine hasn't booted.
+
     if (input.action === 'self') {
+      if ($?.actor) {
+        const result = await $.actor.self({ address: self })
+        return { data: result }
+      }
       return {
-        data: {
-          success: true,
-          self: runtime.self,
-          message: `Actor address: ${runtime.self}`,
-        },
+        data: { success: true, self, message: `Actor address: ${self}` },
       }
     }
     if (input.action === 'peers') {
+      if ($?.actor) {
+        const result = await $.actor.peers({ address: self, team: input.team, staleAfterMs: PEER_STALE_AFTER_MS })
+        return { data: result }
+      }
       const peers = (await mailbox.list()).filter(entry => {
-        if (
-          entry.address !== runtime.self &&
-          entry.lastSeenAt &&
-          Date.now() - Date.parse(entry.lastSeenAt) > PEER_STALE_AFTER_MS
-        ) {
-          return false
-        }
+        if (entry.address !== self && entry.lastSeenAt && Date.now() - Date.parse(entry.lastSeenAt) > PEER_STALE_AFTER_MS) return false
         if (!input.team?.trim()) return true
         return parseActorAddress(entry.address).team === input.team.trim()
       })
       return {
         data: {
-          success: true,
-          self: runtime.self,
-          peers,
+          success: true, self, peers,
           message: peers.length
             ? `Peers:\n${peers.map(peer => `- ${peer.address} (${peer.unread} unread)`).join('\n')}`
             : 'No announced actor peers.',
@@ -233,134 +262,123 @@ Addresses are actor://team/name locally or ws://host:port/ws#team/name remotely.
       }
     }
     if (input.action === 'resource_offer') {
-      const resource = await resources.publish({
-        id: input.resource_id,
-        owner: runtime.self,
-        capacity: input.capacity,
-        metadata: input.metadata,
-      })
+      if ($?.actor) {
+        const resource = await $.actor.resource_offer({ address: self, resourceId: input.resource_id, capacity: input.capacity, metadata: input.metadata })
+        return {
+          data: {
+            success: true, self, resource,
+            message: `Offered ${resource.id}: ${resource.available}/${resource.capacity} units available (owner ${resource.owner})`,
+          },
+        }
+      }
+      const resource = await new ActorResourceRegistry().publish({ id: input.resource_id, owner: self, capacity: input.capacity, metadata: input.metadata })
       return {
         data: {
-          success: true,
-          self: runtime.self,
-          resource,
+          success: true, self, resource,
           message: `Offered ${resource.id}: ${resource.available}/${resource.capacity} units available (owner ${resource.owner})`,
         },
       }
     }
     if (input.action === 'resource_list') {
-      const listed = await resources.list()
+      if ($?.actor) {
+        const listed = await $.actor.resource_list({})
+        return {
+          data: {
+            success: true, self, resources: listed,
+            message: formatResourceList(listed),
+          },
+        }
+      }
+      const listed = await new ActorResourceRegistry().list()
       return {
         data: {
-          success: true,
-          self: runtime.self,
-          resources: listed,
-          message: listed.length
-            ? listed
-                .map(
-                  resource =>
-                    `${resource.id}: ${resource.available}/${resource.capacity} available; owner=${resource.owner}` +
-                    (resource.leases.length
-                      ? `; leases=${resource.leases.map(lease => `${lease.holder}:${lease.units} until ${lease.expiresAt}`).join(', ')}`
-                      : ''),
-                )
-                .join('\n')
-            : 'No shared compute resources have been offered.',
+          success: true, self, resources: listed,
+          message: formatResourceList(listed),
         },
       }
     }
     if (input.action === 'resource_acquire') {
-      const acquired = await resources.acquire({
-        resourceId: input.resource_id,
-        holder: runtime.self,
-        units: input.units,
-        ttlMs: input.ttl_ms,
-        note: input.note,
-      })
-      if (acquired.resource.owner !== runtime.self) {
-        await runtime.tx(
-          acquired.resource.owner,
-          {
-            event: 'resource_acquired',
-            resource: acquired.resource.id,
-            lease: acquired.lease,
+      if ($?.actor) {
+        const acquired = await $.actor.resource_acquire({ address: self, resourceId: input.resource_id, units: input.units, ttlMs: input.ttl_ms, note: input.note })
+        if (acquired.resource.owner !== self) {
+          await $.actor.tx({
+            address: self, to: acquired.resource.owner,
+            payload: { event: 'resource_acquired', resource: acquired.resource.id, lease: acquired.lease },
+            kind: 'resource.acquired', correlationId: acquired.lease.id, ttlMs: input.ttl_ms,
+          })
+        }
+        return {
+          data: {
+            success: true, self, resource: acquired.resource, lease: acquired.lease,
+            message: `Acquired ${acquired.lease.units} unit(s) of ${acquired.resource.id}; lease ${acquired.lease.id} expires ${acquired.lease.expiresAt}`,
           },
-          {
-            kind: 'resource.acquired',
-            correlationId: acquired.lease.id,
-            ttlMs: input.ttl_ms,
-          },
-        )
+        }
+      }
+      const runtime = createCurrentActorRuntime()
+      const acquired = await new ActorResourceRegistry().acquire({ resourceId: input.resource_id, holder: self, units: input.units, ttlMs: input.ttl_ms, note: input.note })
+      if (acquired.resource.owner !== self) {
+        await runtime.tx(acquired.resource.owner,
+          { event: 'resource_acquired', resource: acquired.resource.id, lease: acquired.lease },
+          { kind: 'resource.acquired', correlationId: acquired.lease.id, ttlMs: input.ttl_ms })
       }
       return {
         data: {
-          success: true,
-          self: runtime.self,
-          resource: acquired.resource,
-          lease: acquired.lease,
+          success: true, self, resource: acquired.resource, lease: acquired.lease,
           message: `Acquired ${acquired.lease.units} unit(s) of ${acquired.resource.id}; lease ${acquired.lease.id} expires ${acquired.lease.expiresAt}`,
         },
       }
     }
     if (input.action === 'resource_release') {
-      const released = await resources.release({
-        leaseId: input.lease_id,
-        actor: runtime.self,
-      })
-      const releasePeer =
-        released.resource.owner === runtime.self
-          ? released.lease.holder
-          : released.resource.owner
-      if (releasePeer !== runtime.self) {
-        await runtime.tx(
-          releasePeer,
-          {
-            event: 'resource_released',
-            resource: released.resource.id,
-            lease: released.lease,
-          },
-          {
-            kind: 'resource.released',
-            correlationId: released.lease.id,
-          },
-        )
+      if ($?.actor) {
+        const released = await $.actor.resource_release({ address: self, leaseId: input.lease_id })
+        const releasePeer = released.resource.owner === self ? released.lease.holder : released.resource.owner
+        if (releasePeer !== self) {
+          await $.actor.tx({ address: self, to: releasePeer,
+            payload: { event: 'resource_released', resource: released.resource.id, lease: released.lease },
+            kind: 'resource.released', correlationId: released.lease.id })
+        }
+        return {
+          data: { success: true, self, lease: released.lease, message: `Released lease ${released.lease.id} for ${released.resource.id}` },
+        }
+      }
+      const runtime = createCurrentActorRuntime()
+      const released = await new ActorResourceRegistry().release({ leaseId: input.lease_id, actor: self })
+      const releasePeer = released.resource.owner === self ? released.lease.holder : released.resource.owner
+      if (releasePeer !== self) {
+        await runtime.tx(releasePeer,
+          { event: 'resource_released', resource: released.resource.id, lease: released.lease },
+          { kind: 'resource.released', correlationId: released.lease.id })
       }
       return {
-        data: {
-          success: true,
-          self: runtime.self,
-          lease: released.lease,
-          message: `Released lease ${released.lease.id} for ${released.resource.id}`,
-        },
+        data: { success: true, self, lease: released.lease, message: `Released lease ${released.lease.id} for ${released.resource.id}` },
       }
     }
     if (input.action === 'rx') {
-      const envelopes = await runtime.rx({
-        timeoutMs: input.timeout_ms,
-        limit: input.limit,
-        signal: context?.abortController?.signal,
-      })
+      if ($?.actor) {
+        const envelopes = await $.actor.rx({ address: self, timeoutMs: input.timeout_ms, limit: input.limit, signal: context?.abortController?.signal })
+        return {
+          data: {
+            success: true, self, envelopes,
+            message: formatEnvelopes(envelopes),
+          },
+        }
+      }
+      const envelopes = await createCurrentActorRuntime().rx({ timeoutMs: input.timeout_ms, limit: input.limit, signal: context?.abortController?.signal })
       return {
         data: {
-          success: true,
-          self: runtime.self,
-          envelopes,
-          message: envelopes.length
-            ? `Received ${envelopes.length} envelope(s):\n${envelopes
-                .map(
-                  envelope =>
-                    `- ${envelope.from} -> ${envelope.to} [${envelope.kind}${envelope.correlationId ? ` #${envelope.correlationId}` : ''}] ${preview(envelope.payload)}`,
-                )
-                .join('\n')}`
-            : 'No actor envelopes received.',
+          success: true, self, envelopes,
+          message: formatEnvelopes(envelopes),
         },
       }
     }
-    const envelope = await runtime.tx(input.to, input.payload ?? null, {
-      kind: input.kind,
-      correlationId: input.correlation_id,
-      ttlMs: input.ttl_ms,
-    })
+
+    // ── tx (default action) ──
+    let envelope
+    if ($?.actor) {
+      envelope = await $.actor.tx({ address: self, to: input.to, payload: input.payload ?? null, kind: input.kind, correlationId: input.correlation_id, ttlMs: input.ttl_ms })
+    } else {
+      envelope = await createCurrentActorRuntime().tx(input.to, input.payload ?? null, { kind: input.kind, correlationId: input.correlation_id, ttlMs: input.ttl_ms })
+    }
 
     // Compatibility adapter: existing OpenCC agents still poll the teammate
     // mailbox while actor-native agents consume the durable envelope mailbox.
@@ -369,11 +387,8 @@ Addresses are actor://team/name locally or ws://host:port/ws#team/name remotely.
       await writeToMailbox(
         destination.name,
         {
-          from: getAgentName() || runtime.self,
-          text:
-            typeof input.payload === 'string'
-              ? input.payload
-              : JSON.stringify(input.payload ?? null),
+          from: getAgentName() || self,
+          text: typeof input.payload === 'string' ? input.payload : JSON.stringify(input.payload ?? null),
           timestamp: new Date().toISOString(),
           color: getTeammateColor(),
         },
@@ -382,9 +397,7 @@ Addresses are actor://team/name locally or ws://host:port/ws#team/name remotely.
     }
     return {
       data: {
-        success: true,
-        self: runtime.self,
-        envelope,
+        success: true, self, envelope,
         message: `Sent ${envelope.from} -> ${envelope.to} [${envelope.kind}${envelope.correlationId ? ` #${envelope.correlationId}` : ''}] ${preview(envelope.payload)}`,
       },
     }

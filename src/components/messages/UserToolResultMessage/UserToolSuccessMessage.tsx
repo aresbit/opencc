@@ -78,6 +78,12 @@ export function UserToolSuccessMessage({
     return null;
   }
 
+  // Ink requires all text to live inside <Text>. Tools that return a bare
+  // string (ActorTool, EvalApplyTool, SyntheticOutputTool) would crash the
+  // reconciler without this guard.
+  const safeRenderedMessage =
+    typeof renderedMessage === 'string' ? <Text>{renderedMessage}</Text> : renderedMessage;
+
   // Tools that return '' from userFacingName opt out of tool chrome and
   // render like plain assistant text. Skip the tool-result width constraint
   // so MarkdownTable's SAFETY_MARGIN=4 (tuned for the assistant-text 2-col
@@ -89,7 +95,7 @@ export function UserToolSuccessMessage({
   const contentLength = JSON.stringify(toolResult).length;
   return <Box flexDirection="column">
       <Box flexDirection="column" width={rendersAsAssistantText ? undefined : width}>
-        <HookSlot id="tool-result" props={{ toolUseID, contentLength }}>{renderedMessage}</HookSlot>
+        <HookSlot id="tool-result" props={{ toolUseID, contentLength }}>{safeRenderedMessage}</HookSlot>
         {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
                 <Text dimColor>
                   <Text color="success">{figures.tick}</Text>
