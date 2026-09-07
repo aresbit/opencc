@@ -31,6 +31,7 @@
  */
 
 import type { OnRegistrar } from '../types.js'
+import { logForDebugging } from '../../../utils/debug.js'
 import { THRESHOLD_CHARS as COMPRESS_THRESHOLD } from './compressHook.js'
 
 interface HandleEntry {
@@ -181,6 +182,11 @@ export function register(on: OnRegistrar): void {
       shunted: false,
     })
 
+    logForDebugging(
+      `[ContextHandle] ${tool} result ${result.length} chars > ${THRESHOLD} -> ${handle} ` +
+        `(${lines.length} lines kept in store, ${PREVIEW_LINES}-line preview in context)`,
+    )
+
     const preview = lines.slice(0, PREVIEW_LINES).join('\n')
     const suffix = lines.length > PREVIEW_LINES
       ? `\n... (${lines.length - PREVIEW_LINES} more lines)`
@@ -218,7 +224,10 @@ export function deref(
   endLine?: number,
 ): string | null {
   const entry = handleStore.get(handle)
-  if (!entry) return null
+  if (!entry) {
+    logForDebugging(`[ContextHandle] deref MISS ${handle} (evicted or never existed)`)
+    return null
+  }
   entry.derefCount++
   entry.lastDerefAt = Date.now()
   const from = Math.max(1, Math.floor(startLine ?? 1))

@@ -81,6 +81,7 @@
  */
 
 import type { OnRegistrar } from '../types.js'
+import { logForDebugging } from '../../../utils/debug.js'
 import { markHandleShunted, peekHandle } from './contextHandleHook.js'
 import { queryHaiku } from '../../api/claude.js'
 import { asSystemPrompt } from '../../../utils/systemPromptType.js'
@@ -432,7 +433,12 @@ export function register(on: OnRegistrar): void {
       toolName,
       describeInput((e.tool_input ?? {}) as Record<string, unknown>),
     )
-    if (!summary) return event
+    if (!summary) {
+      logForDebugging(
+        `[ContextShunt] worker produced nothing for ${handle}; keeping the preview`,
+      )
+      return event
+    }
 
     const lineCount = full.split('\n').length
     const shunted = [
@@ -445,6 +451,11 @@ export function register(on: OnRegistrar): void {
     // The bytes are now out of context and this handle is the only copy, so
     // it must stop being first in line for eviction.
     markHandleShunted(handle)
+
+    logForDebugging(
+      `[ContextShunt] ${toolName} ${full.length} chars -> ${shunted.length} char summary ` +
+        `(${handle}, full text retrievable with Deref)`,
+    )
 
     stats.summarized++
     stats.charsIn += full.length
