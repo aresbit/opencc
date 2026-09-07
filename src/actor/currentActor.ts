@@ -6,18 +6,40 @@ import { getAgentName, getTeamName } from '../utils/teammate.js'
 import { ActorRuntime } from './ActorRuntime.js'
 import { localActorAddress, parseActorAddress } from './types.js'
 
+/**
+ * Last computed address, keyed by every input that can change it.
+ *
+ * The address is a pure function of team, cwd and agent name, but computing it
+ * hashes the cwd. Callers on the event loop ask for it far more often than any
+ * of those change — a CPU profile of one turn caught 7,043 calls in 50 seconds,
+ * 2.6s of it inside `createHash`. Keying the cache on the inputs keeps `cd`
+ * and agent renames correct while making the repeat call free.
+ */
+let cachedAddress: { key: string; value: string } | null = null
+
 export function getCurrentActorAddress(): string {
   const configured = process.env.MATEBOT_ACTOR_ADDRESS?.trim()
   if (configured) return parseActorAddress(configured).canonical
   const team = getTeamName() || process.env.CLAUDE_CODE_TEAM_NAME || 'default'
   const cwd = getCwd()
+  const explicitName = getAgentName() || process.env.CLAUDE_CODE_AGENT_NAME || ''
+
+  const key = `${team}\u0000${cwd}\u0000${explicitName}`
+  if (cachedAddress?.key === key) return cachedAddress.value
+
   const directoryIdentity = `${basename(cwd) || TEAM_LEAD_NAME}-${createHash('sha256')
     .update(cwd)
     .digest('hex')
     .slice(0, 8)}`
-  const name =
-    getAgentName() || process.env.CLAUDE_CODE_AGENT_NAME || directoryIdentity
-  return localActorAddress(team, name)
+  const name = explicitName || directoryIdentity
+  const value = localActorAddress(team, name)
+  cachedAddress = { key, value }
+  return value
+}
+
+/** Drops the memoized address. Exported for tests. */
+export function resetCurrentActorAddressCache(): void {
+  cachedAddress = null
 }
 
 /**
