@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   bindAgent,
   createNs,
@@ -8,14 +8,18 @@ import {
 } from '../plugins/mountHook.js'
 
 /**
- * Mounting narrows what an agent can reach; it is not a whitelist switch.
+ * Mounting narrows which MCP tools an agent can reach; built-ins stay ambient.
  *
- * That distinction was lost, and the cost was total: `subagent.start` creates
- * a namespace for every subagent, the root namespace has no mounts (nothing
- * ever mounts the built-in tools there), so every subagent inherited an empty
- * namespace — and an empty namespace denied everything. Grep, Read, Glob,
- * Bash: every tool call from every subagent was refused, pointing the agent at
- * a mount list that was also empty.
+ * The distinction that was lost: `subagent.start` creates a namespace for
+ * every subagent, the root namespace has no mounts (nothing ever mounts the
+ * built-in tools there), so every subagent inherited an empty namespace — and
+ * an empty namespace denied everything. Grep, Read, Glob, Bash: every tool
+ * call from every subagent was refused, pointing the agent at a mount list
+ * that was also empty.
+ *
+ * The rule now pinned: a mount table can only withhold tools some mount
+ * actually provides. Built-ins are ambient and stay reachable no matter what
+ * is mounted.
  */
 type Handler = (...args: unknown[]) => unknown
 
@@ -34,6 +38,10 @@ describe('subagent tool namespaces', () => {
   beforeEach(() => {
     clearMounts()
     handlers = registerHandlers()
+  })
+
+  afterEach(() => {
+    clearMounts()
   })
 
   const callTool = (agentId: string, toolName: string) =>
@@ -59,18 +67,24 @@ describe('subagent tool namespaces', () => {
     expect(result?.deny).toBeUndefined()
   })
 
-  test('a namespace with mounts still narrows to them', async () => {
+  test('a namespace with mounts narrows MCP tools but keeps built-ins', async () => {
     const ns = createNs('restricted')
     bindAgent('agent_2', ns.id)
-    mount('/tools', 'srv', 'limited', ['Read', 'Glob'], undefined, ns.id)
+    mount('/comms/gmail', 'gmail', 'Gmail', ['gmail_send'], undefined, ns.id)
 
-    const allowed = (await callTool('agent_2', 'Read')) as { deny?: string }
-    expect(allowed?.deny).toBeUndefined()
+    // The mounted MCP tool is reachable.
+    const mounted = (await callTool('agent_2', 'gmail_send')) as { deny?: string }
+    expect(mounted?.deny).toBeUndefined()
 
-    const denied = (await callTool('agent_2', 'Bash')) as { deny?: string }
+    // Built-ins are ambient and stay reachable even under a mount.
+    const builtin = (await callTool('agent_2', 'Bash')) as { deny?: string }
+    expect(builtin?.deny).toBeUndefined()
+
+    // A tool provided only by a different namespace is denied.
+    const other = createNs('has-calendar')
+    mount('/comms/calendar', 'cal', 'Calendar', ['cal_events'], undefined, other.id)
+    const denied = (await callTool('agent_2', 'cal_events')) as { deny?: string }
     expect(denied?.deny).toBeDefined()
-    // The refusal has to say what IS reachable — the old message pointed at a
-    // list that was empty, which told the agent nothing.
-    expect(denied!.deny).toContain('Read')
+    expect(denied!.deny).toContain('cal_events')
   })
 })

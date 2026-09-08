@@ -162,3 +162,56 @@ branch had no active PR or the lookup failed. Active PRs still refresh every
 minute, while the empty/error path now backs off to five minutes. Over ten
 idle minutes this changes the common no-PR path from 10 child-process launches
 to 2 (-80%), without delaying updates for a PR that is already displayed.
+
+## 2026-09-07: actor inbox select loop stopped spinning
+
+`771012e` replaced the actor inbox's 1s `setInterval` with a `select()`-based
+event loop. The loop's `catch` treats every rejection as "select timeout or
+cancellation — expected, retry", but `runSelect` also throws *synchronously*
+when `activeSelects.size` reaches `MAX_ACTIVE_SELECTS` (10). Two facts combine
+into a spin:
+
+1. The effect depended on `deliver`, whose `useCallback` depends on
+   `isLoading`. That flips on every render of a streaming turn, so each render
+   tore down and restarted the loop.
+2. Teardown only sets `cancelled`. The abandoned iteration stays parked inside
+   `select.wait()` holding its `activeSelects` slot until the 6s timeout, so
+   the slots accumulate faster than they drain.
+
+Once the cap is reached every `wait()` rejects instantly, the `catch` swallows
+it, and the loop retries with no delay. A CPU profile of one 50-second turn
+(`bun --cpu-prof --cpu-prof-md`) attributed 44.1% (33.09s) to the select
+dispatch chain and caught 7,043 `getCurrentActorAddress()` calls — about 140
+per second, against a design cadence of one per five seconds — plus 2.19s
+constructing the rejected Errors and 2.58s in `createHash`.
+
+The fix is three parts: the loop reads `deliver` through a ref so renders no
+longer restart it; a wait that *fails without blocking* backs off (100ms,
+doubling, capped at the 5s poll interval) before the next attempt, while a
+wait that resolves still delivers immediately so real events pay no latency;
+and `getCurrentActorAddress` memoizes on `(team, cwd, agent)`.
+
+Command (drives the real TUI through one turn over a pty, sampling
+`/proc/<pid>/stat` once a second):
+
+```bash
+OPENCC_CLI=<cli.js> python3 scripts/perf/drive-tui-turn.py
+```
+
+| Same prompt, 3 tool calls | Turn wall | Total CPU | Peak RSS |
+|---|---:|---:|---:|
+| Baseline run 1 | 28 s | 16.4 s | 731 MB |
+| Baseline run 2 | 59 s | 50.0 s | 889 MB |
+| Fixed run 1 | 13 s | 2.4 s | 341 MB |
+| Fixed run 2 | 16 s | 3.0 s | 339 MB |
+
+The baseline is wide because the spin only starts once renders have filled the
+select cap, so how long a turn streams changes how much of it spins. Even so
+the ranges do not overlap: the cheapest baseline run costs 5.5x the dearest
+fixed run. Peak RSS falls 61%.
+
+The user-visible symptom was not the CPU but the keyboard: Ink's input handling
+shares the main thread, so a turn that pegs it for 50 seconds is a session that
+cannot be typed into. `--print` mode was never affected (1.56s total CPU for
+the same prompt), which is what localized the fault to the REPL event loop
+rather than the message pipeline.

@@ -30,12 +30,16 @@
  * change WHICH connection a call is routed to — that routing happens
  * inside client.ts's memoized connectToServer, keyed only by server name
  * and config, with no session dimension. So what's implemented here is a
- * coarser, honest approximation: first-claim ownership. The first session
- * to call a `per-session`/`isolate` server becomes its owner; calls from
- * any other session are denied with a clear reason, rather than silently
- * sharing state across a credential boundary. True per-session connection
- * isolation would need the memoization key in client.ts to include session
- * identity — that's a separate, deeper change than a hook can make.
+ * coarser, honest approximation: first-claim ownership with a lease. The
+ * first session to call a `per-session`/`isolate` server becomes its owner;
+ * calls from any other session are denied with a clear reason, rather than
+ * silently sharing state across a credential boundary. An owner that calls
+ * again keeps its claim (heartbeat); one that goes silent past
+ * OWNERSHIP_IDLE_TTL_MS — crashed or exited without releasing — lets the
+ * next caller take over instead of locking the server away forever. True
+ * per-session connection isolation would need the memoization key in
+ * client.ts to include session identity — that's a separate, deeper change
+ * than a hook can make.
  *
  * Policy is data, not code — the same philosophy as schedulerHook's model
  * routing table: addPolicy()/removePolicy() at runtime, matched by glob
@@ -101,7 +105,26 @@ const singletonLocks = new Map<string, Promise<void>>()
 /** In-flight count + waiters per server name under a 'pool' policy. */
 const poolState = new Map<string, { active: number; waiters: Array<() => void> }>()
 /** First-claim owner (agent/session id) per server name under per-session/isolate. */
-const owners = new Map<string, string>()
+const owners = new Map<string, OwnershipClaim>()
+
+/**
+ * A per-session/isolate server's first-claim owner, with a heartbeat.
+ *
+ * Ownership is a lease, not a permanent flag: every call the owning session
+ * makes refreshes `lastActiveAt`, and a claim older than OWNERSHIP_IDLE_TTL_MS
+ * may be taken over by whoever calls next. Without that, a session that
+ * crashes or exits without releaseMcpOwnership() locks the server away from
+ * every other session for the rest of the process. The cost is the mirror
+ * edge: an owner that is merely idle past the TTL loses the claim to a
+ * newcomer and is denied with a clear reason on its next call.
+ */
+interface OwnershipClaim {
+  agentId: string
+  /** Last time the owning session called this server (heartbeat). */
+  lastActiveAt: number
+}
+
+const OWNERSHIP_IDLE_TTL_MS = 5 * 60 * 1000
 
 const callLog: McpCallRecord[] = []
 const MAX_CALL_LOG = 500
@@ -116,14 +139,39 @@ function generateAclId(): string {
   return `mcpacl_${aclCounter.toString(16).padStart(4, '0')}`
 }
 
+/**
+ * Turn a glob into a RegExp with only '*' special ('**' crossing '/'); every
+ * other character is matched literally. Escaping matters: patterns are matched
+ * against server/agent names, and an unescaped '.' or '(' would otherwise
+ * widen a pattern like "ida.v2" into "idaXv2".
+ */
+function globToRegExp(pattern: string): RegExp {
+  let source = ''
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]!
+    if (ch === '*') {
+      if (pattern[i + 1] === '*') {
+        source += '.*'
+        i++
+      } else {
+        source += '[^/]*'
+      }
+      continue
+    }
+    if (/[.*+?^${}()|[\]\\]/.test(ch)) {
+      source += `\\${ch}`
+    } else {
+      source += ch
+    }
+  }
+  return new RegExp(`^${source}$`)
+}
+
 function globMatch(pattern: string, value: string): boolean {
-  if (pattern === '*') return true
   if (pattern === value) return true
-  const regex = pattern
-    .replace(/\*\*/g, '___DOUBLESTAR___')
-    .replace(/\*/g, '[^/]*')
-    .replace(/___DOUBLESTAR___/g, '.*')
-  return new RegExp(`^${regex}$`).test(value)
+  // A bare '*' matches anything, including names that contain '/'.
+  if (pattern === '*') return true
+  return globToRegExp(pattern).test(value)
 }
 
 function resolvePolicy(server: string): McpPolicy | undefined {
@@ -223,15 +271,23 @@ export function register(on: OnRegistrar): void {
     }
 
     if (policy.tier === 'per-session' || policy.tier === 'isolate') {
-      const owner = owners.get(server)
-      if (owner === undefined) {
-        owners.set(server, agentId)
-      } else if (owner !== agentId) {
-        record.denied = `owned by session "${owner}"`
+      const claim = owners.get(server)
+      if (claim === undefined) {
+        owners.set(server, { agentId, lastActiveAt: Date.now() })
+      } else if (claim.agentId === agentId) {
+        // Heartbeat: an owner that is still calling keeps its claim.
+        claim.lastActiveAt = Date.now()
+      } else if (Date.now() - claim.lastActiveAt > OWNERSHIP_IDLE_TTL_MS) {
+        // The owner went quiet past the TTL — it exited or crashed without
+        // releaseMcpOwnership(). Rather than lock the server away forever,
+        // the newcomer takes over the lease.
+        owners.set(server, { agentId, lastActiveAt: Date.now() })
+      } else {
+        record.denied = `owned by session "${claim.agentId}"`
         recordCall(record)
         return {
           deny: `MCP server "${server}" is policy-scoped to ${policy.tier} and is already owned ` +
-                `by session "${owner}". This session ("${agentId}") cannot share it — true ` +
+                `by session "${claim.agentId}". This session ("${agentId}") cannot share it — true ` +
                 `per-session isolation would need a separate connection, which this broker ` +
                 `cannot create; it can only deny the conflicting call.`,
         }
@@ -334,7 +390,9 @@ export function releaseMcpOwnership(server: string): boolean {
 }
 
 export function getMcpOwnership(): Record<string, string> {
-  return Object.fromEntries(owners)
+  return Object.fromEntries(
+    [...owners].map(([server, claim]) => [server, claim.agentId]),
+  )
 }
 
 export function getMcpCallLog(opts?: { server?: string; limit?: number }): McpCallRecord[] {

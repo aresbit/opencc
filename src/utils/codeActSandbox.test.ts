@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'child_process'
 import { existsSync } from 'fs'
-import { homedir } from 'os'
 import { isAbsolute, join } from 'path'
 import { executeCodeActCode } from './codeActSandbox.js'
 import { getCodeActPrompt } from '../tools/CodeActTool/prompt.js'
@@ -10,6 +9,7 @@ import {
   getCodeActLanguageAdapter,
   getCodeActRuntimeStatus,
 } from './codeActLanguageAdapters.js'
+import { getOpamBinDirectory } from './codeActRuntime.js'
 
 describe('CodeAct language adapters', () => {
   test('publishes the complete language set and actionable runtime status', () => {
@@ -29,20 +29,34 @@ describe('CodeAct language adapters', () => {
   })
 
   test('finds the active opam compiler even when its bin directory is absent from PATH', () => {
-    // Guarded rather than assumed: this asserts a fact about the *host*, and
-    // asserting it unconditionally makes the whole suite red on any machine
-    // without OCaml installed — which is most of them. With opam present the
-    // discovery claim is checked as before; without it, the claim under test is
-    // that an absent toolchain is reported as absent with a usable hint, not
-    // that it is silently reported as something else.
-    const hasOpam = existsSync(join(homedir(), '.opam'))
+    // Guarded rather than assumed: which branch is reachable is decided by the
+    // host. resolveSystemCommand resolves PATH first, then stable host
+    // directories (/usr/bin, …), then the active opam switch — so a
+    // system-wide ocamlopt legitimately shadows the opam one, and "source is
+    // opam" can only hold where opam is the sole provider. What must hold
+    // everywhere is the discovery contract: if any discoverable ocamlopt
+    // exists the runtime reports available with a working ocamlopt path;
+    // otherwise it reports unavailable with a usable hint rather than a
+    // phantom compiler.
     const originalPath = process.env.PATH
     try {
       process.env.PATH = '/usr/bin:/bin'
       const status = getCodeActRuntimeStatus('ocaml')
-      if (hasOpam) {
-        expect(status).toMatchObject({ available: true, source: 'opam' })
+
+      const opamBin = getOpamBinDirectory()
+      const opamHasCompiler = Boolean(
+        opamBin && existsSync(join(opamBin, 'ocamlopt')),
+      )
+      const systemHasCompiler = existsSync('/usr/bin/ocamlopt')
+
+      if (systemHasCompiler || opamHasCompiler) {
+        expect(status.available).toBe(true)
         expect(status.command).toEndWith('/ocamlopt')
+        if (!systemHasCompiler) {
+          // No system-wide ocamlopt, so the active opam switch is the only
+          // provider and must win resolution.
+          expect(status).toMatchObject({ source: 'opam' })
+        }
       } else {
         expect(status.available).toBe(false)
         expect(status.installHint).toBeTruthy()
@@ -162,7 +176,33 @@ match answer:
     })
   })
 
-  test('runs modern C++23 ranges, expected, variant, RAII, and a trampoline', async () => {
+  // The modern-C++ builtins (functional.hpp) are C++23: they pull in
+  // <expected> and ranges. <expected> only exists on GCC >= 12 / Clang 16+
+  // libc++, so on an older host compiler the feature is a toolchain floor, not
+  // a code bug — gate exactly like the OCaml 5 effect-handler test below gates
+  // on the installed compiler version. The probe mirrors codeActCompile's
+  // flags so it tests what the sandbox will actually compile with.
+  const cpp = getCodeActRuntimeStatus('cpp')
+  const cpp23Usable =
+    cpp.available &&
+    (() => {
+      try {
+        const probe = spawnSync(
+          cpp.command!,
+          [
+            '-std=c++23', '-x', 'c++', '-include', 'expected', '-fsyntax-only',
+            '-',
+          ],
+          { input: '', encoding: 'utf-8' },
+        )
+        return probe.status === 0
+      } catch {
+        return false
+      }
+    })()
+
+  if (cpp23Usable) {
+    test('runs modern C++23 ranges, expected, variant, RAII, and a trampoline', async () => {
     const result = await executeCodeActCode(
       `#include "builtins_c/functional.hpp"
 #include <functional>
@@ -202,7 +242,10 @@ int main() {
       stdout: '220 7 true done',
       exitCode: 0,
     })
-  })
+    })
+  } else {
+    test.skip('runs modern C++23 ranges, expected, variant, RAII, and a trampoline (toolchain lacks <expected>)', () => {})
+  }
 
   test('preserves Python, C, and C++ adapters', async () => {
     const cases = [

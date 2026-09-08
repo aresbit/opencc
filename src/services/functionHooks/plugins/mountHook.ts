@@ -219,36 +219,40 @@ function resolveTools(nsId: string): ResolvedTool[] {
 }
 
 /**
- * Mounting NARROWS what an agent can reach. It is not a whitelist switch.
+ * Whether any mount anywhere claims to provide this tool.
  *
- * That distinction was lost between two lines: a namespace that did not exist
- * meant "no restriction, everything visible", while a namespace that existed
- * with nothing mounted meant "nothing is visible". Those two states say the
- * same thing about intent — nobody has declared a restriction — so they cannot
- * have opposite answers.
+ * The mount table governs MCP servers: `mount -t mcp gmail /comms/gmail` lists
+ * that server's tools. Built-in tools (Read, Bash, Grep, …) are ambient — the
+ * header calls the root namespace the one that "contains all built-in tools",
+ * but nothing ever mounts them, because there is no server to mount.
  *
- * The consequence was not theoretical. `subagent.start` below creates a fresh
- * namespace for every subagent, and a fresh namespace inherits its parent's
- * mounts — but the root namespace has no mounts, because nothing ever mounts
- * the built-in tools there. So every subagent got an empty namespace and had
- * EVERY tool call denied: Grep, Read, Glob, Bash, all of them, with a message
- * pointing at $.mount.list(), which was of course also empty.
- *
- * An empty namespace now means what its emptiness says: no restriction has
- * been expressed here. Mount something and the narrowing takes effect exactly
- * as before.
+ * So "absent from this namespace's mounts" cannot mean "denied": it is also
+ * true of every built-in. Only a tool some mount actually provides can be
+ * meaningfully withheld by leaving that mount out.
  */
+function isMountedTool(toolName: string): boolean {
+  for (const ns of namespaces.values()) {
+    for (const [, mount] of ns.mounts) {
+      if (mount.tools.includes(toolName)) return true
+    }
+  }
+  return false
+}
+
 function isToolVisible(nsId: string, toolName: string): boolean {
   const ns = namespaces.get(nsId)
   if (!ns) return true // No namespace = everything visible
 
-  // No mounts anywhere = no restriction declared = everything visible.
-  if (ns.mounts.size === 0) return true
-
   for (const [, mount] of ns.mounts) {
     if (mount.tools.includes(toolName)) return true
   }
-  return false
+
+  // Regression this guards: `subagent.start` gives every subagent a child of
+  // the root namespace, and root has no mounts, so the child inherits an empty
+  // mount table. Returning false here denied that agent *every* tool — Read
+  // included — which is the opposite of the `fail-open: agent uses root`
+  // intent stated where the namespace is created.
+  return !isMountedTool(toolName)
 }
 
 function getAgentNamespace(agentId: string): string {
@@ -269,9 +273,8 @@ export function register(on: OnRegistrar): void {
     const toolName = (e.tool_name ?? e.tool) as string
     if (!isToolVisible(nsId, toolName)) {
       return {
-        deny:
-          `Tool "${toolName}" is not mounted in agent namespace "${nsId}". ` +
-          `Mounted here: ${resolveTools(nsId).map(t => t.name).join(', ') || '(none)'}.`,
+        deny: `Tool "${toolName}" is not mounted in agent namespace "${nsId}". ` +
+              `Use $.mount.list() to see available tools.`,
       }
     }
 
@@ -374,6 +377,15 @@ export function unbindAgent(agentId: string): void {
 
 export function resolve(nsId?: string): ResolvedTool[] {
   return resolveTools(nsId ?? ROOT_NS_ID)
+}
+
+/**
+ * The visibility rule the `tool.call` interceptor applies. Exported so the
+ * built-ins-stay-reachable regression can be pinned directly instead of a
+ * test restating the rule and passing whatever the source does.
+ */
+export function isVisible(nsId: string, toolName: string): boolean {
+  return isToolVisible(nsId, toolName)
 }
 
 export function listMounts(nsId?: string): MountPoint[] {

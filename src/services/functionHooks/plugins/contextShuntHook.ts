@@ -92,6 +92,7 @@ import { markHandleShunted, peekHandle } from './contextHandleHook.js'
 import { queryHaiku } from '../../api/claude.js'
 import { asSystemPrompt } from '../../../utils/systemPromptType.js'
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
+import { FILE_READ_TOOL_NAME } from '../../../tools/FileReadTool/prompt.js'
 
 export interface ShuntConfig {
   /** Off. Enable with setShuntConfig({ enabled: true }) or $.shunt.enable(). */
@@ -107,6 +108,21 @@ export interface ShuntConfig {
   minChars: number
   /** Restrict to these tool names; null means every tool. */
   tools: string[] | null
+  /**
+   * Never summarize these, whatever `tools` says.
+   *
+   * A summary is a different artifact from the bytes, and for some tools the
+   * caller asked for the bytes specifically. `Read` is the load-bearing case:
+   * `Edit` requires `old_string` to match the file exactly, so an agent whose
+   * only view of a file is a worker-model paraphrase can only guess at the
+   * edit — and the guess looks plausible right up until it silently fails to
+   * match or matches the wrong span. The same reasoning already keeps Read out
+   * of the cache hook.
+   *
+   * Opt back in with setShuntConfig({ excludeTools: [] }) if a session really
+   * does only need the gist of large files.
+   */
+  excludeTools: string[]
   /** Give up on the worker after this long and keep the preview. */
   timeoutMs: number
   /** Never send more than this much text to the worker. */
@@ -129,6 +145,7 @@ const DEFAULT_CONFIG: ShuntConfig = {
   enabled: false,
   minChars: 16384,
   tools: null,
+  excludeTools: [FILE_READ_TOOL_NAME],
   timeoutMs: 15_000,
   maxInputChars: 200_000,
   maxConcurrentWorkers: 4,
@@ -414,6 +431,10 @@ export function register(on: OnRegistrar): void {
     if (typeof handled !== 'string') return event
 
     const toolName = (e.tool_name ?? 'unknown') as string
+    if (config.excludeTools.includes(toolName)) {
+      stats.skipped++
+      return event
+    }
     if (config.tools && !config.tools.includes(toolName)) {
       stats.skipped++
       return event

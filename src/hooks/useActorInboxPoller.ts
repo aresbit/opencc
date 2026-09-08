@@ -13,13 +13,38 @@ import { logForDebugging } from '../utils/debug.js'
  */
 const CROSS_PROCESS_POLL_MS = 5_000
 
+/**
+ * A `select.wait()` that settles faster than this did not block on anything —
+ * it failed. `runSelect` throws synchronously for permanent conditions (the
+ * `MAX_ACTIVE_SELECTS` cap, a malformed source list), and the loop below
+ * cannot tell those apart from the timeout it expects. Without a floor the
+ * `catch` retries instantly and the loop becomes a spin.
+ */
+const FAST_FAILURE_MS = 250
+
+/** First backoff step after a fast failure; doubles up to the poll interval. */
+const MIN_BACKOFF_MS = 100
+
+/**
+ * How long to wait before the next `select.wait()` attempt.
+ *
+ * Extracted so the anti-spin invariant can be pinned by a test: the hook itself
+ * needs a React renderer, which this package does not ship, but the property
+ * that actually matters is arithmetic. Returns 0 when the loop should continue
+ * immediately — a resolved wait means an event fired, and delaying that would
+ * add latency to real message delivery.
+ */
+export function nextBackoffMs(
+  failed: boolean,
+  elapsedMs: number,
+  previousBackoffMs: number,
+): number {
+  if (!failed || elapsedMs >= FAST_FAILURE_MS) return 0
+  const next = previousBackoffMs === 0 ? MIN_BACKOFF_MS : previousBackoffMs * 2
+  return Math.min(next, CROSS_PROCESS_POLL_MS)
+}
+
 const ANNOUNCE_INTERVAL_MS = 30_000
-
-/** Backoff bounds for a select() that keeps failing. */
-const MIN_BACKOFF_MS = 250
-const MAX_BACKOFF_MS = 10_000
-
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 /** Delivered per turn, so one noisy sender cannot bury the user's own prompt. */
 const MAX_ENVELOPES_PER_TURN = 20
@@ -104,20 +129,19 @@ export function useActorInboxPoller({
     }
   }, [isLoading, focusedInputDialog, onSubmitMessage])
 
-  // The loop must not be torn down and recreated when `deliver` changes
-  // identity, which it does on every render (isLoading, focusedInputDialog and
-  // onSubmitMessage are all unstable). Holding it in a ref keeps the effect's
-  // dependencies to `enabled` alone, so exactly one loop exists per session.
-  //
-  // This is not a tidiness point. Teardown can only set `cancelled`; it cannot
-  // retract a select() already waiting in the engine, so that select keeps its
-  // slot until it times out. One loop per render meant selects accumulating to
-  // the engine's cap of 10, after which every select() threw synchronously —
-  // and a catch-and-retry loop around a synchronous throw never yields to the
-  // macrotask queue, so stdin, timers and rendering all stopped. The symptom
-  // was a session that opened and then would not accept input at all.
+  // The loop reads the current `deliver` through a ref instead of depending on
+  // it. `deliver` changes identity whenever `isLoading` flips, which is on
+  // every render of a streaming turn; with `deliver` in the effect deps each of
+  // those renders tore down and restarted the loop. Teardown only sets
+  // `cancelled`, so the abandoned iteration stayed parked inside
+  // `select.wait()` holding its `activeSelects` slot until the 6s timeout.
+  // Ten of those filled the cap, after which every `wait()` threw instantly and
+  // the loop span at ~140 Hz — measured at 100% of one core for a whole turn,
+  // with 7,043 `getCurrentActorAddress()` calls in 50 seconds.
   const deliverRef = useRef(deliver)
-  deliverRef.current = deliver
+  useEffect(() => {
+    deliverRef.current = deliver
+  }, [deliver])
 
   useEffect(() => {
     if (!enabled) return
@@ -125,59 +149,50 @@ export function useActorInboxPoller({
     const $ = getEngine()
     const address = getCurrentActorAddress()
 
+    // ── Fallback: setInterval polling (no engine) ──
+    if (!$?.select) {
+      const timer = setInterval(() => void deliverRef.current(), CROSS_PROCESS_POLL_MS)
+      return () => clearInterval(timer)
+    }
+
     // ── Select-based loop (engine available) ──
-    if ($?.select) {
-      let cancelled = false
+    let cancelled = false
 
-      const loop = async () => {
-        let consecutiveFailures = 0
-
-        while (!cancelled) {
-          try {
-            await $.select.wait({
-              sources: [
-                { kind: 'actor_rx', id: address, label: 'actor inbox' },
-                { kind: 'timer', id: `actor-poll-${address}`, timeout: CROSS_PROCESS_POLL_MS, label: 'cross-process poll' },
-              ],
-              timeout: CROSS_PROCESS_POLL_MS + 1_000,
-            })
-            consecutiveFailures = 0
-          } catch {
-            // A timeout is the ordinary case; a rejected select (cancelled, or
-            // the engine refusing another one) is not, and repeating it at
-            // full speed is what starved the event loop. Back off instead.
-            consecutiveFailures++
-          }
-
-          if (cancelled) return
-
-          if (consecutiveFailures > 0) {
-            await sleep(
-              Math.min(MAX_BACKOFF_MS, MIN_BACKOFF_MS * 2 ** (consecutiveFailures - 1)),
-            )
-            if (cancelled) return
-          }
-
-          await deliverRef.current()
-
-          // An unconditional yield to the macrotask queue. deliver() usually
-          // awaits real I/O, but it returns without awaiting anything while a
-          // query is running or a dialog is focused — precisely the startup
-          // state — so nothing else guarantees this loop ever lets a keypress
-          // through. One tick per iteration costs nothing and makes a spin
-          // impossible no matter why select() returns early.
-          await sleep(0)
+    const loop = async () => {
+      let backoff = 0
+      while (!cancelled) {
+        const startedAt = Date.now()
+        let failed = false
+        try {
+          await $.select.wait({
+            sources: [
+              { kind: 'actor_rx', id: address, label: 'actor inbox' },
+              { kind: 'timer', id: `actor-poll-${address}`, timeout: CROSS_PROCESS_POLL_MS, label: 'cross-process poll' },
+            ],
+            timeout: CROSS_PROCESS_POLL_MS + 1_000,
+          })
+        } catch {
+          // Either the expected timeout or a permanent failure; the elapsed
+          // time below is what tells them apart.
+          failed = true
         }
-      }
+        if (cancelled) return
 
-      void loop()
-      return () => {
-        cancelled = true
+        // Back off, then still deliver. A broken select must degrade to the
+        // cross-process polling cadence, not stop delivering and not spin.
+        backoff = nextBackoffMs(failed, Date.now() - startedAt, backoff)
+        if (backoff > 0) {
+          await new Promise(resolve => setTimeout(resolve, backoff))
+          if (cancelled) return
+        }
+
+        await deliverRef.current()
       }
     }
 
-    // ── Fallback: setInterval polling (no engine) ──
-    const timer = setInterval(() => void deliverRef.current(), CROSS_PROCESS_POLL_MS)
-    return () => clearInterval(timer)
+    void loop()
+    return () => {
+      cancelled = true
+    }
   }, [enabled])
 }
