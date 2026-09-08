@@ -66,7 +66,15 @@ export function register(on: OnRegistrar): void {
         resultSummary: summarize(result),
         duration: Date.now() - start,
       })
-      return event
+      // `return event` — a name that does not exist in this scope. It threw
+      // ReferenceError on EVERY tool call, after next(e) had already
+      // succeeded, so the throw replaced the chain's return value: everything
+      // registered inside this hook had its result discarded on the way out,
+      // deny included. writeGuard's and taintFirewall's refusals and
+      // adaptiveHint's context all sit inside it. Silent, because bridge.ts
+      // logs a failing hook and carries on, so tools kept working and only
+      // the decisions went missing.
+      return result
     } catch (err) {
       record({
         seq,
@@ -109,7 +117,15 @@ export function register(on: OnRegistrar): void {
         resultSummary: summarize(result),
         duration: Date.now() - start,
       })
-      return event
+      // `return event` — a name that does not exist in this scope. It threw
+      // ReferenceError on EVERY tool call, after next(e) had already
+      // succeeded, so the throw replaced the chain's return value: everything
+      // registered inside this hook had its result discarded on the way out,
+      // deny included. writeGuard's and taintFirewall's refusals and
+      // adaptiveHint's context all sit inside it. Silent, because bridge.ts
+      // logs a failing hook and carries on, so tools kept working and only
+      // the decisions went missing.
+      return result
     } catch (err) {
       record({
         seq,
