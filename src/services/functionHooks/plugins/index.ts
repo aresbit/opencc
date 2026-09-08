@@ -103,26 +103,67 @@ import { register as registerUiRsiHeartbeat } from './uiRsiHeartbeatHook.js'
 
 let registered = false
 
+/**
+ * Plugins registered only when asked for.
+ *
+ * Measured rather than guessed: driving the real chain with 200 tool calls,
+ * the whole hook layer costs 0.86ms per call — negligible against a Read, let
+ * alone a Bash or an API round trip. So cost is not why these are off.
+ *
+ * Effect is. After those 200 calls each plugin was asked what it had recorded,
+ * and this set had recorded nothing and changed nothing. That is not damning
+ * on its own — a guard that never fires is a guard doing its job, and mount,
+ * sudo, writeGuard, taintFirewall, mprotect, ipc and transaction stay on for
+ * exactly that reason. The difference is that these are not waiting for
+ * anything: they are unfinished experiments and diagnostics that run on every
+ * tool call and produce output nobody reads.
+ *
+ * perfTelescopy is the clearest case — it hooks '*', so it is the single most
+ * invoked plugin in the process, and its output is a latency histogram that
+ * exists to be looked at during an investigation. That is a thing to switch on
+ * when investigating, not to pay for on every call forever.
+ *
+ * They are not deleted: each is one call away via enableOptInPlugins().
+ */
+const OPT_IN_PLUGINS = new Set<string>()
+
+/**
+ * Turn on plugins that are off by default. Call before the first
+ * registerBuiltinPlugins() — registration happens once per process.
+ */
+export function enableOptInPlugins(...names: string[]): void {
+  for (const name of names) OPT_IN_PLUGINS.add(name)
+}
+
+export function listOptInPlugins(): string[] {
+  return [...OPT_IN_PLUGINS]
+}
+
 export function registerBuiltinPlugins(): void {
   if (registered) return
   registered = true
 
-  const plugins = [
-    { name: 'perfTelescopy', id: 'builtin:perfTelescopy', register: registerPerfTelescopy },
+  const plugins: Array<{
+    name: string
+    id: string
+    register: (on: ReturnType<typeof registry.createRegistrar>) => void
+    optIn?: boolean
+  }> = [
+    { name: 'perfTelescopy', id: 'builtin:perfTelescopy', register: registerPerfTelescopy, optIn: true },
     // Ahead of every tool.content hook: a trace must capture what the tools
     // produced, not what the current configuration delivered, or replaying it
     // would measure that configuration's output a second time.
     { name: 'traceRecorder', id: 'builtin:traceRecorder', register: registerTraceRecorder },
     { name: 'tuiView', id: 'builtin:tuiView', register: registerTuiView },
-    { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage },
+    { name: 'plainLanguage', id: 'builtin:plainLanguage', register: registerPlainLanguage, optIn: true },
     { name: 'mount', id: 'builtin:mount', register: registerMount },
     { name: 'mcpBroker', id: 'builtin:mcpBroker', register: registerMcpBroker },
     { name: 'sudo', id: 'builtin:sudo', register: registerSudo },
-    { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork },
-    { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace },
-    { name: 'thinkLoop', id: 'builtin:thinkLoop', register: registerThinkLoop },
+    { name: 'ctxFork', id: 'builtin:ctxFork', register: registerCtxFork, optIn: true },
+    { name: 'ptrace', id: 'builtin:ptrace', register: registerPtrace, optIn: true },
+    { name: 'thinkLoop', id: 'builtin:thinkLoop', register: registerThinkLoop, optIn: true },
     { name: 'select', id: 'builtin:select', register: registerSelect },
-    { name: 'scheduler', id: 'builtin:scheduler', register: registerScheduler },
+    { name: 'scheduler', id: 'builtin:scheduler', register: registerScheduler, optIn: true },
     { name: 'replay', id: 'builtin:replay', register: registerReplay },
     { name: 'taintFirewall', id: 'builtin:taintFirewall', register: registerTaintFirewall },
     { name: 'mprotect', id: 'builtin:mprotect', register: registerMprotect },
@@ -139,25 +180,26 @@ export function registerBuiltinPlugins(): void {
     { name: 'contextShunt', id: 'builtin:contextShunt', register: registerContextShunt },
     { name: 'contextHandle', id: 'builtin:contextHandle', register: registerContextHandle },
     { name: 'knowledge', id: 'builtin:knowledge', register: registerKnowledge },
-    { name: 'jitSynthesis', id: 'builtin:jitSynthesis', register: registerJitSynthesis },
+    { name: 'jitSynthesis', id: 'builtin:jitSynthesis', register: registerJitSynthesis, optIn: true },
     { name: 'adaptive', id: 'builtin:adaptive', register: registerAdaptive },
     // RSI (Recursive Self-Improvement) — ring 0-2
-    { name: 'rsiConstitution', id: 'builtin:rsiConstitution', register: registerRsiConstitution },
-    { name: 'rsiAntibody', id: 'builtin:rsiAntibody', register: registerRsiAntibody },
-    { name: 'rsiCrystallize', id: 'builtin:rsiCrystallize', register: registerRsiCrystallize },
-    { name: 'rsiExperiment', id: 'builtin:rsiExperiment', register: registerRsiExperiment },
-    { name: 'rsiSleep', id: 'builtin:rsiSleep', register: registerRsiSleep },
-    { name: 'dream', id: 'builtin:dream', register: registerDream },
-    { name: 'rsiCurriculum', id: 'builtin:rsiCurriculum', register: registerRsiCurriculum },
+    { name: 'rsiConstitution', id: 'builtin:rsiConstitution', register: registerRsiConstitution, optIn: true },
+    { name: 'rsiAntibody', id: 'builtin:rsiAntibody', register: registerRsiAntibody, optIn: true },
+    { name: 'rsiCrystallize', id: 'builtin:rsiCrystallize', register: registerRsiCrystallize, optIn: true },
+    { name: 'rsiExperiment', id: 'builtin:rsiExperiment', register: registerRsiExperiment, optIn: true },
+    { name: 'rsiSleep', id: 'builtin:rsiSleep', register: registerRsiSleep, optIn: true },
+    { name: 'dream', id: 'builtin:dream', register: registerDream, optIn: true },
+    { name: 'rsiCurriculum', id: 'builtin:rsiCurriculum', register: registerRsiCurriculum, optIn: true },
     // UI ring
     { name: 'uiContextGauge', id: 'builtin:uiContextGauge', register: registerUiContextGauge },
     { name: 'uiSubagentDashboard', id: 'builtin:uiSubagentDashboard', register: registerUiSubagentDashboard },
     { name: 'uiGitStatus', id: 'builtin:uiGitStatus', register: registerUiGitStatus },
     { name: 'uiFold', id: 'builtin:uiFold', register: registerUiFold },
-    { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat },
+    { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat, optIn: true },
   ]
 
   for (const plugin of plugins) {
+    if (plugin.optIn && !OPT_IN_PLUGINS.has(plugin.name)) continue
     const on = registry.createRegistrar(plugin.name, plugin.id)
     plugin.register(on)
   }
