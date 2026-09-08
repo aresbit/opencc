@@ -218,9 +218,32 @@ function resolveTools(nsId: string): ResolvedTool[] {
   return resolved
 }
 
+/**
+ * Mounting NARROWS what an agent can reach. It is not a whitelist switch.
+ *
+ * That distinction was lost between two lines: a namespace that did not exist
+ * meant "no restriction, everything visible", while a namespace that existed
+ * with nothing mounted meant "nothing is visible". Those two states say the
+ * same thing about intent — nobody has declared a restriction — so they cannot
+ * have opposite answers.
+ *
+ * The consequence was not theoretical. `subagent.start` below creates a fresh
+ * namespace for every subagent, and a fresh namespace inherits its parent's
+ * mounts — but the root namespace has no mounts, because nothing ever mounts
+ * the built-in tools there. So every subagent got an empty namespace and had
+ * EVERY tool call denied: Grep, Read, Glob, Bash, all of them, with a message
+ * pointing at $.mount.list(), which was of course also empty.
+ *
+ * An empty namespace now means what its emptiness says: no restriction has
+ * been expressed here. Mount something and the narrowing takes effect exactly
+ * as before.
+ */
 function isToolVisible(nsId: string, toolName: string): boolean {
   const ns = namespaces.get(nsId)
   if (!ns) return true // No namespace = everything visible
+
+  // No mounts anywhere = no restriction declared = everything visible.
+  if (ns.mounts.size === 0) return true
 
   for (const [, mount] of ns.mounts) {
     if (mount.tools.includes(toolName)) return true
@@ -246,8 +269,9 @@ export function register(on: OnRegistrar): void {
     const toolName = (e.tool_name ?? e.tool) as string
     if (!isToolVisible(nsId, toolName)) {
       return {
-        deny: `Tool "${toolName}" is not mounted in agent namespace "${nsId}". ` +
-              `Use $.mount.list() to see available tools.`,
+        deny:
+          `Tool "${toolName}" is not mounted in agent namespace "${nsId}". ` +
+          `Mounted here: ${resolveTools(nsId).map(t => t.name).join(', ') || '(none)'}.`,
       }
     }
 
