@@ -167,6 +167,48 @@ type NoSelectOperation = {
   region: Rectangle
 }
 
+/**
+ * Cumulative paint accounting for the session.
+ *
+ * The "High write ratio" line reports one frame in isolation, which is the
+ * wrong shape for the question people ask about it. A single frame that reuses
+ * nothing is ordinary — the first one has nothing to reuse, and a resize
+ * invalidates everything — while the same thing on most frames is a real cost:
+ * every rewritten cell is a cell pushed through the terminal, and on a slow one
+ * that is the difference between a stream that scrolls and a stream that
+ * stutters. Only the ratio ACROSS frames tells those apart.
+ */
+const renderStats = {
+  frames: 0,
+  blitCells: 0,
+  writeCells: 0,
+  /** Frames large enough for the ratio to mean anything (>1000 cells). */
+  loggedFrames: 0,
+  /** Of those, the ones that reused nothing at all. */
+  zeroBlitFrames: 0,
+}
+
+export function getRenderStats(): typeof renderStats & { reuseRatio: number } {
+  const total = renderStats.blitCells + renderStats.writeCells
+  return {
+    ...renderStats,
+    reuseRatio: total > 0 ? renderStats.blitCells / total : 0,
+  }
+}
+
+let lastLoggedHeight = -1
+let lastSummaryAt = -1
+
+export function resetRenderStats(): void {
+  renderStats.frames = 0
+  renderStats.blitCells = 0
+  renderStats.writeCells = 0
+  renderStats.loggedFrames = 0
+  renderStats.zeroBlitFrames = 0
+  lastLoggedHeight = -1
+  lastSummaryAt = -1
+}
+
 export default class Output {
   width: number
   height: number
@@ -521,9 +563,37 @@ export default class Output {
 
     // Log blit/write ratio for debugging - high write count suggests blitting isn't working
     const totalCells = blitCells + writeCells
+    renderStats.frames++
+    renderStats.blitCells += blitCells
+    renderStats.writeCells += writeCells
+    if (totalCells > 1000) {
+      renderStats.loggedFrames++
+      if (blitCells === 0) renderStats.zeroBlitFrames++
+    }
     if (totalCells > 1000 && writeCells > blitCells) {
+      // Height is in the line because it is the discriminator. In a real
+      // session's log every zero-reuse frame came with a screen height
+      // different from the frame before it, and the one frame that did reuse
+      // (62.8%) had the same height as its predecessor. A node is blitted only
+      // when its cached y still matches, so a change in total output height
+      // moves everything below the growth point and invalidates all of it.
+      // Growing content is unavoidable; whether the invalidation has to reach
+      // the whole tree is the open question, and this is the evidence for it.
       logForDebugging(
-        `High write ratio: blit=${blitCells}, write=${writeCells} (${((writeCells / totalCells) * 100).toFixed(1)}% writes), screen=${screenHeight}x${screenWidth}`,
+        `High write ratio: blit=${blitCells}, write=${writeCells} (${((writeCells / totalCells) * 100).toFixed(1)}% writes), screen=${screenHeight}x${screenWidth}, prevHeight=${lastLoggedHeight}`,
+      )
+    }
+    lastLoggedHeight = screenHeight
+
+    // Cumulative summary. One frame with no reuse says nothing — the first has
+    // nothing to reuse and a resize invalidates everything — but the share of
+    // frames across a session does, and that is the number worth acting on.
+    if (renderStats.loggedFrames > 0 && renderStats.loggedFrames % 100 === 0 &&
+        renderStats.loggedFrames !== lastSummaryAt) {
+      lastSummaryAt = renderStats.loggedFrames
+      logForDebugging(
+        `Render reuse over ${renderStats.frames} frames: ${(getRenderStats().reuseRatio * 100).toFixed(1)}% of cells blitted; ` +
+          `${renderStats.zeroBlitFrames}/${renderStats.loggedFrames} sizeable frames reused nothing`,
       )
     }
 
