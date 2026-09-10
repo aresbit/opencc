@@ -859,6 +859,24 @@ export async function* executeNonStreamingRequest(
         MAX_NON_STREAMING_TOKENS,
       )
 
+      // The SDK's own `timeout` option only covers fetch() up to the response
+      // headers: it clears its timer as soon as fetch() resolves, so a backend
+      // that returns headers and then stalls the body would hang this attempt
+      // forever — the same gap the streaming idle watchdog exists to close.
+      // Arm our own timer, released only when the attempt actually settles, and
+      // compose it with the caller's signal. setTimeout rather than
+      // AbortSignal.timeout() so the timer can be cleared on completion:
+      // AbortSignal.timeout's internal timer is only released on GC, which in
+      // Bun is lazy (see the same pattern in services/mcp/client.ts).
+      const timeoutController = new AbortController()
+      const bodyTimer = setTimeout(
+        c =>
+          c.abort(new DOMException('The operation timed out.', 'TimeoutError')),
+        fallbackTimeoutMs,
+        timeoutController,
+      )
+      bodyTimer.unref?.()
+
       try {
         // biome-ignore lint/plugin: non-streaming API call
         return await anthropic.beta.messages.create(
@@ -867,13 +885,25 @@ export async function* executeNonStreamingRequest(
             model: normalizeModelStringForAPI(adjustedParams.model),
           },
           {
-            signal: retryOptions.signal,
+            signal: AbortSignal.any([
+              retryOptions.signal,
+              timeoutController.signal,
+            ]),
+            // Covers the header phase; the body phase is covered by
+            // timeoutController above.
             timeout: fallbackTimeoutMs,
           },
         )
       } catch (err) {
-        // User aborts are not errors — re-throw immediately without logging
-        if (err instanceof APIUserAbortError) throw err
+        // User aborts are not errors — re-throw immediately without logging.
+        // Only a genuine user abort qualifies: an abort raised by our own
+        // body-phase timer is a timeout, handled after the instrumentation.
+        if (
+          err instanceof APIUserAbortError &&
+          !timeoutController.signal.aborted
+        ) {
+          throw err
+        }
 
         // Instrumentation: record when the non-streaming request errors (including
         // timeouts). Lets us distinguish "fallback hung past container kill"
@@ -891,7 +921,16 @@ export async function* executeNonStreamingRequest(
           request_id: (originatingRequestId ??
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+
+        // If our own body-phase timer fired, surface a clean timeout rather
+        // than letting it look like a user abort (mirrors the streaming path,
+        // which throws APIConnectionTimeoutError in the same situation).
+        if (timeoutController.signal.aborted && !retryOptions.signal.aborted) {
+          throw new APIConnectionTimeoutError({ message: 'Request timed out' })
+        }
         throw err
+      } finally {
+        clearTimeout(bodyTimer)
       }
     },
     {
