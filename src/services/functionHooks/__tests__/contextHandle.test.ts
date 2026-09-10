@@ -1,13 +1,31 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
 import {
   clearHandles,
   deref,
   describeHandle,
   getHandleCount,
+  getHandleThreshold,
   markHandleShunted,
   register,
   setHandleThreshold,
 } from '../plugins/contextHandleHook.js'
+
+/**
+ * THRESHOLD is module-level mutable state and bun runs every test file in one
+ * process, so lowering it here lowers it for every file that runs afterwards.
+ * Without this restore it leaked as 10, and hookChain.test.ts — which asserts
+ * an 18-character result passes through the chain untouched — got that result
+ * handle-ized instead. It passed alone and failed in the suite.
+ *
+ * Captured rather than hardcoded so this keeps restoring the right value if
+ * the default moves.
+ */
+const DEFAULT_THRESHOLD = getHandleThreshold()
+
+afterAll(() => {
+  setHandleThreshold(DEFAULT_THRESHOLD)
+  clearHandles()
+})
 
 /** Drive the hook directly: register it and call the handler it installs. */
 function handleize(content: string, tool = 'Read', input: Record<string, unknown> = {}) {
