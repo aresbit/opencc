@@ -1897,8 +1897,16 @@ async function* queryModel(
     // kill hung streams. Without this, a silently dropped connection can hang
     // the session indefinitely since the SDK's request timeout only covers the
     // initial fetch(), not the streaming body.
-    const streamWatchdogEnabled = isEnvTruthy(
-      process.env.CLAUDE_ENABLE_STREAM_WATCHDOG,
+    //
+    // ON by default. This previously required CLAUDE_ENABLE_STREAM_WATCHDOG to
+    // be set, which meant the default configuration had no protection at all:
+    // a proxy that drops the stream mid-response (observed with non-Anthropic
+    // backends behind a local proxy) left the turn awaiting a message_stop that
+    // never arrived, hanging the agent forever with no error. Opt out with
+    // CLAUDE_DISABLE_STREAM_WATCHDOG=1 if a backend legitimately keeps a stream
+    // open with no chunks for longer than the timeout.
+    const streamWatchdogEnabled = !isEnvTruthy(
+      process.env.CLAUDE_DISABLE_STREAM_WATCHDOG,
     )
     const STREAM_IDLE_TIMEOUT_MS =
       parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
