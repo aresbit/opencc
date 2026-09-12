@@ -13,8 +13,10 @@ export interface LoopStep {
   at: string
 }
 
-/** The negative control. A trivial baseline that does not use the loop's
- *  reasoning, run so we can subtract what it reaches from what the loop reaches. */
+/** The negative control. A comparison arm that does not use the loop's
+ *  reasoning — either the built-in trivial grep or one measured externally
+ *  (see the `baseline` action's baselineMethod/baselineReached). Run so we can
+ *  subtract what it reaches from what the loop reaches. */
 export interface NegativeControl {
   method: string
   command?: string
@@ -110,8 +112,8 @@ export function computeAttribution(campaign: Campaign): Attribution {
 
   const totalFindings = Object.keys(firstSeenStep).length
 
-  // A finding is only attributable to the loop if the trivial baseline did not
-  // already reach it. The baseline records ids it reached, same id space.
+  // A finding is only attributable to the loop if the comparison arm did not
+  // already reach it. The arm records ids it reached, same id space.
   const baselineReached = campaign.baseline?.reached ?? null
   const overlapText = campaign.baseline?.reached ?? ''
   const baselineOverlap = Object.keys(firstSeenStep).filter(id =>
@@ -125,11 +127,11 @@ export function computeAttribution(campaign: Campaign): Attribution {
   if (baselineReached === null) {
     parts.push('NO BASELINE RUN — net attributable is not yet meaningful (run action "baseline")')
   } else {
-    parts.push(`${baselineOverlap.length} also reached by the trivial baseline`)
+    parts.push(`${baselineOverlap.length} also reached by the comparison arm`)
     parts.push(`net attributable to the loop = ${netAttributable}`)
   }
   if (netAttributable <= 0 && baselineReached !== null && totalFindings > 0) {
-    parts.push('VERDICT: no gain over the trivial baseline — report this as a negative result')
+    parts.push('VERDICT: no gain over the comparison arm — report this as a negative result')
   }
 
   return {
