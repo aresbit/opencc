@@ -139,16 +139,51 @@ export function listOptInPlugins(): string[] {
   return [...OPT_IN_PLUGINS]
 }
 
-export function registerBuiltinPlugins(): void {
-  if (registered) return
-  registered = true
+/**
+ * Forget every opt-in request. For tests.
+ *
+ * resetBuiltinPlugins() clears the registry and the registered flag but not
+ * this set, so a test that enabled a plugin left it enabled for every file
+ * that ran afterwards in the same process — and since registration is
+ * per-process and order is bun's, the next file to call
+ * registerBuiltinPlugins() would silently get extra hooks in its chain. That
+ * is the same leak the handle threshold had.
+ */
+export function resetOptInPlugins(): void {
+  OPT_IN_PLUGINS.clear()
+}
 
-  const plugins: Array<{
-    name: string
-    id: string
-    register: (on: ReturnType<typeof registry.createRegistrar>) => void
-    optIn?: boolean
-  }> = [
+type PluginEntry = {
+  name: string
+  id: string
+  register: (on: ReturnType<typeof registry.createRegistrar>) => void
+  optIn?: boolean
+}
+
+/** What a plugin's stats mean, so zeros can be read correctly. */
+export type PluginStatus = {
+  name: string
+  id: string
+  /** Off unless explicitly asked for via enableOptInPlugins(). */
+  optIn: boolean
+  /** Asked for this process. Not the same as registered — see below. */
+  requested: boolean
+  /**
+   * Hooks are actually in the chain.
+   *
+   * Read from the registry rather than from OPT_IN_PLUGINS, because those
+   * answer different questions. Registration happens once per process, so
+   * calling enableOptInPlugins() after the first registerBuiltinPlugins()
+   * marks a plugin requested but never registers it. Only the registry knows
+   * what is really running.
+   */
+  registered: boolean
+  /** Events whose chain this plugin sits in. Empty when not registered. */
+  events: string[]
+}
+
+function pluginTable(): PluginEntry[] {
+  return [
     { name: 'perfTelescopy', id: 'builtin:perfTelescopy', register: registerPerfTelescopy, optIn: true },
     // Ahead of every tool.content hook: a trace must capture what the tools
     // produced, not what the current configuration delivered, or replaying it
@@ -197,12 +232,50 @@ export function registerBuiltinPlugins(): void {
     { name: 'uiFold', id: 'builtin:uiFold', register: registerUiFold },
     { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat, optIn: true },
   ]
+}
 
-  for (const plugin of plugins) {
+export function registerBuiltinPlugins(): void {
+  if (registered) return
+  registered = true
+
+  for (const plugin of pluginTable()) {
     if (plugin.optIn && !OPT_IN_PLUGINS.has(plugin.name)) continue
     const on = registry.createRegistrar(plugin.name, plugin.id)
     plugin.register(on)
   }
+}
+
+/**
+ * What is actually running, and why a plugin's counters read zero.
+ *
+ * The gap this closes: an opt-in plugin that never registered still answers
+ * its `$` queries, and answers them with well-formed emptiness —
+ * `getPerfStats()` returns `[]`, `getDreamStats()` returns zeros. That is
+ * indistinguishable from "registered and nothing has happened yet", so a
+ * caller reading zeros cannot tell whether it is looking at a quiet plugin or
+ * one that was never wired in. The off-by-default set is deliberate (see
+ * OPT_IN_PLUGINS above), but being unable to tell it apart from idleness is
+ * not — someone reading those zeros concluded the opt-in mechanism was broken
+ * and proposed switching the plugins on to fix it.
+ */
+export function getPluginStatus(): PluginStatus[] {
+  return pluginTable().map(({ name, id, optIn }) => {
+    const events = registry.listPluginEvents(id)
+    return {
+      name,
+      id,
+      optIn: optIn === true,
+      requested: !optIn || OPT_IN_PLUGINS.has(name),
+      registered: events.length > 0,
+      events,
+    }
+  })
+}
+
+/** Whether this plugin's hooks are in the chain, so its stats mean something. */
+export function isPluginRegistered(name: string): boolean {
+  const entry = pluginTable().find(plugin => plugin.name === name)
+  return entry ? registry.listPluginEvents(entry.id).length > 0 : false
 }
 
 export function resetBuiltinPlugins(): void {

@@ -48,6 +48,17 @@ export {
 } from './bridge.js'
 
 // Built-in plugin utilities
+// Registration state first: it is what makes every zero below readable —
+// an opt-in plugin that never registered still answers its queries, and
+// answers with well-formed emptiness.
+export {
+  enableOptInPlugins,
+  getPluginStatus,
+  isPluginRegistered,
+  listOptInPlugins,
+  resetOptInPlugins,
+  type PluginStatus,
+} from './plugins/index.js'
 export { clearCache, getCacheMtimeStats, getCacheStats, setCacheEnabled, isCacheEnabled } from './plugins/cacheHook.js'
 export {
   queryFiles,
