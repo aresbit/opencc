@@ -61,6 +61,22 @@ const inputSchema = lazySchema(() =>
       .describe('For step: finding ids THIS step produced. Empty array is a valid and recorded answer.'),
     stepNumber: z.number().int().positive().optional().describe('For verifyfix: which step command to re-run.'),
     reason: z.string().optional().describe('For halt: why the loop stopped.'),
+    baselineMethod: z
+      .string()
+      .optional()
+      .describe(
+        'For baseline: name the comparison arm. Omit to run the built-in trivial grep. Supply this to record an EXTERNALLY measured arm (e.g. "same agent, skill not loaded"), which is what a harness or skill ablation actually needs.',
+      ),
+    baselineReached: z
+      .string()
+      .optional()
+      .describe(
+        'For baseline: what the comparison arm reached, as free text. Outcome ids that appear in this text are excluded from net attribution. Required when baselineMethod is given.',
+      ),
+    baselineCommand: z
+      .string()
+      .optional()
+      .describe('For baseline: the command that produced the comparison arm, if it was scripted.'),
   }),
 )
 
@@ -287,6 +303,46 @@ async function runBaselineAction(input: Input, signal: AbortSignal): Promise<{ d
   const local = resolve(campaign.target)
   if (isAbsolute(campaign.target) && local !== campaign.target) {
     return failure('baseline', `target path did not resolve cleanly: ${campaign.target}`)
+  }
+  // Two modes. The built-in grep is the security-shaped default; an externally
+  // measured arm is what a harness/skill ablation needs (e.g. "same agent with
+  // the skill not loaded"). Both land in the same ledger field so the overlap
+  // rule and the attribution arithmetic are unchanged.
+  if (input.baselineMethod || input.baselineReached) {
+    if (!input.baselineMethod || !input.baselineReached) {
+      return failure(
+        'baseline',
+        'baselineMethod and baselineReached must be supplied together: an arm with no name cannot be reported, and a name with no result cannot be netted.',
+      )
+    }
+    const updated: Campaign = {
+      ...campaign,
+      baseline: {
+        method: input.baselineMethod,
+        command: input.baselineCommand,
+        reached: input.baselineReached,
+        at: new Date().toISOString(),
+      },
+    }
+    await saveCampaign(updated)
+    const a = computeAttribution(updated)
+    return ok(
+      'baseline',
+      [
+        `Comparison arm recorded for ${campaign.id}: ${input.baselineMethod}`,
+        `Outcomes this arm also reached: ${a.baselineOverlap.length ? a.baselineOverlap.join(', ') : 'none'}`,
+        '',
+        'Those ids are excluded from net attribution. The arm text is stored verbatim so the overlap can be re-derived by a human.',
+        `Attribution so far: ${a.verdict}`,
+      ].join('\n'),
+      {
+        campaignId: updated.id,
+        status: updated.status,
+        stepsUsed: updated.steps.length,
+        budgetSteps: updated.budgetSteps,
+        attribution: a.verdict,
+      },
+    )
   }
   try {
     const result = await runBaseline(campaign.target, signal)

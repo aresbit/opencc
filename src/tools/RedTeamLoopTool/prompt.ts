@@ -10,7 +10,12 @@ Actions (selected with \`action\`):
 
 **action: "step"** — record ONE loop iteration: \`intent\` (what you set out to do), \`method\` (which tool/approach), optional \`command\` (the reproducible command, if the step ran one), \`observation\` (what you actually saw), and \`produced\` (finding ids THIS step produced — the attribution core). Returns the loop state plus what to do next. A step with an empty \`observation\` is rejected: no unattributed steps.
 
-**action: "baseline"** — run the NEGATIVE CONTROL: a fixed, trivial baseline (obvious-pattern grep + filename listing) that does not use any of the loop's reasoning. Records what the baseline finds on its own. Findings the baseline also reaches are NOT attributable to the harness.
+**action: "baseline"** — record the NEGATIVE CONTROL. Two modes:
+
+- *Built-in* (default): runs a fixed, trivial baseline — an obvious-pattern grep plus a filename listing — that uses none of the loop's reasoning. Findings the baseline also reaches are NOT attributable to the harness.
+- *External arm*: pass \`baselineMethod\` + \`baselineReached\` to record a comparison arm you measured yourself. **This is what an ablation actually needs** — "same agent with the skill not loaded", "same task with no planning loop", "previous model version". \`baselineReached\` is free text; any outcome id appearing in it is excluded from net attribution. Store the arm's raw result verbatim so a human can re-derive the overlap.
+
+Both modes land in the same ledger field, so the arithmetic is identical.
 
 **action: "close"** — end the campaign and compute the attribution verdict: findings per step, empty (unproductive) steps, baseline overlap, net attributable findings, and the first step that saw each finding.
 
