@@ -17,6 +17,7 @@ import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
 import { RepoToSkillTool } from './tools/RepoToSkillTool/RepoToSkillTool.js'
 import { ProbeTool } from './tools/ProbeTool/ProbeTool.js'
+import { RedTeamLoopTool } from './tools/RedTeamLoopTool/RedTeamLoopTool.js'
 import { SreTool } from './tools/SreTool/SreTool.js'
 import { ProtocolReTool } from './tools/ProtocolReTool/ProtocolReTool.js'
 import { ApiReTool } from './tools/ApiReTool/ApiReTool.js'
@@ -264,6 +265,7 @@ export function getAllBaseTools(): Tools {
     Paper2CodeTool,
     RepoToSkillTool,
     ProbeTool,
+    RedTeamLoopTool,
     SreTool,
     ProtocolReTool,
     ApiReTool,
