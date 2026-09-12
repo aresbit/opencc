@@ -13,19 +13,23 @@ import { readFindings, type Finding } from '../ProbeTool/findings.js'
  *
  * Read-only by construction: every command is a grep. Nothing executes target code.
  *
- * Note on the pattern strings: parentheses appear as \x28 escapes so the source
- * text stays balanced for naive static checks. Regex semantics are identical.
+ * Note on the pattern strings: a literal parenthesis is written `\(` and kept
+ * that way by String.raw. The backslash must survive to the regex engine — a
+ * hex escape like `\x28` does NOT mean `(` here, because these patterns are
+ * executed by `git grep -E` (POSIX ERE, which has no `\xNN` support and reads
+ * `\x28` as the literal text `x28`). Without String.raw the `\` would be eaten
+ * by the template literal and the bare `(` would make the ERE invalid.
  */
 const BASELINE_GREPS: string[] = [
   // Classic "grep monkey" patterns — things anyone would try first.
-  String.raw`eval\x28|exec\x28|system\x28|popen\x28|subprocess|os[.]system|child_process`,
+  String.raw`eval\(|exec\(|system\(|popen\(|subprocess|os[.]system|child_process`,
   String.raw`innerHTML|dangerouslySetInnerHTML|v-html|document[.]write`,
-  String.raw`SELECT .*[+]|query\x28.*[+]|string[.]Format\x28.*SELECT`,
+  String.raw`SELECT .*[+]|query\(.*[+]|string[.]Format\(.*SELECT`,
   String.raw`password|passwd|secret|api[_-]?key|token|private[_-]?key`,
   String.raw`TODO|FIXME|HACK|unsafe|insecure|disable[_.]*tls|disable[_.]*ssl|disable[_.]*verify`,
   String.raw`chmod 777|0[.]0[.]0[.]0|verify=False|rejectUnauthorized:`,
-  String.raw`[.][.]/|path[.]join\x28.*req[.]|readFile\x28.*req[.]`,
-  String.raw`deserialize|pickle[.]loads|yaml[.]load\x28|unserialize`,
+  String.raw`[.][.]/|path[.]join\(.*req[.]|readFile\(.*req[.]`,
+  String.raw`deserialize|pickle[.]loads|yaml[.]load\(|unserialize`,
 ]
 
 export interface BaselineResult {
