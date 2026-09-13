@@ -131,6 +131,10 @@ import { McpFsReadTool } from './tools/McpFsTool/McpFsReadTool.js'
 import { McpFsExecTool } from './tools/McpFsTool/McpFsExecTool.js'
 import { CodeActTool } from './tools/CodeActTool/CodeActTool.js'
 import { ActionTool } from './tools/ActionTool/ActionTool.js'
+import { NumberTheoryMasterTool } from './tools/NumberTheoryMasterTool/NumberTheoryMasterTool.js'
+import { CombinatoricsMasterTool } from './tools/CombinatoricsMasterTool/CombinatoricsMasterTool.js'
+import { AnalysisMasterTool } from './tools/AnalysisMasterTool/AnalysisMasterTool.js'
+import { AlgebraMasterTool } from './tools/AlgebraMasterTool/AlgebraMasterTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -290,6 +294,10 @@ export function getAllBaseTools(): Tools {
     LearnTool,
     AwrOpsTool,
     AwrStRunTool,
+    NumberTheoryMasterTool,
+    CombinatoricsMasterTool,
+    AnalysisMasterTool,
+    AlgebraMasterTool,
     EvalApplyTool,
     ActorTool,
     SSHRemoteTool,
