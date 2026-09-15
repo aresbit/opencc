@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from 'bun:test'
 import { dispatch } from '../dispatcher.js'
-import { deref } from '../plugins/contextHandleHook.js'
+import { THRESHOLD_CHARS } from '../plugins/compressHook.js'
+import { deref, setHandleThreshold } from '../plugins/contextHandleHook.js'
 import { registerBuiltinPlugins } from '../plugins/index.js'
 
 /**
@@ -33,6 +34,12 @@ describe('the assembled hook chain', () => {
 
   beforeAll(() => {
     registerBuiltinPlugins()
+    // These assertions are about the chain AT ITS SHIPPED DEFAULTS — that a
+    // small result is passed through untouched is a property of the default
+    // threshold, not of whatever the process happens to be holding. The
+    // handle threshold is module-level mutable state shared by every test
+    // file in the process, so pin it rather than inherit it.
+    setHandleThreshold(THRESHOLD_CHARS)
   })
 
   test('a deny raised at the bottom reaches the top', async () => {

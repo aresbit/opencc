@@ -165,6 +165,34 @@ import { enableOptInPlugins } from './plugins/index.js'
 enableOptInPlugins('perfTelescopy')   // before the first registerBuiltinPlugins()
 ```
 
+### Reading a zero
+
+An opt-in plugin that never registered still answers its `$` queries, and
+answers with well-formed emptiness — `$.perf.stats()` used to return `[]`,
+the dream counters return zeros. That is byte-identical to a registered
+plugin on a quiet session, and it has already misled someone into reading
+"nothing happened yet" as "this was never wired" and proposing to switch all
+fifteen on as a bug fix. The off-by-default set is deliberate; not being able
+to *see* that it is off was the real defect.
+
+So ask, rather than inferring from a zero:
+
+```ts
+$.plugins.status()   // every plugin: optIn, requested, registered, events
+$.plugins.running()  // names actually in the chain this process
+$.plugins.off()      // the ones whose zeros mean "never ran"
+```
+
+`registered` is read from the registry, not from the request list, because
+the two genuinely disagree: registration happens once per process, so calling
+`enableOptInPlugins()` after the first `registerBuiltinPlugins()` marks a
+plugin `requested: true` and leaves it `registered: false`. `$.perf.*` now
+carries the flag inline for the same reason.
+
+Tests that enable a plugin must call `resetOptInPlugins()` afterwards — the
+request set is process-global, and bun runs every test file in one process.
+Leaving it set gives the next file extra hooks in its chain.
+
 With them off: 31 plugins on the hot path drops to 18, 0.86ms to 0.36ms.
 
 ---

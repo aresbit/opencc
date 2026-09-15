@@ -12,6 +12,7 @@ import { join } from 'path'
 import { z } from 'zod/v4'
 import { TEAMMATE_MESSAGE_TAG } from '../constants/xml.js'
 import { PermissionModeSchema } from '../entrypoints/sdk/coreSchemas.js'
+import type { AgentOutcome } from '../supervision/failureClassifier.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import type { Message } from '../types/message.js'
 import { generateRequestId } from './agentId.js'
@@ -400,6 +401,19 @@ export type IdleNotificationMessage = {
   timestamp: string
   /** Why the agent went idle */
   idleReason?: 'available' | 'interrupted' | 'failed'
+  /**
+   * Classified outcome of the turn.
+   *
+   * `idleReason` is a three-way summary kept for the existing UI and
+   * attachment paths; this is the real answer. It exists because those three
+   * values could not distinguish "finished the task" from "was killed by a
+   * 529" — query() turns API errors into a message and returns
+   * reason:'completed', so both arrived as 'available'. See
+   * supervision/failureClassifier.
+   */
+  outcome?: AgentOutcome
+  /** Error text behind a failing outcome, for the leader's report. */
+  outcomeDetail?: string
   /** Brief summary of the last DM sent this turn (if any) */
   summary?: string
   completedTaskId?: string
@@ -414,6 +428,8 @@ export function createIdleNotification(
   agentId: string,
   options?: {
     idleReason?: IdleNotificationMessage['idleReason']
+    outcome?: AgentOutcome
+    outcomeDetail?: string
     summary?: string
     completedTaskId?: string
     completedStatus?: 'resolved' | 'blocked' | 'failed'
@@ -425,6 +441,8 @@ export function createIdleNotification(
     from: agentId,
     timestamp: new Date().toISOString(),
     idleReason: options?.idleReason,
+    outcome: options?.outcome,
+    outcomeDetail: options?.outcomeDetail,
     summary: options?.summary,
     completedTaskId: options?.completedTaskId,
     completedStatus: options?.completedStatus,

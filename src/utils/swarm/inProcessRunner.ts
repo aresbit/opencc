@@ -64,6 +64,16 @@ import {
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
 import { evictTerminalTask } from '../../utils/task/framework.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
+import {
+  type AgentOutcome,
+  classifyAgentOutcome,
+  toIdleReason,
+} from '../../supervision/failureClassifier.js'
+import {
+  registerChild,
+  reportChildExit,
+  unregisterChild,
+} from '../../supervision/registry.js'
 import { createAbortController } from '../abortController.js'
 import { type AgentContext, runWithAgentContext } from '../agentContext.js'
 import { count } from '../array.js'
@@ -572,6 +582,8 @@ async function sendIdleNotification(
   teamName: string,
   options?: {
     idleReason?: 'available' | 'interrupted' | 'failed'
+    outcome?: AgentOutcome
+    outcomeDetail?: string
     summary?: string
     completedTaskId?: string
     completedStatus?: 'resolved' | 'blocked' | 'failed'
@@ -1011,6 +1023,26 @@ export async function runInProcessTeammate(
   )
   let currentPrompt = wrappedInitialPrompt
   let shouldExit = false
+  /** Set when the supervisor restarts this teammate; skips the idle wait. */
+  let supervisorRestart: string | undefined
+
+  // Put this teammate under its team's supervisor. 'transient' matches what a
+  // teammate already does — work until done, come back only if something
+  // broke. The peer handler fires only under rest_for_one, when an upstream
+  // child's failure invalidates the output this one was working from.
+  registerChild(
+    identity.teamName,
+    { id: identity.agentId, restart: 'transient' },
+    reason => {
+      supervisorRestart = reason
+      // Stop the current turn without killing the teammate; the loop below
+      // picks up supervisorRestart and re-runs the original prompt.
+      const state = toolUseContext.getAppState().tasks[taskId]
+      if (state?.type === 'in_process_teammate') {
+        state.currentWorkAbortController?.abort()
+      }
+    },
+  )
 
   // Try to claim an available task immediately so the UI can show activity
   // from the very start. The idle loop handles claiming for subsequent tasks.
@@ -1329,6 +1361,22 @@ export async function runInProcessTeammate(
       // Teammates should use the Teammate tool to communicate with the leader.
       // This matches process-based teammates where output is not visible to the leader.
 
+      // What actually happened this turn. Reading only workWasAborted here
+      // reported 'available' for every non-interrupted exit — including the
+      // turns where query() converted a 529, an auth failure or a
+      // prompt-too-long into an assistant message and returned
+      // reason:'completed'. A teammate the API had killed announced itself
+      // to the leader as ready for more work.
+      const { outcome, detail } = classifyAgentOutcome({
+        aborted: workWasAborted,
+        messages: iterationMessages,
+      })
+      if (outcome !== 'completed' && outcome !== 'interrupted') {
+        logForDebugging(
+          `[inProcessRunner] ${identity.agentId} turn ended with ${outcome}: ${detail ?? 'no detail'}`,
+        )
+      }
+
       // Only send idle notification on transition to idle (not if already idle)
       if (!wasAlreadyIdle) {
         await sendIdleNotification(
@@ -1336,7 +1384,9 @@ export async function runInProcessTeammate(
           identity.color,
           identity.teamName,
           {
-            idleReason: workWasAborted ? 'interrupted' : 'available',
+            idleReason: toIdleReason(outcome),
+            outcome,
+            outcomeDetail: detail,
             summary: getLastPeerDmSummary(allMessages),
           },
         )
@@ -1344,6 +1394,45 @@ export async function runInProcessTeammate(
         logForDebugging(
           `[inProcessRunner] Skipping duplicate idle notification for ${identity.agentName}`,
         )
+      }
+
+      // Ask the supervisor what to do about this exit. Called here rather
+      // than from a `subagent.stop` hook because that event never fires on an
+      // API error — query() returns early on isApiErrorMessage and runs only
+      // StopFailure — so a supervisor mounted there would miss every failure
+      // class it exists for. See supervision/registry.ts.
+      const decision = reportChildExit(
+        identity.teamName,
+        identity.agentId,
+        outcome,
+      )
+      if (decision.action === 'restart' && decision.restart.includes(identity.agentId)) {
+        supervisorRestart = decision.reason
+        if (decision.backoffMs) await sleep(decision.backoffMs)
+      }
+
+      // Restart, whether this teammate's own failure or an upstream peer's.
+      // A teammate idles rather than dying, so "restart" means re-running the
+      // original prompt against a cleared conversation — the nearest analogue
+      // to returning a process to its init state, and the actual repair for
+      // context_overflow.
+      if (supervisorRestart && !abortController.signal.aborted) {
+        logForDebugging(
+          `[inProcessRunner] ${identity.agentId} supervisor restart: ${supervisorRestart}`,
+        )
+        allMessages.length = 0
+        if (teammateReplacementState) {
+          teammateReplacementState = createContentReplacementState()
+        }
+        resetMicrocompactState()
+        currentPrompt = wrappedInitialPrompt
+        supervisorRestart = undefined
+        updateTaskState(
+          taskId,
+          task => ({ ...task, messages: [], isIdle: false, status: 'running' }),
+          setAppState,
+        )
+        continue
       }
 
       logForDebugging(
@@ -1460,6 +1549,7 @@ export async function runInProcessTeammate(
       })
     }
 
+    unregisterChild(identity.teamName, identity.agentId)
     unregisterPerfettoAgent(identity.agentId)
     return { success: true, messages: allMessages }
   } catch (error) {
@@ -1512,18 +1602,33 @@ export async function runInProcessTeammate(
       })
     }
 
-    // Send idle notification with failure via file-based mailbox
+    // Send idle notification with failure via file-based mailbox.
+    // A thrown exception is the rare failure path; classifyAgentOutcome
+    // gives it the same shape as the common one so the leader (and any
+    // supervisor above it) reads a single field either way.
+    const { outcome: crashOutcome, detail: crashDetail } =
+      classifyAgentOutcome({ thrown: error, messages: allMessages })
     await sendIdleNotification(
       identity.agentName,
       identity.color,
       identity.teamName,
       {
         idleReason: 'failed',
+        outcome: crashOutcome,
+        outcomeDetail: crashDetail,
         completedStatus: 'failed',
         failureReason: errorMessage,
       },
     )
 
+    // Deliberately NOT reported to the supervisor. Reaching here means the
+    // runner loop itself threw, so this function is returning and the
+    // teammate is gone — it cannot act on a 'restart' decision, and spending
+    // budget on a restart that will never happen would only make the child
+    // look unrecoverable to a later, deliberate respawn. Bringing a teammate
+    // back from here needs a fresh backend.spawn, which is the leader's call;
+    // the idle notification above already carries the classified crash.
+    unregisterChild(identity.teamName, identity.agentId)
     unregisterPerfettoAgent(identity.agentId)
     return {
       success: false,

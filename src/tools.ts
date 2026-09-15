@@ -17,6 +17,7 @@ import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
 import { RepoToSkillTool } from './tools/RepoToSkillTool/RepoToSkillTool.js'
 import { ProbeTool } from './tools/ProbeTool/ProbeTool.js'
+import { RedTeamLoopTool } from './tools/RedTeamLoopTool/RedTeamLoopTool.js'
 import { SreTool } from './tools/SreTool/SreTool.js'
 import { ProtocolReTool } from './tools/ProtocolReTool/ProtocolReTool.js'
 import { ApiReTool } from './tools/ApiReTool/ApiReTool.js'
@@ -130,6 +131,10 @@ import { McpFsReadTool } from './tools/McpFsTool/McpFsReadTool.js'
 import { McpFsExecTool } from './tools/McpFsTool/McpFsExecTool.js'
 import { CodeActTool } from './tools/CodeActTool/CodeActTool.js'
 import { ActionTool } from './tools/ActionTool/ActionTool.js'
+import { NumberTheoryMasterTool } from './tools/NumberTheoryMasterTool/NumberTheoryMasterTool.js'
+import { CombinatoricsMasterTool } from './tools/CombinatoricsMasterTool/CombinatoricsMasterTool.js'
+import { AnalysisMasterTool } from './tools/AnalysisMasterTool/AnalysisMasterTool.js'
+import { AlgebraMasterTool } from './tools/AlgebraMasterTool/AlgebraMasterTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -264,6 +269,7 @@ export function getAllBaseTools(): Tools {
     Paper2CodeTool,
     RepoToSkillTool,
     ProbeTool,
+    RedTeamLoopTool,
     SreTool,
     ProtocolReTool,
     ApiReTool,
@@ -288,6 +294,10 @@ export function getAllBaseTools(): Tools {
     LearnTool,
     AwrOpsTool,
     AwrStRunTool,
+    NumberTheoryMasterTool,
+    CombinatoricsMasterTool,
+    AnalysisMasterTool,
+    AlgebraMasterTool,
     EvalApplyTool,
     ActorTool,
     SSHRemoteTool,

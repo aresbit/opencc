@@ -16,6 +16,18 @@ import type { EngineInterface, EngineNoun, FunctionHookEvent, HookFn } from './t
 import { dispatch, HookChainBottomError } from './dispatcher.js'
 import { logError } from 'src/utils/log.js'
 
+/**
+ * Why perfTelescopy's numbers are empty in the default configuration.
+ *
+ * It hooks '*', making it the most-invoked plugin in the process, to build a
+ * latency histogram meant to be read during an investigation — so it is off
+ * unless asked for. Saying so inline is the difference between "nothing was
+ * slow" and "nothing was measured".
+ */
+const PERF_OFF_NOTE =
+  'perfTelescopy is not registered, so these numbers are empty because nothing was measured — not because nothing was slow. ' +
+  "Enable with enableOptInPlugins('perfTelescopy') before the first registerBuiltinPlugins(), then restart the process."
+
 export interface EngineCreateEvent {
   /** Nouns accumulated so far (starts empty). */
   nouns: Record<string, Record<string, (...args: any[]) => any>>
@@ -192,18 +204,64 @@ export function buildCoreNouns(): Record<
         return listUIDisabledPlugins()
       },
     },
+    plugins: {
+      /** Every built-in plugin with whether it is actually in the chain. */
+      status: async () => {
+        const { getPluginStatus } = await import('./plugins/index.js')
+        return getPluginStatus()
+      },
+      /** Registered plugins only — what is really running this process. */
+      running: async () => {
+        const { getPluginStatus } = await import('./plugins/index.js')
+        return getPluginStatus()
+          .filter(p => p.registered)
+          .map(p => p.name)
+      },
+      /**
+       * Opt-in plugins that are off, and therefore reporting zeros because
+       * they never ran rather than because nothing happened.
+       */
+      off: async () => {
+        const { getPluginStatus } = await import('./plugins/index.js')
+        return getPluginStatus()
+          .filter(p => !p.registered)
+          .map(p => ({ name: p.name, optIn: p.optIn, requested: p.requested }))
+      },
+    },
     perf: {
+      // Each of these carries `registered`. perfTelescopy is off by default,
+      // so the bare numbers are zero in the normal case and mean "this never
+      // ran", not "nothing was slow". Returning them without that flag is
+      // what made the opt-in mechanism look broken.
       samples: async (e: { event?: string; limit?: number; offset?: number; sinceSeq?: number }) => {
         const { getPerfSamples } = await import('./plugins/perfTelescopyHook.js')
-        return getPerfSamples(e)
+        const { isPluginRegistered } = await import('./plugins/index.js')
+        const registered = isPluginRegistered('perfTelescopy')
+        return {
+          registered,
+          samples: getPerfSamples(e),
+          ...(registered
+            ? {}
+            : { note: PERF_OFF_NOTE }),
+        }
       },
       stats: async () => {
         const { getPerfStats } = await import('./plugins/perfTelescopyHook.js')
-        return getPerfStats()
+        const { isPluginRegistered } = await import('./plugins/index.js')
+        const registered = isPluginRegistered('perfTelescopy')
+        return {
+          registered,
+          stats: getPerfStats(),
+          ...(registered ? {} : { note: PERF_OFF_NOTE }),
+        }
       },
       sampleCount: async () => {
         const { getSampleCount } = await import('./plugins/perfTelescopyHook.js')
-        return getSampleCount()
+        const { isPluginRegistered } = await import('./plugins/index.js')
+        return {
+          registered: isPluginRegistered('perfTelescopy'),
+          count: getSampleCount(),
+        }
       },
       clear: async () => {
         const { clearPerfTelescopy } = await import('./plugins/perfTelescopyHook.js')
