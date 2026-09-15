@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { mkdir, readdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import * as lockfile from '../utils/lockfile.js'
@@ -16,10 +16,54 @@ import {
 /** Sidecar marking an address as served; see announce(). */
 const PRESENCE_SUFFIX = '.presence.json'
 
+/** Sidecar holding envelopes that could not be delivered; see deadLetter(). */
+const DEAD_SUFFIX = '.dead.json'
+
+/** Sidecar holding delivery receipts addressed to a sender; see ack(). */
+const ACK_SUFFIX = '.acks.json'
+
+/**
+ * How long a receipt is kept.
+ *
+ * Long enough to outlive any sender still blocking on it, short enough that
+ * the file stays small. Senders wait seconds, not minutes.
+ */
+const ACK_RETENTION_MS = 10 * 60 * 1000
+
+/** Upper bound on receipts per sender. */
+const MAX_ACKS = 500
+
+/**
+ * How stale a presence heartbeat may be before its address counts as gone.
+ *
+ * Serving sessions re-announce every 30s, so three missed heartbeats is the
+ * threshold. Too short and a busy session is declared dead mid-turn; too long
+ * and a sender waits on a mailbox nobody is reading. This is the only thing
+ * standing between `tx` and its old behaviour of reporting success for having
+ * written a file into a directory nobody watches.
+ */
+export const PRESENCE_STALE_MS = 90 * 1000
+
 export type ActorPresence = {
   address: string
   unread: number
   lastSeenAt?: string
+  /** False when the heartbeat is older than PRESENCE_STALE_MS. */
+  live?: boolean
+}
+
+/** Proof that a specific envelope reached a receiver that consumed it. */
+export type DeliveryReceipt = {
+  envelopeId: string
+  ackedBy: string
+  ackedAt: string
+}
+
+/** An envelope that will not be delivered, with the reason it was given up on. */
+export type DeadLetter = {
+  envelope: ActorEnvelope
+  reason: 'expired' | 'receiver_retired' | 'unacked'
+  deadAt: string
 }
 
 type StoredEnvelope = {
@@ -43,6 +87,9 @@ const LOCK_OPTIONS = {
  * window is the dedupe guarantee that actually matters.
  */
 const CLAIMED_RETENTION_MS = 5 * 60 * 1000
+
+/** Upper bound on parked envelopes per address. */
+const MAX_DEAD_LETTERS = 200
 
 function isEnvelope(value: unknown): value is ActorEnvelope {
   if (!value || typeof value !== 'object') return false
@@ -138,10 +185,20 @@ export class LocalActorMailbox {
       throw new Error('LocalActorMailbox only accepts actor:// addresses')
     }
     const path = await this.ensure(address)
+    let expiredToPark: ActorEnvelope[] = []
     const release = await lockfile.lock(path, LOCK_OPTIONS)
     try {
       const records = await this.read(path)
       const now = new Date().toISOString()
+      // Expired-but-unread envelopes are about to be compacted out of the
+      // file. Park them first: the sender was told the send succeeded, and
+      // without a record it has no way to learn that it was not.
+      expiredToPark = records
+        .filter(
+          record =>
+            !record.receivedAt && isExpiredActorEnvelope(record.envelope),
+        )
+        .map(record => record.envelope)
       const selected = records
         .filter(
           record =>
@@ -165,6 +222,12 @@ export class LocalActorMailbox {
       return selected.map(record => record.envelope)
     } finally {
       await release()
+      // Outside the mailbox lock: deadLetter takes its own lock on a
+      // different file, and taking the second while holding the first is how
+      // two of these deadlock each other.
+      if (expiredToPark.length > 0) {
+        await this.deadLetter(addressValue, expiredToPark, 'expired')
+      }
     }
   }
 
@@ -250,11 +313,17 @@ export class LocalActorMailbox {
             await readFile(join(this.root, team, entry), 'utf8'),
           ) as { address?: unknown; lastSeenAt?: unknown }
           if (typeof raw.address !== 'string') continue
+          const lastSeenAt =
+            typeof raw.lastSeenAt === 'string' ? raw.lastSeenAt : undefined
+          const seen = lastSeenAt ? Date.parse(lastSeenAt) : Number.NaN
           found.push({
             address: raw.address,
-            lastSeenAt:
-              typeof raw.lastSeenAt === 'string' ? raw.lastSeenAt : undefined,
+            lastSeenAt,
             unread: (await this.peek(raw.address)).length,
+            // A stale entry is a session that exited without retiring. Saying
+            // so here is what lets a sender pick a peer that will actually
+            // read, instead of the first name in the list.
+            live: Number.isFinite(seen) && Date.now() - seen <= PRESENCE_STALE_MS,
           })
         } catch {
           // A half-written or hand-edited presence file is not worth failing
@@ -263,6 +332,210 @@ export class LocalActorMailbox {
       }
     }
     return found.sort((a, b) => a.address.localeCompare(b.address))
+  }
+
+  /**
+   * Create an empty JSON array file if it is not there yet.
+   *
+   * lockfile.lock() stats its target, so locking a sidecar that has never been
+   * written throws ENOENT — which is exactly the first write, the one that
+   * matters. `ensure()` does this for the mailbox itself; the sidecars need
+   * the same treatment.
+   */
+  private async ensureFile(path: string): Promise<void> {
+    await mkdir(dirname(path), { recursive: true })
+    try {
+      await writeFile(path, '[]', { flag: 'wx' })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+  }
+
+  private ackPathFor(address: ActorAddress): string {
+    return join(
+      this.root,
+      this.safeComponent(address.team),
+      `${this.safeComponent(address.name)}${ACK_SUFFIX}`,
+    )
+  }
+
+  /**
+   * Record that `envelopeId` was consumed, in a file the SENDER reads.
+   *
+   * Receipts deliberately do not travel as envelopes. An ack-as-envelope lands
+   * in the sender's inbox, where it competes with the inbox injection that
+   * delivers real mail into the conversation — whichever ran first would claim
+   * it, so a sender blocking on the receipt could lose it to its own poller,
+   * and a receipt that did arrive would be shown to the model as if it were a
+   * message. A sidecar keyed by sender address is read by exactly one party
+   * and never reaches a transcript.
+   */
+  async ack(
+    senderAddress: string,
+    envelopeId: string,
+    ackedBy: string,
+  ): Promise<void> {
+    const address = parseActorAddress(senderAddress)
+    if (address.transport !== 'local') return
+    const path = this.ackPathFor(address)
+    await this.ensureFile(path)
+    const release = await lockfile.lock(path, LOCK_OPTIONS)
+    try {
+      let receipts: DeliveryReceipt[] = []
+      try {
+        const parsed = jsonParse(await readFile(path, 'utf8'))
+        if (Array.isArray(parsed)) receipts = parsed as DeliveryReceipt[]
+      } catch {
+        // First receipt for this sender, or an unreadable file.
+      }
+      const cutoff = Date.now() - ACK_RETENTION_MS
+      const kept = receipts.filter(
+        receipt =>
+          receipt?.envelopeId !== envelopeId &&
+          Date.parse(receipt?.ackedAt ?? '') > cutoff,
+      )
+      kept.push({ envelopeId, ackedBy, ackedAt: new Date().toISOString() })
+      await writeFile(
+        path,
+        jsonStringify(kept.slice(-MAX_ACKS), null, 2),
+        'utf8',
+      )
+    } finally {
+      await release()
+    }
+  }
+
+  /** The receipt for `envelopeId`, or null if it has not been consumed. */
+  async receiptFor(
+    senderAddress: string,
+    envelopeId: string,
+  ): Promise<DeliveryReceipt | null> {
+    const address = parseActorAddress(senderAddress)
+    try {
+      const parsed = jsonParse(await readFile(this.ackPathFor(address), 'utf8'))
+      if (!Array.isArray(parsed)) return null
+      return (
+        (parsed as DeliveryReceipt[]).find(
+          receipt => receipt?.envelopeId === envelopeId,
+        ) ?? null
+      )
+    } catch {
+      return null
+    }
+  }
+
+  private deadPathFor(address: ActorAddress): string {
+    return join(
+      this.root,
+      this.safeComponent(address.team),
+      `${this.safeComponent(address.name)}${DEAD_SUFFIX}`,
+    )
+  }
+
+  /**
+   * Whether an address is currently served by a live session.
+   *
+   * `send` writes a file whether or not anything is reading it, so on its own
+   * a successful send says only that the write succeeded. Callers that need
+   * delivery — rather than enqueue — ask this first.
+   */
+  async isReachable(
+    addressValue: string,
+    staleMs = PRESENCE_STALE_MS,
+  ): Promise<boolean> {
+    const address = parseActorAddress(addressValue)
+    if (address.transport !== 'local') return true // not ours to judge
+    try {
+      const raw = jsonParse(
+        await readFile(this.presencePathFor(address), 'utf8'),
+      ) as { lastSeenAt?: unknown }
+      if (typeof raw.lastSeenAt !== 'string') return false
+      const seen = Date.parse(raw.lastSeenAt)
+      return Number.isFinite(seen) && Date.now() - seen <= staleMs
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * Park envelopes that will not be delivered, with the reason.
+   *
+   * Previously an envelope that expired was dropped inside `receive` while
+   * compacting the file: the sender was told the send succeeded, the receiver
+   * never saw it, and nothing anywhere recorded that it had existed. A sender
+   * cannot retry what it cannot discover, so undeliverable mail is kept here
+   * instead of deleted.
+   */
+  async deadLetter(
+    addressValue: string,
+    envelopes: readonly ActorEnvelope[],
+    reason: DeadLetter['reason'],
+  ): Promise<void> {
+    if (envelopes.length === 0) return
+    const address = parseActorAddress(addressValue)
+    if (address.transport !== 'local') return
+    const path = this.deadPathFor(address)
+    await this.ensureFile(path)
+    const release = await lockfile.lock(path, LOCK_OPTIONS)
+    try {
+      let existing: DeadLetter[] = []
+      try {
+        const parsed = jsonParse(await readFile(path, 'utf8'))
+        if (Array.isArray(parsed)) existing = parsed as DeadLetter[]
+      } catch {
+        // No dead-letter file yet, or an unreadable one; start fresh rather
+        // than losing the envelopes we were asked to park.
+      }
+      const deadAt = new Date().toISOString()
+      const known = new Set(existing.map(entry => entry.envelope?.id))
+      for (const envelope of envelopes) {
+        if (!known.has(envelope.id)) existing.push({ envelope, reason, deadAt })
+      }
+      // Bounded like the mailbox itself: a sender that never drains this must
+      // not be able to grow the file without limit.
+      const trimmed = existing.slice(-MAX_DEAD_LETTERS)
+      await writeFile(path, jsonStringify(trimmed, null, 2), 'utf8')
+    } finally {
+      await release()
+    }
+  }
+
+  /** Undeliverable envelopes parked for this address, oldest first. */
+  async listDeadLetters(addressValue: string): Promise<DeadLetter[]> {
+    const address = parseActorAddress(addressValue)
+    try {
+      const parsed = jsonParse(
+        await readFile(this.deadPathFor(address), 'utf8'),
+      )
+      return Array.isArray(parsed) ? (parsed as DeadLetter[]) : []
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Stop serving an address: drop its presence and park whatever is unread.
+   *
+   * A subagent's mailbox outlives the subagent. Without this its presence file
+   * keeps advertising an actor that exited, and anything still unread sits in
+   * a file nobody will ever open again.
+   */
+  async retire(addressValue: string): Promise<void> {
+    const address = parseActorAddress(addressValue)
+    if (address.transport !== 'local') return
+    const pending = await this.peek(addressValue)
+    if (pending.length > 0) {
+      await this.deadLetter(addressValue, pending, 'receiver_retired')
+      await this.claim(
+        addressValue,
+        pending.map(envelope => envelope.id),
+      )
+    }
+    try {
+      await rm(this.presencePathFor(address))
+    } catch {
+      // Never announced, or already retired.
+    }
   }
 
   private presencePathFor(address: ActorAddress): string {

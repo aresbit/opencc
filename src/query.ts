@@ -46,6 +46,7 @@ import { logAntError, logForDebugging } from './utils/debug.js'
 import { applyTodoRecitation } from './utils/todoRecitation.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
 import { applyRepeatedFailureNotice } from './utils/repeatedFailure.js'
+import { applyActorInbox } from './actor/inboxInjection.js'
 import {
   createUserMessage,
   createUserInterruptionMessage,
@@ -446,6 +447,18 @@ async function* queryLoop(
     {
       const rut = applyRepeatedFailureNotice(messagesForQuery)
       messagesForQuery = rut.messages
+    }
+
+    // Actor mail. Every agent loop in this process passes through here, which
+    // is the point: the REPL's poller only serves the main session, so before
+    // this a subagent could be written to but had no way to be handed what
+    // arrived. Tail-only, like the two above.
+    {
+      const inbox = await applyActorInbox(messagesForQuery, {
+        agentId: toolUseContext.agentId,
+        agentType: toolUseContext.agentType,
+      })
+      messagesForQuery = inbox.messages
     }
 
     // Project the collapsed context view and maybe commit more collapses.

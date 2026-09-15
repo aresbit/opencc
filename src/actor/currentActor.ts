@@ -43,6 +43,35 @@ export function resetCurrentActorAddressCache(): void {
 }
 
 /**
+ * The address a subagent serves.
+ *
+ * Subagents run in the SAME process as the session that spawned them, and
+ * getCurrentActorAddress() is a pure function of team, cwd and agent name —
+ * none of which runAgent sets. So a subagent and its parent resolved to the
+ * identical address, and three things followed from that one fact:
+ *
+ *   - `tx` could not name a subagent. Every address a sender could write
+ *     pointed at the shared session mailbox.
+ *   - the parent's inbox poller claims on delivery, and claiming is
+ *     at-most-once, so mail meant for a subagent was consumed into the
+ *     parent's conversation and the subagent never saw it.
+ *   - `mailbox.list()` showed one actor where there were several.
+ *
+ * Deriving from agentId keeps the address stable for the agent's whole life
+ * and unique between siblings; including agentType keeps it readable in
+ * `list()` output, which is how one agent finds another to write to.
+ */
+export function subagentActorAddress(
+  agentId: string,
+  agentType?: string,
+): string {
+  const team = getTeamName() || process.env.CLAUDE_CODE_TEAM_NAME || 'default'
+  const suffix = agentId.slice(-8)
+  const label = (agentType ?? 'agent').replace(/[^A-Za-z0-9_-]+/g, '-')
+  return localActorAddress(team, `${label}-${suffix}`)
+}
+
+/**
  * Whether this session should serve an actor address: announce itself and
  * accept delivered envelopes.
  *

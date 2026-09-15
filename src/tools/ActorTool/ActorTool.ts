@@ -4,6 +4,7 @@ import {
   getCurrentActorAddress,
 } from '../../actor/currentActor.js'
 import { LocalActorMailbox } from '../../actor/LocalActorMailbox.js'
+import { awaitDelivery } from '../../actor/reliableSend.js'
 import { ActorResourceRegistry } from '../../actor/ActorResourceRegistry.js'
 import { parseActorAddress } from '../../actor/types.js'
 import { getEngine } from '../../services/functionHooks/bridge.js'
@@ -47,6 +48,26 @@ const inputSchema = lazySchema(() =>
         .optional()
         .describe('Stable request/reply or task correlation id.'),
       ttl_ms: z.number().int().positive().optional(),
+      expect_ack_ms: z
+        .number()
+        .int()
+        .min(0)
+        .max(30_000)
+        .optional()
+        .describe(
+          'Block up to this long for proof a receiver consumed the message, retrying if it does not. Omit for fire-and-forget (the destination is still checked for a live receiver either way).',
+        ),
+      max_attempts: z
+        .number()
+        .int()
+        .min(1)
+        .max(5)
+        .optional()
+        .describe('Send attempts when waiting for an ack. Default 3. Re-sends reuse the envelope id, so a retry cannot double-deliver.'),
+      force: z
+        .boolean()
+        .optional()
+        .describe('Send even when no live session is serving the address. Use only for a peer this process cannot see.'),
     }),
     z.object({
       action: z.literal('rx'),
@@ -60,6 +81,15 @@ const inputSchema = lazySchema(() =>
       metadata: z.record(z.string(), z.unknown()).optional(),
     }),
     z.object({ action: z.literal('resource_list') }),
+    z.object({
+      action: z.literal('dead_letters'),
+      address: z
+        .string()
+        .optional()
+        .describe(
+          'Whose undelivered mail to list. Defaults to your own address; pass a peer to see what you sent it that never arrived.',
+        ),
+    }),
     z.object({
       action: z.literal('resource_acquire'),
       resource_id: z.string().min(1).max(128),
@@ -86,12 +116,17 @@ const outputSchema = lazySchema(() =>
           address: z.string(),
           unread: z.number(),
           lastSeenAt: z.string().optional(),
+          live: z.boolean().optional(),
         }),
       )
       .optional(),
     resources: z.array(z.unknown()).optional(),
     resource: z.unknown().optional(),
     lease: z.unknown().optional(),
+    /** Present on a tx that waited: how delivery actually ended. */
+    delivery: z.unknown().optional(),
+    /** Present on dead_letters: envelopes that were never consumed. */
+    deadLetters: z.array(z.unknown()).optional(),
     message: z.string(),
   }),
 )
@@ -372,7 +407,59 @@ Addresses are actor://team/name locally or ws://host:port/ws#team/name remotely.
       }
     }
 
+    if (input.action === 'dead_letters') {
+      const target = input.address
+        ? parseActorAddress(input.address, getTeamName() || 'default').canonical
+        : self
+      const dead = await mailbox.listDeadLetters(target)
+      return {
+        data: {
+          success: true,
+          self,
+          deadLetters: dead,
+          message:
+            dead.length > 0
+              ? `${dead.length} undelivered envelope(s) for ${target}:\n` +
+                dead
+                  .map(
+                    entry =>
+                      `  [${entry.reason}] ${entry.envelope.from} -> ${entry.envelope.to} ` +
+                      `[${entry.envelope.kind}] ${preview(entry.envelope.payload)} (dead ${entry.deadAt})`,
+                  )
+                  .join('\n')
+              : `No undelivered envelopes for ${target}.`,
+        },
+      }
+    }
+
     // ── tx (default action) ──
+    //
+    // Reachability first. `send` writes a file whether or not anything is
+    // reading it, so without this a tx to a session that exited — or to a
+    // mistyped address — reported success and was discovered, if ever, much
+    // later. Refusing costs the sender a turn and tells it who IS listening.
+    const destinationAddress = parseActorAddress(
+      input.to,
+      getTeamName() || 'default',
+    ).canonical
+    if (!input.force && !(await mailbox.isReachable(destinationAddress))) {
+      const live = (await mailbox.list())
+        .filter(entry => entry.live && entry.address !== self)
+        .map(entry => entry.address)
+      return {
+        data: {
+          success: false,
+          self,
+          message:
+            `Not sent: no live session is serving ${destinationAddress}. ` +
+            (live.length > 0
+              ? `Currently listening: ${live.join(', ')}.`
+              : 'No other addresses are currently served.') +
+            ' Use actor peers to see who is available, or pass force:true if the receiver is outside this machine.',
+        },
+      }
+    }
+
     let envelope
     if ($?.actor) {
       envelope = await $.actor.tx({ address: self, to: input.to, payload: input.payload ?? null, kind: input.kind, correlationId: input.correlation_id, ttlMs: input.ttl_ms })
@@ -395,10 +482,34 @@ Addresses are actor://team/name locally or ws://host:port/ws#team/name remotely.
         destination.team,
       )
     }
+    const summary = `${envelope.from} -> ${envelope.to} [${envelope.kind}${envelope.correlationId ? ` #${envelope.correlationId}` : ''}] ${preview(envelope.payload)}`
+
+    // Fire-and-forget: the destination was live a moment ago, which is as much
+    // as anyone can say without waiting.
+    if (!input.expect_ack_ms) {
+      return {
+        data: { success: true, self, envelope, message: `Sent ${summary}` },
+      }
+    }
+
+    const delivery = await awaitDelivery({
+      from: self,
+      to: envelope.to,
+      envelope,
+      waitMs: input.expect_ack_ms,
+      maxAttempts: input.max_attempts,
+      mailbox,
+    })
     return {
       data: {
-        success: true, self, envelope,
-        message: `Sent ${envelope.from} -> ${envelope.to} [${envelope.kind}${envelope.correlationId ? ` #${envelope.correlationId}` : ''}] ${preview(envelope.payload)}`,
+        success: delivery.status === 'acked',
+        self,
+        envelope,
+        delivery,
+        message:
+          delivery.status === 'acked'
+            ? `Delivered ${summary} — consumed by ${delivery.receipt?.ackedBy} after ${delivery.attempts} attempt(s)`
+            : `Not confirmed: ${summary}. ${delivery.detail ?? ''}`,
       },
     }
   },

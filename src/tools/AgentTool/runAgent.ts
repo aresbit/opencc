@@ -41,6 +41,8 @@ import type {
   UserMessage,
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
+import { LocalActorMailbox } from '../../actor/LocalActorMailbox.js'
+import { isActorNetworkingEnabled, subagentActorAddress } from '../../actor/currentActor.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
 import {
@@ -345,6 +347,20 @@ export async function* runAgent({
   )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
+
+  // Serve an address of this subagent's own. Without it a subagent resolves to
+  // the same address as the session that spawned it — see subagentActorAddress
+  // — so nothing could write to one specifically, and the parent's poller
+  // claimed anything that arrived. Announcing makes it addressable and makes
+  // it show up in mailbox.list() for a peer looking for someone to talk to.
+  const actorAddress = isActorNetworkingEnabled()
+    ? subagentActorAddress(agentId, agentDefinition.agentType)
+    : null
+  if (actorAddress) {
+    void new LocalActorMailbox()
+      .announce(actorAddress)
+      .catch(err => logForDebugging(`[Actor] announce failed: ${err}`))
+  }
 
   // Route this agent's transcript into a grouping subdirectory if requested
   // (e.g. workflow subagents write to subagents/workflows/<runId>/).
@@ -814,6 +830,15 @@ export async function* runAgent({
       agentDefinition.callback()
     }
   } finally {
+    // Stop serving this subagent's address and park whatever was never read.
+    // A mailbox outlives the agent it belongs to, so without this its presence
+    // file keeps advertising an actor that exited and unread mail sits in a
+    // file nobody will open again.
+    if (actorAddress) {
+      await new LocalActorMailbox()
+        .retire(actorAddress)
+        .catch(err => logForDebugging(`[Actor] retire failed: ${err}`))
+    }
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks
