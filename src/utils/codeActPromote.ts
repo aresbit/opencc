@@ -42,12 +42,21 @@ const INLINE_SOURCE_LIMIT = 8_000
 /**
  * How a later program in each language reaches a promoted script.
  *
- * Every one of these was verified by promoting a library and then having a
- * separate run import it: all four work, and no two look alike. Rust needs a
- * `#[path]` attribute because rustc compiles a single file; Python needs the
- * directory on sys.path because `actions/` is not a package; C includes the
- * source outright. A model will not guess `#[path]`, so a SKILL.md that says
- * only "import it" is a SKILL.md nobody can act on.
+ * No two look alike, and a model will not guess `#[path]` from the word
+ * "import" — so a SKILL.md saying only "import it" is one nobody can act on.
+ *
+ * Six of these were verified by promoting a library and having a SEPARATE
+ * later run use it: typescript, python, rust, c, cpp and bash all return the
+ * expected value. scheme is untested here only because no Scheme runtime is
+ * installed on the machine this was written on; `load` is ordinary Scheme and
+ * the sandbox cwd is the sandbox root, so it should hold.
+ *
+ * OCaml is the one that genuinely cannot. compileOcaml builds a fixed unit
+ * list — `builtins_ocaml/codeact.ml` and the agent source, nothing else — and
+ * a caller has no way to extend it, so a promoted .ml can be read but never
+ * linked. Saying "pass it to the compiler" would be advertising a path that
+ * does not exist; copying the parts you need is the honest instruction, and
+ * it is what the snippet says.
  */
 const REUSE_SNIPPET: Record<string, (dir: string, file: string) => string> = {
   typescript: (dir, file) => `import { something } from './${dir}/${file}'`,
@@ -57,7 +66,10 @@ const REUSE_SNIPPET: Record<string, (dir: string, file: string) => string> = {
   c: (dir, file) => `#include "${dir}/${file}"`,
   cpp: (dir, file) => `#include "${dir}/${file}"`,
   bash: (dir, file) => `source "${dir}/${file}"`,
-  ocaml: (dir, file) => `(* pass ${dir}/${file} to the compiler, or inline what you need *)`,
+  ocaml: (dir, file) =>
+    `(* No linking: the compile step builds a fixed unit list, so ${dir}/${file}\n` +
+    `   cannot be added to it. Read that file and copy the definitions you need\n` +
+    `   into this program. *)`,
   scheme: (dir, file) => `(load "${dir}/${file}")`,
 }
 

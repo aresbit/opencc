@@ -225,4 +225,22 @@ describe('promoteRun', () => {
       `sys.path.insert(0, 'actions/${py}')`,
     )
   })
+
+  test('OCaml is told to copy, not to link', async () => {
+    const name = uniqueName('ocaml')
+    const result = await promoteRun({
+      name,
+      description: 'OCaml.',
+      sourcePath: sourceFile('let twice n = n * 2\n', 'agent.ml'),
+      language: 'ocaml',
+    })
+
+    // compileOcaml builds a fixed unit list — builtins_ocaml/codeact.ml plus
+    // the agent source — and nothing can extend it, so a promoted .ml can be
+    // read but never linked. Advertising "pass it to the compiler" would point
+    // at a path that does not exist.
+    const skill = readFileSync(join(result.skillPath, 'SKILL.md'), 'utf8')
+    expect(skill).toContain('No linking')
+    expect(skill).toContain('copy the definitions you need')
+  })
 })
