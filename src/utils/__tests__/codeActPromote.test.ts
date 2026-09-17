@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { executeCodeActCode } from '../codeActSandbox.js'
+import { getCodeActRuntimeStatus } from '../codeActLanguageAdapters.js'
 import {
   getActionsDir,
   getSkillStoreDir,
@@ -226,7 +228,7 @@ describe('promoteRun', () => {
     )
   })
 
-  test('OCaml is told to copy, not to link', async () => {
+  test('OCaml promotion is named for its module, not agent.ml', async () => {
     const name = uniqueName('ocaml')
     const result = await promoteRun({
       name,
@@ -235,12 +237,69 @@ describe('promoteRun', () => {
       language: 'ocaml',
     })
 
-    // compileOcaml builds a fixed unit list — builtins_ocaml/codeact.ml plus
-    // the agent source — and nothing can extend it, so a promoted .ml can be
-    // read but never linked. Advertising "pass it to the compiler" would point
-    // at a path that does not exist.
+    // A module's name IS its filename capitalised, so leaving every promoted
+    // OCaml script as agent.ml would make them all module `Agent` — colliding
+    // with each other and with the agent source of whatever imports them.
+    // Hyphens are illegal in a module name, hence the underscores.
+    const expected = `${name.replace(/-/g, '_')}.ml`
+    expect(result.actionPath.endsWith(expected)).toBe(true)
+
     const skill = readFileSync(join(result.skillPath, 'SKILL.md'), 'utf8')
-    expect(skill).toContain('No linking')
-    expect(skill).toContain('copy the definitions you need')
+    const moduleName = expected.replace(/\.ml$/, '').replace(/^./, c => c.toUpperCase())
+    expect(skill).toContain(moduleName)
   })
 })
+
+/**
+ * OCaml linking, end to end.
+ *
+ * Gated on the runtime, like the OCaml cases in codeActSandbox.test.ts: these
+ * compile for real, and a machine without ocamlopt/ocamlc should skip rather
+ * than fail. They were run against OCaml 4.14.1 before shipping.
+ */
+const ocamlRuntime = getCodeActRuntimeStatus('ocaml')
+if (ocamlRuntime.available) {
+  describe('promoted OCaml modules link', () => {
+    test('a later run can call into a promoted module', async () => {
+      const name = uniqueName('ocamllink')
+      await promoteRun({
+        name,
+        description: 'Doubles.',
+        sourcePath: sourceFile('let twice n = n * 2\n', 'agent.ml'),
+        language: 'ocaml',
+      })
+
+      const moduleName = `${name.replace(/-/g, '_')}`.replace(/^./, c =>
+        c.toUpperCase(),
+      )
+      const result = await executeCodeActCode(
+        `let () = Printf.printf "%d" (${moduleName}.twice 21)\n`,
+        { language: 'ocaml', timeoutMs: 180_000 },
+      )
+
+      // compileOcaml built a fixed two-unit list before this, so a promoted
+      // .ml could be read but never linked — OCaml was the one language where
+      // promotion bought nothing.
+      expect(result).toMatchObject({ success: true, stdout: '42' })
+    })
+
+    test('a broken promotion does not break unrelated runs', async () => {
+      const name = uniqueName('ocamlbroken')
+      await promoteRun({
+        name,
+        description: 'Broken.',
+        sourcePath: sourceFile('let x = this is not ocaml\n', 'agent.ml'),
+        language: 'ocaml',
+      })
+
+      // OCaml compiles its unit list as a whole, so compiling every promoted
+      // module unconditionally would let one bad file fail every OCaml run in
+      // the system. Units are selected by reference for exactly this reason.
+      const result = await executeCodeActCode(
+        'let () = print_string "fine"\n',
+        { language: 'ocaml', timeoutMs: 180_000 },
+      )
+      expect(result).toMatchObject({ success: true, stdout: 'fine' })
+    })
+  })
+}

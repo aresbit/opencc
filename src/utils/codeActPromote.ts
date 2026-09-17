@@ -51,12 +51,12 @@ const INLINE_SOURCE_LIMIT = 8_000
  * installed on the machine this was written on; `load` is ordinary Scheme and
  * the sandbox cwd is the sandbox root, so it should hold.
  *
- * OCaml is the one that genuinely cannot. compileOcaml builds a fixed unit
- * list — `builtins_ocaml/codeact.ml` and the agent source, nothing else — and
- * a caller has no way to extend it, so a promoted .ml can be read but never
- * linked. Saying "pass it to the compiler" would be advertising a path that
- * does not exist; copying the parts you need is the honest instruction, and
- * it is what the snippet says.
+ * OCaml used to be the one that could not: compileOcaml built a fixed unit
+ * list, so a promoted .ml could be read but never linked. It now selects the
+ * promoted modules the program actually names and compiles them ahead of the
+ * agent source. Selecting by reference rather than compiling everything is
+ * what keeps one broken promotion from failing every OCaml run in the system,
+ * since OCaml compiles the unit list as a whole.
  */
 const REUSE_SNIPPET: Record<string, (dir: string, file: string) => string> = {
   typescript: (dir, file) => `import { something } from './${dir}/${file}'`,
@@ -66,11 +66,32 @@ const REUSE_SNIPPET: Record<string, (dir: string, file: string) => string> = {
   c: (dir, file) => `#include "${dir}/${file}"`,
   cpp: (dir, file) => `#include "${dir}/${file}"`,
   bash: (dir, file) => `source "${dir}/${file}"`,
-  ocaml: (dir, file) =>
-    `(* No linking: the compile step builds a fixed unit list, so ${dir}/${file}\n` +
-    `   cannot be added to it. Read that file and copy the definitions you need\n` +
-    `   into this program. *)`,
+  ocaml: (_dir, file) => {
+    const mod = file.replace(/\.ml$/, '')
+    const capitalised = mod.charAt(0).toUpperCase() + mod.slice(1)
+    return `(* Module ${capitalised} is linked in automatically when you name it. *)\nlet () = print_int (${capitalised}.something 5)`
+  },
   scheme: (dir, file) => `(load "${dir}/${file}")`,
+}
+
+/**
+ * What to call the promoted file.
+ *
+ * Usually the name it already had. OCaml is the exception: a module's name IS
+ * its filename capitalised, so `agent.ml` would be module `Agent` for every
+ * promoted script — colliding with each other and with the agent source of
+ * whatever program imports them — and `csv-summary.ml` would be `Csv-summary`,
+ * which is not a name at all. Underscoring the slug gives each one a distinct,
+ * legal module name (`Csv_summary`).
+ */
+function targetBasename(
+  sourceBasename: string,
+  slug: string,
+  language: string,
+): string {
+  if (language !== 'ocaml') return sourceBasename
+  const stem = slug.replace(/-/g, '_')
+  return /^[a-z]/.test(stem) ? `${stem}.ml` : `m_${stem}.ml`
 }
 
 export interface PromoteOptions {
@@ -171,7 +192,11 @@ export async function promoteRun(
 ): Promise<PromoteResult> {
   const name = slugForPromotion(options.name)
   const source = await readFile(options.sourcePath, 'utf8')
-  const scriptRelPath = basename(options.sourcePath)
+  const scriptRelPath = targetBasename(
+    basename(options.sourcePath),
+    name,
+    options.language,
+  )
 
   const actionDir = join(getActionsDir(), name)
   // Clear first. Overwriting by copyFile only replaces a file of the SAME name,

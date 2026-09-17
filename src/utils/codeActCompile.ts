@@ -10,6 +10,7 @@
  */
 
 import { spawn } from 'child_process'
+import { readdir, readFile } from 'fs/promises'
 import { StringDecoder } from 'string_decoder'
 import { basename, dirname, join } from 'path'
 import { ensureCodeActBuiltinsCSync } from './codeActBuiltins_c.js'
@@ -69,6 +70,68 @@ export async function compileRust(
 }
 
 /** Compile an OCaml program and its CodeAct helper module. */
+/**
+ * OCaml module name for a file, or null when the name cannot be one.
+ *
+ * A module name is the basename with its first letter capitalised, and the
+ * rest must be letters, digits, underscores or primes. A promoted script named
+ * `csv-summary.ml` would be module `Csv-summary`, which is not a name — so
+ * promotion writes underscored filenames, and anything that still cannot be a
+ * module is skipped rather than passed to the compiler to fail on.
+ */
+function ocamlModuleName(file: string): string | null {
+  const stem = file.replace(/\.ml$/, '')
+  if (!/^[A-Za-z][A-Za-z0-9_']*$/.test(stem)) return null
+  return stem.charAt(0).toUpperCase() + stem.slice(1)
+}
+
+/**
+ * Promoted .ml files this program actually refers to, as compile units.
+ *
+ * Compiling every promoted module unconditionally would be simpler and much
+ * worse: OCaml compiles the whole unit list as one, so a single broken .ml
+ * sitting in the actions directory would fail every OCaml run in the system,
+ * including ones with nothing to do with it. Selecting by reference keeps a
+ * bad promotion's blast radius to the programs that ask for it.
+ *
+ * Ordered by path, and dependencies between promoted modules are the author's
+ * problem: OCaml needs a dependency to precede its user, and inferring that
+ * order needs a dependency graph this does not build.
+ */
+async function referencedOcamlActions(
+  sandboxDir: string,
+  agentSource: string,
+): Promise<string[]> {
+  const actionsRoot = join(sandboxDir, 'actions')
+  let entries: string[]
+  try {
+    entries = (await readdir(actionsRoot)).sort()
+  } catch {
+    return []
+  }
+
+  const units: string[] = []
+  for (const entry of entries) {
+    let files: string[]
+    try {
+      files = (await readdir(join(actionsRoot, entry))).sort()
+    } catch {
+      continue
+    }
+    for (const file of files) {
+      if (!file.endsWith('.ml')) continue
+      const moduleName = ocamlModuleName(file)
+      if (!moduleName) continue
+      // `Foo.bar` or `open Foo` — the two ways a program names a module.
+      const referenced = new RegExp(
+        `(^|[^A-Za-z0-9_'])(open\\s+${moduleName}\\b|${moduleName}\\.)`,
+      ).test(agentSource)
+      if (referenced) units.push(join('actions', entry, file))
+    }
+  }
+  return units
+}
+
 export async function compileOcaml(
   srcPath: string,
   outPath: string,
@@ -80,6 +143,14 @@ export async function compileOcaml(
   const cwd = dirname(srcPath)
   const compilerName = basename(runtimeCommand)
   const stdlib = compilerName.startsWith('ocamlopt') ? 'unix.cmxa' : 'unix.cma'
+
+  // Promoted modules go in ahead of the agent source, because OCaml requires a
+  // dependency to be compiled before its user. Without this the unit list was
+  // fixed at two files and a promoted .ml could be read but never linked,
+  // making OCaml the one language where promotion bought nothing.
+  const agentSource = await readFile(srcPath, 'utf8').catch(() => '')
+  const promoted = await referencedOcamlActions(cwd, agentSource)
+
   return runCompiler(
     runtimeCommand,
     [
@@ -87,6 +158,7 @@ export async function compileOcaml(
       stdlib,
       '-I', 'builtins_ocaml',
       join('builtins_ocaml', 'codeact.ml'),
+      ...promoted.flatMap(unit => ['-I', dirname(unit), unit]),
       basename(srcPath),
       '-o', outPath,
     ],
