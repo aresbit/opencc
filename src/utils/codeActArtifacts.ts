@@ -45,6 +45,12 @@ export interface CollectOptions {
 const DEFAULT_MAX_FILES = 200
 const DEFAULT_MAX_DEPTH = 6
 
+/** Where a run's source is kept inside its directory. */
+const SOURCE_DIR = '_source'
+
+/** How many runs to keep on disk. */
+const MAX_PRESERVED_RUNS = 200
+
 export interface Collection {
   artifacts: Artifact[]
   /** True when the walk stopped early, so the list is partial. */
@@ -162,6 +168,59 @@ export async function preserveArtifacts(
     }
   }
   return preserved
+}
+
+/**
+ * Keep the program itself, not only what it produced.
+ *
+ * The source was excluded from the artifact walk as a runtime-managed file —
+ * correct for a listing meant to show what the SCRIPT wrote — and then deleted
+ * with the sandbox. So the one artifact that is always produced, the program
+ * the model just wrote, was the only one never kept. A run that computed the
+ * right answer could not be re-read, re-run, or corrected by a line; a run that
+ * printed and produced no files left nothing at all, because the preserve step
+ * did not even create a directory for it.
+ *
+ * Copied rather than renamed: a persistent sandbox reuses its source on the
+ * next call, and moving it out from under that would break the persistent mode
+ * to fix the ephemeral one.
+ */
+export async function preserveSource(
+  sourcePath: string,
+  basename: string,
+  runId: string,
+): Promise<string | null> {
+  const dest = join(getArtifactsDir(), runId, SOURCE_DIR, basename)
+  try {
+    await mkdir(join(dest, '..'), { recursive: true })
+    await copyFile(sourcePath, dest)
+    return dest
+  } catch {
+    // Losing the source is not worth failing a run that otherwise succeeded.
+    return null
+  }
+}
+
+/**
+ * Keep the most recent runs and delete the rest.
+ *
+ * Every call now leaves a directory behind, where before only a call that
+ * wrote files did — so without a bound this turns "your code is gone" into
+ * "your disk is full", which is not an improvement. Ordered by name, which is
+ * chronological: run ids are base36 timestamps.
+ */
+export async function pruneRuns(keep = MAX_PRESERVED_RUNS): Promise<void> {
+  try {
+    const entries = (await readdir(getArtifactsDir())).sort()
+    const excess = entries.slice(0, Math.max(0, entries.length - keep))
+    await Promise.all(
+      excess.map(name =>
+        rm(join(getArtifactsDir(), name), { recursive: true, force: true }),
+      ),
+    )
+  } catch {
+    // No artifacts directory yet, or an unreadable one.
+  }
 }
 
 /** Drop a preserved run's directory. */

@@ -28,6 +28,8 @@ import { remapCodeActError, userFacingName } from './codeActErrorRemap.js'
 import {
   collectArtifacts,
   preserveArtifacts,
+  preserveSource,
+  pruneRuns,
   type Artifact,
 } from './codeActArtifacts.js'
 
@@ -62,6 +64,8 @@ export interface CodeActResult {
   artifacts?: Artifact[]
   /** True when more files were produced than are listed. */
   artifactsTruncated?: boolean
+  /** Where the program itself was kept, so the run can be re-read or re-run. */
+  sourcePath?: string
 }
 
 const MAX_CAPTURE_BYTES_PER_STREAM = 2 * 1024 * 1024
@@ -243,13 +247,22 @@ export async function executeCodeActCode(
       // what this run touched counts as this run's artifacts.
       since: persistKey ? startedAt : undefined,
     })
-    const kept = persistKey
-      ? artifacts
-      : await preserveArtifacts(artifacts, `run_${Date.now().toString(36)}`)
+    // One id for the whole run, so the source and the files it produced land
+    // in the same directory and can be read back together.
+    const runId = `run_${Date.now().toString(36)}`
+    const kept = persistKey ? artifacts : await preserveArtifacts(artifacts, runId)
+
+    // Unconditional, and deliberately not gated on there being artifacts: a
+    // script that only prints still wrote a program worth keeping, and that is
+    // most of them. This is the case the old preserve step skipped entirely —
+    // with no artifacts it returned early and never made a directory.
+    const sourcePath = await preserveSource(agentPath, agentBasename, runId)
+    await pruneRuns()
 
     return {
       ...result,
       stderr: remap(stderr),
+      ...(sourcePath ? { sourcePath } : {}),
       ...(kept.length > 0
         ? { artifacts: kept, artifactsTruncated: truncated }
         : {}),

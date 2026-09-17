@@ -217,6 +217,8 @@ export interface RunView {
   consumed: boolean
   exitCode?: number
   artifacts?: Artifact[]
+  /** Where the program was kept; set once the run finishes. */
+  sourcePath?: string
   error?: string
 }
 
@@ -257,6 +259,7 @@ export function viewRun(record: RunRecord, consume = true): RunView {
     consumed: consume,
     exitCode: record.result?.exitCode,
     artifacts: record.result?.artifacts,
+    sourcePath: record.result?.sourcePath,
     error: record.error,
   }
 }

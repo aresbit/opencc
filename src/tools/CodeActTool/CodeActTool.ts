@@ -100,6 +100,10 @@ const outputSchema = lazySchema(() =>
       )
       .optional(),
     artifactsTruncated: z.boolean().optional(),
+    sourcePath: z
+      .string()
+      .optional()
+      .describe('Where this run\'s program was kept, so it can be re-read or re-run.'),
     runId: z.string().optional(),
     runStatus: z.string().optional(),
   }),
@@ -173,6 +177,7 @@ export const CodeActTool = buildTool({
           runId,
           runStatus: view.status,
           ...(view.artifacts?.length ? { artifacts: view.artifacts } : {}),
+          ...(view.sourcePath ? { sourcePath: view.sourcePath } : {}),
         },
       }
     }
@@ -219,6 +224,7 @@ export const CodeActTool = buildTool({
               artifactsTruncated: result.artifactsTruncated ?? false,
             }
           : {}),
+        ...(result.sourcePath ? { sourcePath: result.sourcePath } : {}),
       },
     }
   },
@@ -231,6 +237,7 @@ export const CodeActTool = buildTool({
       exitCode: number
       artifacts?: Artifact[]
       artifactsTruncated?: boolean
+      sourcePath?: string
       runId?: string
       runStatus?: string
     }
@@ -263,6 +270,12 @@ export const CodeActTool = buildTool({
     }
     if (out.artifacts?.length) {
       parts.push(renderArtifacts(out.artifacts, out.artifactsTruncated ?? false))
+    }
+    // Say where the program was kept. A saved file nobody is told about is
+    // indistinguishable from no save at all — which is how this went unnoticed
+    // for as long as it did.
+    if (out.sourcePath) {
+      parts.push(`Source kept at ${out.sourcePath}`)
     }
     return {
       tool_use_id: toolUseID,

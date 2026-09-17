@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync, existsSync } from 'fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, utimesSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   collectArtifacts,
   formatBytes,
+  getArtifactsDir,
   preserveArtifacts,
+  preserveSource,
+  pruneRuns,
   renderArtifacts,
 } from '../codeActArtifacts.js'
 
@@ -125,6 +128,72 @@ describe('preserveArtifacts', () => {
 
   test('preserving nothing is not an error', async () => {
     expect(await preserveArtifacts([], 'test_run_2')).toEqual([])
+  })
+})
+
+describe('preserveSource', () => {
+  /**
+   * The program the model wrote was the one artifact never kept. It is
+   * excluded from the artifact walk as a runtime-managed file — right for a
+   * listing of what the SCRIPT produced — and then deleted with the sandbox.
+   * A run that only printed left nothing behind at all, because the preserve
+   * step returned early when there were no files and never made a directory.
+   */
+  test('keeps the program even when the run produced no files', async () => {
+    const source = write('agent.js', "console.log('hello')")
+    const kept = await preserveSource(source, 'agent.js', 'test_src_1')
+
+    expect(kept).not.toBeNull()
+    expect(existsSync(kept!)).toBe(true)
+    expect(readFileSync(kept!, 'utf8')).toBe("console.log('hello')")
+
+    rmSync(join(kept!, '..', '..'), { recursive: true, force: true })
+  })
+
+  test('copies rather than moves, so a persistent sandbox keeps working', async () => {
+    const source = write('agent.py', 'print(1)')
+    const kept = await preserveSource(source, 'agent.py', 'test_src_2')
+
+    // The original has to survive: a persistent sandbox reuses it next call.
+    expect(existsSync(source)).toBe(true)
+    expect(existsSync(kept!)).toBe(true)
+
+    rmSync(join(kept!, '..', '..'), { recursive: true, force: true })
+  })
+
+  test('an unreadable source does not fail the run', async () => {
+    expect(await preserveSource(join(sandbox, 'nope.js'), 'nope.js', 'x')).toBeNull()
+  })
+})
+
+describe('pruneRuns', () => {
+  /**
+   * Every call now leaves a directory where before only a call that wrote
+   * files did, so an unbounded store would trade "your code is gone" for
+   * "your disk is full".
+   */
+  test('keeps the newest runs and drops the rest', async () => {
+    const source = write('agent.js', 'x')
+    const ids = ['prune_a', 'prune_b', 'prune_c', 'prune_d']
+    for (const id of ids) await preserveSource(source, 'agent.js', id)
+
+    const root = join(getArtifactsDir())
+    const mine = () => readdirSync(root).filter(n => n.startsWith('prune_'))
+    expect(mine().length).toBe(4)
+
+    // Prune to a bound that leaves room only for entries after ours, so the
+    // assertion does not depend on how many unrelated runs exist on this box.
+    const total = readdirSync(root).length
+    await pruneRuns(total - 2)
+
+    const left = mine()
+    expect(left.length).toBeLessThan(4)
+    // Ordered by name, which is chronological: run ids are base36 timestamps.
+    expect(left).toContain('prune_d')
+
+    for (const id of ids) {
+      rmSync(join(root, id), { recursive: true, force: true })
+    }
   })
 })
 
