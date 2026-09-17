@@ -21,7 +21,7 @@
  * skill is hot-loaded so it is usable in the same session that wrote it.
  */
 
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'fs/promises'
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 import { getClaudeConfigHomeDir } from './envUtils.js'
@@ -38,6 +38,28 @@ export function getSkillStoreDir(): string {
 
 /** Inline the source into SKILL.md below this size; above it, point at the file. */
 const INLINE_SOURCE_LIMIT = 8_000
+
+/**
+ * How a later program in each language reaches a promoted script.
+ *
+ * Every one of these was verified by promoting a library and then having a
+ * separate run import it: all four work, and no two look alike. Rust needs a
+ * `#[path]` attribute because rustc compiles a single file; Python needs the
+ * directory on sys.path because `actions/` is not a package; C includes the
+ * source outright. A model will not guess `#[path]`, so a SKILL.md that says
+ * only "import it" is a SKILL.md nobody can act on.
+ */
+const REUSE_SNIPPET: Record<string, (dir: string, file: string) => string> = {
+  typescript: (dir, file) => `import { something } from './${dir}/${file}'`,
+  python: (dir, file) =>
+    `import sys\nsys.path.insert(0, '${dir}')\nfrom ${file.replace(/\.py$/, '')} import something`,
+  rust: (dir, file) => `#[path = "${dir}/${file}"]\nmod promoted;\n// then: promoted::something()`,
+  c: (dir, file) => `#include "${dir}/${file}"`,
+  cpp: (dir, file) => `#include "${dir}/${file}"`,
+  bash: (dir, file) => `source "${dir}/${file}"`,
+  ocaml: (dir, file) => `(* pass ${dir}/${file} to the compiler, or inline what you need *)`,
+  scheme: (dir, file) => `(load "${dir}/${file}")`,
+}
 
 export interface PromoteOptions {
   /** Slug for the action and the skill. */
@@ -94,6 +116,11 @@ function buildSkillMarkdown(opts: {
     ? `## Source\n\n\`\`\`${language}\n${opts.source}\n\`\`\`\n`
     : `## Source\n\nToo long to inline. Read it at \`${join(getActionsDir(), name, scriptRelPath)}\`, or from inside a run at \`actions/${name}/${scriptRelPath}\`.\n`
 
+  const snippet = (REUSE_SNIPPET[language] ?? REUSE_SNIPPET.typescript!)(
+    `actions/${name}`,
+    scriptRelPath,
+  )
+
   return `---
 name: ${name}
 description: ${description}
@@ -106,8 +133,11 @@ ${description}
 ## How to use it
 
 The script lives in \`~/.claude/action/${name}/\`, which every CodeAct run copies
-into its sandbox. From inside a run it is at \`actions/${name}/${scriptRelPath}\`,
-so a new program can import it rather than restating it.
+into its sandbox. From inside a new ${language} program, reach it like this:
+
+\`\`\`${language}
+${snippet}
+\`\`\`
 ${sandboxNote}
 To run it unchanged, read that file and pass its contents as \`code\` with
 \`language: "${language}"\`.
@@ -132,6 +162,11 @@ export async function promoteRun(
   const scriptRelPath = basename(options.sourcePath)
 
   const actionDir = join(getActionsDir(), name)
+  // Clear first. Overwriting by copyFile only replaces a file of the SAME name,
+  // so promoting `csv-summary` in Python and then in Rust left agent.py sitting
+  // there as an orphan: nothing referenced it, the SKILL.md described the Rust
+  // one, and nothing would ever clean it up. Re-promoting means replacing.
+  await rm(actionDir, { recursive: true, force: true })
   await mkdir(actionDir, { recursive: true })
   await copyFile(options.sourcePath, join(actionDir, scriptRelPath))
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -174,5 +174,55 @@ describe('promoteRun', () => {
     const mine = listed.find(entry => entry.name === name)
     expect(mine).toBeDefined()
     expect(mine!.description).toBe('Findable.')
+  })
+
+  test('re-promoting in another language replaces rather than accumulates', async () => {
+    const name = uniqueName('langswap')
+
+    await promoteRun({
+      name,
+      description: 'Python version.',
+      sourcePath: sourceFile('def twice(n): return n * 2\n', 'agent.py'),
+      language: 'python',
+    })
+    await promoteRun({
+      name,
+      description: 'Rust version.',
+      sourcePath: sourceFile('pub fn twice(n: i32) -> i32 { n * 2 }\n', 'agent.rs'),
+      language: 'rust',
+    })
+
+    // A different language means a different basename, so a plain copy left
+    // the old file behind: nothing referenced it, the SKILL.md described the
+    // new one, and nothing would ever clean it up.
+    const files = readdirSync(join(getActionsDir(), name))
+    expect(files).toEqual(['agent.rs'])
+  })
+
+  test('the SKILL.md shows how to reach it in that language', async () => {
+    const rust = uniqueName('rustsnip')
+    const rustResult = await promoteRun({
+      name: rust,
+      description: 'Rust.',
+      sourcePath: sourceFile('pub fn f() {}\n', 'agent.rs'),
+      language: 'rust',
+    })
+    // rustc compiles a single file, so reuse needs a #[path] attribute. No
+    // model guesses that from "import it"; verified working before shipping.
+    expect(readFileSync(join(rustResult.skillPath, 'SKILL.md'), 'utf8')).toContain(
+      `#[path = "actions/${rust}/agent.rs"]`,
+    )
+
+    const py = uniqueName('pysnip')
+    const pyResult = await promoteRun({
+      name: py,
+      description: 'Python.',
+      sourcePath: sourceFile('def f(): pass\n', 'agent.py'),
+      language: 'python',
+    })
+    // actions/ is not a package, so the directory has to go on sys.path.
+    expect(readFileSync(join(pyResult.skillPath, 'SKILL.md'), 'utf8')).toContain(
+      `sys.path.insert(0, 'actions/${py}')`,
+    )
   })
 })
