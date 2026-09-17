@@ -25,6 +25,8 @@ import {
 } from '../../utils/codeActRuns.js'
 
 import { CODE_ACT_TOOL_NAME } from './toolName.js'
+import { getSkillStoreDir, promoteRun } from '../../utils/codeActPromote.js'
+import { addSkillDirectories } from '../../skills/loadSkillsDir.js'
 export { CODE_ACT_TOOL_NAME }
 
 const inputSchema = lazySchema(() =>
@@ -72,6 +74,28 @@ const inputSchema = lazySchema(() =>
     stop_run_id: z.string().optional().describe(
       'Stop a background run. Ignores `code`.',
     ),
+    promote: z
+      .object({
+        name: z
+          .string()
+          .min(1)
+          .describe('Slug for the skill, e.g. "csv-summary". Lowercased and hyphenated.'),
+        description: z
+          .string()
+          .min(1)
+          .describe('One line saying what it does. Shown in the skill listing; keep under ~250 chars.'),
+        source_path: z
+          .string()
+          .optional()
+          .describe('Which run to promote. Defaults to the last successful run in this session.'),
+      })
+      .optional()
+      .describe(
+        'Keep a script that worked. Writes it to ~/.claude/action/<name>/ — copied into every future ' +
+        'CodeAct sandbox as actions/<name>/ — and registers a SKILL.md so it is invocable by name, ' +
+        'hot-loaded into this session. Pass alongside persistKey to pin the sandbox its dependencies live in. ' +
+        'Ignores `code`.',
+      ),
     persistKey: z.string().optional().describe(
       'When provided, the sandbox is kept at ~/.claude/codeact/sandbox/persist_<key> ' +
       'for reuse across CodeAct calls. Use it to build a program up over several ' +
@@ -108,6 +132,16 @@ const outputSchema = lazySchema(() =>
     runStatus: z.string().optional(),
   }),
 )
+
+/**
+ * The last run that succeeded, so `promote` has a default.
+ *
+ * Promotion is decided after a run is seen to work, which is a turn later than
+ * the run itself. Making the model carry the source path across that gap is
+ * exactly the kind of bookkeeping that leaves a feature unused, so the tool
+ * remembers instead.
+ */
+let lastSuccessfulRun: { sourcePath: string; language: string } | null = null
 
 export const CodeActTool = buildTool({
   name: CODE_ACT_TOOL_NAME,
@@ -150,9 +184,72 @@ export const CodeActTool = buildTool({
       run_in_background,
       poll_run_id,
       stop_run_id,
+      promote,
     },
     context,
   ) {
+    if (promote) {
+      // The source to keep: whichever run is named, or the last one that
+      // worked. Defaulting matters — promotion is something the model decides
+      // to do *after* seeing a run succeed, and requiring it to have kept the
+      // path around from a previous turn is the kind of bookkeeping that makes
+      // a feature go unused.
+      const sourcePath = promote.source_path ?? lastSuccessfulRun?.sourcePath
+      if (!sourcePath) {
+        return {
+          data: {
+            success: false,
+            stdout: '',
+            stderr:
+              'Nothing to promote: no successful run in this session, and no source_path given. ' +
+              'Run the script first, then promote it.',
+            exitCode: 1,
+          },
+        }
+      }
+
+      try {
+        const result = await promoteRun({
+          name: promote.name,
+          description: promote.description,
+          sourcePath,
+          language: promote.source_path
+            ? language
+            : (lastSuccessfulRun?.language ?? language),
+          persistKey,
+        })
+        // Hot-load so it is usable in the session that just wrote it, rather
+        // than only after a restart.
+        await addSkillDirectories([getSkillStoreDir()])
+
+        return {
+          data: {
+            success: true,
+            stdout: [
+              `Promoted "${result.name}".`,
+              `  script: ${result.actionPath}`,
+              `  skill:  ${result.skillPath}/SKILL.md`,
+              '',
+              `Future CodeAct runs can import it from actions/${result.name}/.`,
+              `It is also invocable now as the "${result.skillName}" skill.`,
+            ].join('\n'),
+            stderr: '',
+            exitCode: 0,
+            sourcePath: result.actionPath,
+          },
+        }
+      } catch (error) {
+        return {
+          data: {
+            success: false,
+            stdout: '',
+            stderr: `Promotion failed: ${error instanceof Error ? error.message : String(error)}`,
+            exitCode: 1,
+          },
+        }
+      }
+    }
+
     if (poll_run_id || stop_run_id) {
       const runId = (poll_run_id ?? stop_run_id)!
       const record = getRun(runId)
@@ -211,6 +308,10 @@ export const CodeActTool = buildTool({
       cwd,
       persistKey,
     })
+
+    if (result.success && result.sourcePath) {
+      lastSuccessfulRun = { sourcePath: result.sourcePath, language }
+    }
 
     return {
       data: {
@@ -275,7 +376,12 @@ export const CodeActTool = buildTool({
     // indistinguishable from no save at all — which is how this went unnoticed
     // for as long as it did.
     if (out.sourcePath) {
-      parts.push(`Source kept at ${out.sourcePath}`)
+      parts.push(
+        `Source kept at ${out.sourcePath}\n` +
+          'If this is worth running again, promote it: CodeAct with ' +
+          'promote: { name, description }. It lands in actions/<name>/ for every ' +
+          'future run and registers as a skill you can invoke by name.',
+      )
     }
     return {
       tool_use_id: toolUseID,

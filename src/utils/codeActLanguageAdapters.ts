@@ -60,6 +60,7 @@ export interface CodeActLanguageAdapter {
 const TYPESCRIPT_HINT = `// ── Agent CodeAct sandbox (TypeScript) ──
 // import filesystem helpers from './builtins/fs.js' and shell helpers from './builtins/shell.js'.
 // import Result/Option, lazy iterables, pipe/trampoline/bracket from './builtins/functional.js'.
+// './actions/<name>/' holds scripts promoted from earlier runs — import instead of rewriting.
 // Prefer discriminated unions and exhaustive never checks for explicit control states.
 // Treat stdout as the result channel; keep intermediate values inside this process.
 
@@ -68,6 +69,7 @@ const TYPESCRIPT_HINT = `// ── Agent CodeAct sandbox (TypeScript) ──
 const PYTHON_HINT = `# ── Agent CodeAct sandbox (Python) ──
 # Import helpers from builtins_py.fs, builtins_py.shell, builtins_py.fetch, and builtins_py.path.
 # Import Ok/Err, generators, pipe/trampoline/bracket from builtins_py.functional.
+# actions/<name>/ holds scripts promoted from earlier runs — import instead of rewriting.
 # Prefer iterators/generators, dataclass unions, match/case, and context managers.
 # Treat stdout as the result channel; call print() for the final value.
 
