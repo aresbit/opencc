@@ -7,10 +7,10 @@
 // attaches to tabs. Chrome 144+ asks for approval once per WebSocket, so using
 // one shared connection prevents every command/tab from opening another modal.
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { resolve } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import net from 'net';
 
 const TIMEOUT = 15000;
@@ -20,12 +20,57 @@ const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
 const MIN_TARGET_PREFIX_LEN = 8;
 const SOCK_PREFIX = '/tmp/cdp-';
+
+// ── Artefact store ──────────────────────────────────────────────────
+//
+// `shot` writes /tmp/screenshot.png by default, which is fine for one manual
+// call and useless the moment anything captures twice: the second overwrites
+// the first. Automatic capture needs a name per shot and a bound on the pile.
+const ARTEFACT_ROOT = resolve(homedir(), '.claude', 'cdp');
+const SHOTS_DIR = resolve(ARTEFACT_ROOT, 'shots');
+const RECORDINGS_DIR = resolve(ARTEFACT_ROOT, 'recordings');
+const MAX_SHOTS = 400;
+const MAX_RECORDINGS = 20;
+
+/** Automatic before/after capture. On by default; `shots off` disables it. */
+let autoShots = process.env.CDP_AUTO_SHOTS !== '0';
+
+let shotSeq = 0;
+function nextShotPath(label) {
+  mkdirSync(SHOTS_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  shotSeq++;
+  return resolve(SHOTS_DIR, `${stamp}-${String(shotSeq).padStart(3, '0')}-${label}.png`);
+}
+
+/** Keep the newest entries in a directory and delete the rest. */
+function pruneDir(dir, keep) {
+  try {
+    const entries = readdirSync(dir).sort();
+    for (const name of entries.slice(0, Math.max(0, entries.length - keep))) {
+      rmSync(resolve(dir, name), { recursive: true, force: true });
+    }
+  } catch { /* nothing there yet */ }
+}
 const BROWSER_SOCK = '/tmp/cdp-browser.sock';
 const PAGES_CACHE = '/tmp/cdp-pages.json';
 
 function sockPath(targetId) { return `${SOCK_PREFIX}${targetId}.sock`; }
 
-function getWsUrl() {
+// Endpoint override, for pointing at a Chrome that is not the desktop one:
+// CDP_PORT=9333, or a full CDP_WS_URL. Without it these features could only
+// ever be exercised by hand against a real desktop browser, which is how a
+// screenshot path or a frame writer stays broken without anyone noticing.
+async function getWsUrl() {
+  if (process.env.CDP_WS_URL) return process.env.CDP_WS_URL;
+  if (process.env.CDP_PORT) {
+    // The browser endpoint carries a per-launch UUID, so it has to be read
+    // from the instance rather than constructed from the port.
+    const res = await fetch(`http://127.0.0.1:${process.env.CDP_PORT}/json/version`);
+    const { webSocketDebuggerUrl } = await res.json();
+    if (!webSocketDebuggerUrl) throw new Error(`No webSocketDebuggerUrl on port ${process.env.CDP_PORT}`);
+    return webSocketDebuggerUrl;
+  }
   const candidates = [
     resolve(homedir(), 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
     resolve(homedir(), '.config/google-chrome/DevToolsActivePort'),
@@ -293,6 +338,280 @@ async function shotStr(cdp, sid, filePath) {
   return lines.join('\n');
 }
 
+/**
+ * Capture straight to a file, without shotStr's coordinate-mapping preamble.
+ *
+ * That preamble exists to teach a reader how to turn screenshot pixels into
+ * click coordinates, which is worth saying once when someone asks for a
+ * screenshot and is noise when two are attached to every action.
+ */
+async function captureTo(cdp, sid, label) {
+  try {
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sid);
+    const out = nextShotPath(label);
+    writeFileSync(out, Buffer.from(data, 'base64'));
+    pruneDir(SHOTS_DIR, MAX_SHOTS);
+    return out;
+  } catch (e) {
+    // A screenshot failing must not fail the action it was documenting.
+    return `(capture failed: ${e.message})`;
+  }
+}
+
+/**
+ * Run an action with a screenshot on either side of it.
+ *
+ * This is the jev-browser idea: an action's result text says what the page
+ * reported, and the pair of images says what actually changed — which is the
+ * part a model cannot get from a selector's return value. Failures still get
+ * their `after` shot, because a click that went somewhere unintended is
+ * exactly when seeing the page matters most.
+ */
+async function withShots(cdp, sid, label, run) {
+  if (!autoShots) return run();
+  const before = await captureTo(cdp, sid, `${label}-before`);
+  let result, failure;
+  try {
+    result = await run();
+  } catch (e) {
+    failure = e;
+  }
+  const after = await captureTo(cdp, sid, `${label}-after`);
+  const shots = `\n\nScreenshots:\n  before: ${before}\n  after:  ${after}`;
+  if (failure) {
+    failure.message += shots;
+    throw failure;
+  }
+  return `${result ?? ''}${shots}`;
+}
+
+// ── Screencast recording ────────────────────────────────────────────
+//
+// Page.screencastFrame is a stream, not a request/response, so recording only
+// works because the daemon outlives the command: `rec` registers a handler and
+// returns, frames accumulate in the background, and `rec-stop` collects them.
+//
+// Chrome emits a frame when the page CHANGES rather than on a clock, so a
+// recording of a mostly-static page is a handful of frames, not thousands.
+// That makes the frames cheap to keep — and it also means frame index is not
+// time, which is why each one is stamped and the composition step uses those
+// stamps rather than assuming a frame rate.
+const recordings = new Map();
+
+function ffmpegPath() {
+  for (const candidate of [
+    process.env.CDP_FFMPEG,
+    ...(() => {
+      try {
+        const root = resolve(homedir(), '.cache', 'ms-playwright');
+        return readdirSync(root)
+          .filter(n => n.startsWith('ffmpeg'))
+          .map(n => resolve(root, n, 'ffmpeg-linux'));
+      } catch { return []; }
+    })(),
+    '/opt/pw-browsers/ffmpeg-1011/ffmpeg-linux',
+    '/usr/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    '/opt/homebrew/bin/ffmpeg',
+  ]) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * What this particular ffmpeg can actually do.
+ *
+ * The ffmpeg most likely to be on the machine is Playwright's, and that build
+ * is cut down to what Playwright itself needs: no image2 demuxer, no `-`
+ * protocol, mjpeg in and VP8 out and nothing else. A recipe written for a full
+ * ffmpeg fails on it at the last step, after the recording is already over —
+ * which is the worst possible moment to find out. So ask the binary first and
+ * write the command it can run.
+ */
+const ffmpegCapsCache = new Map();
+function ffmpegCaps(bin) {
+  const cached = ffmpegCapsCache.get(bin);
+  if (cached) return cached;
+  const read = (flag) => {
+    const proc = spawnSync(bin, ['-hide_banner', flag], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    const names = new Set();
+    for (const line of (proc.stdout || '').split('\n')) {
+      // Rows are "<flags> <name> <description>"; the name is the second field.
+      const match = line.match(/^\s*[A-Za-z.]+\s+(\S+)\s/);
+      if (match) names.add(match[1]);
+    }
+    return names;
+  };
+  const caps = {
+    dec: read('-decoders'),
+    enc: read('-encoders'),
+    mux: read('-muxers'),
+  };
+  ffmpegCapsCache.set(bin, caps);
+  return caps;
+}
+
+/**
+ * Pick a container and codec this binary supports, preferring the one most
+ * things can play. Input always goes in over a pipe: image2pipe is the one
+ * demuxer present in both the cut-down and the full builds.
+ */
+function composePlan(bin, decoder) {
+  const caps = ffmpegCaps(bin);
+  if (!caps.dec.has(decoder)) return null;
+  for (const [codec, ext, mux] of [
+    ['libx264', 'mp4', 'mp4'],
+    ['libvpx-vp9', 'webm', 'webm'],
+    ['libvpx', 'webm', 'webm'],
+  ]) {
+    if (caps.enc.has(codec) && caps.mux.has(mux)) return { codec, ext, decoder };
+  }
+  return null;
+}
+
+function composeVideo(bin, plan, frames, fps, out) {
+  return new Promise(res => {
+    const proc = spawn(bin, [
+      '-y',
+      '-f', 'image2pipe', '-c:v', plan.decoder,
+      '-framerate', String(fps),
+      '-i', 'pipe:',
+      // Odd pixel dimensions are common for a browser viewport and yuv420p
+      // requires even ones, so pad rather than fail at the last step.
+      '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+      '-c:v', plan.codec, '-pix_fmt', 'yuv420p', out,
+    ], { stdio: ['pipe', 'ignore', 'pipe'] });
+
+    let err = '';
+    let settled = false;
+    const done = result => { if (!settled) { settled = true; res(result); } };
+    proc.stderr.on('data', d => { err += d.toString(); });
+    proc.on('close', code => done({ code, err }));
+    proc.on('error', e => done({ code: -1, err: e.message }));
+    // A closed stdin after ffmpeg has already failed would otherwise throw
+    // EPIPE out of the write loop instead of reporting ffmpeg's own error.
+    proc.stdin.on('error', () => {});
+
+    // Frames go in in capture order, which is the only order that is time.
+    (async () => {
+      for (const frame of frames) {
+        if (settled) return;
+        const chunk = readFileSync(frame.file);
+        if (!proc.stdin.write(chunk)) {
+          await new Promise(resolve => proc.stdin.once('drain', resolve));
+        }
+      }
+      proc.stdin.end();
+    })().catch(e => done({ code: -1, err: e.message }));
+  });
+}
+
+async function recStartStr(cdp, sid, format) {
+  if (recordings.has(sid)) throw new Error('Already recording this target. Use rec-stop first.');
+
+  const runId = new Date().toISOString().replace(/[:.]/g, '-');
+  const dir = resolve(RECORDINGS_DIR, runId);
+  mkdirSync(dir, { recursive: true });
+
+  const png = format === 'png';
+  const state = {
+    dir,
+    runId,
+    frames: [],
+    startedAt: Date.now(),
+    ext: png ? 'png' : 'jpg',
+    decoder: png ? 'png' : 'mjpeg',
+  };
+  state.off = cdp.onEvent('Page.screencastFrame', (params, msg) => {
+    // Only this target's frames: one daemon, potentially several pages.
+    if (msg.sessionId && msg.sessionId !== sid) return;
+    const index = state.frames.length;
+    const file = resolve(dir, `frame-${String(index).padStart(5, '0')}.${state.ext}`);
+    try {
+      writeFileSync(file, Buffer.from(params.data, 'base64'));
+      state.frames.push({ file, at: Date.now() - state.startedAt });
+    } catch { /* a dropped frame is not worth failing the recording */ }
+    // Chrome throttles the stream until each frame is acknowledged.
+    cdp.send('Page.screencastFrameAck', { sessionId: params.sessionId }, sid).catch(() => {});
+  });
+
+  await cdp.send('Page.enable', {}, sid);
+  await cdp.send('Page.startScreencast', {
+    format: format === 'png' ? 'png' : 'jpeg',
+    quality: 80,
+    everyNthFrame: 1,
+  }, sid);
+
+  recordings.set(sid, state);
+
+  // Say now, not after the recording is over, if this machine's ffmpeg cannot
+  // turn these frames into a video — png is the usual reason, since the ffmpeg
+  // Playwright ships decodes mjpeg and nothing else.
+  const ffmpeg = ffmpegPath();
+  const note =
+    ffmpeg && !composePlan(ffmpeg, state.decoder)
+      ? `\nNote: ${ffmpeg} cannot encode ${state.decoder} frames, so rec-stop will keep them as stills.`
+      : '';
+  return `Recording to ${dir}\nRun browser actions now, then: rec-stop <target>${note}`;
+}
+
+async function recStopStr(cdp, sid) {
+  const state = recordings.get(sid);
+  if (!state) throw new Error('Not recording this target.');
+  recordings.delete(sid);
+
+  await cdp.send('Page.stopScreencast', {}, sid).catch(() => {});
+  state.off?.();
+  // Frames in flight when stop was called still arrive.
+  await sleep(250);
+
+  const { dir, frames } = state;
+  if (frames.length === 0) {
+    return `Recording stopped: no frames. Chrome emits a frame only when the page changes, so a page that never repainted produces none.`;
+  }
+
+  const elapsed = (frames[frames.length - 1].at - frames[0].at) || 1;
+  const fps = Math.max(1, Math.min(30, Math.round((frames.length / elapsed) * 1000)));
+
+  const lines = [`Recording stopped: ${frames.length} frame(s) over ${(elapsed / 1000).toFixed(1)}s in ${dir}`];
+
+  const ffmpeg = ffmpegPath();
+  if (!ffmpeg) {
+    // A user machine may well have no ffmpeg, and losing the recording over
+    // that would be worse than handing back the frames and the command.
+    lines.push(`No ffmpeg found, so the frames were not composed.`);
+    lines.push(`To build a video yourself:`);
+    lines.push(`  ffmpeg -framerate ${fps} -pattern_type glob -i '${dir}/frame-*.${state.ext}' -pix_fmt yuv420p ${dir}/recording.mp4`);
+    lines.push(`Set CDP_FFMPEG=/path/to/ffmpeg to have this done automatically.`);
+    pruneDir(RECORDINGS_DIR, MAX_RECORDINGS);
+    return lines.join('\n');
+  }
+
+  const plan = composePlan(ffmpeg, state.decoder);
+  if (!plan) {
+    lines.push(`The ffmpeg at ${ffmpeg} cannot encode these frames (no usable`);
+    lines.push(`decoder/encoder pair), so they were left as stills.`);
+    lines.push(`Set CDP_FFMPEG=/path/to/a/fuller/ffmpeg to have this composed.`);
+    pruneDir(RECORDINGS_DIR, MAX_RECORDINGS);
+    return lines.join('\n');
+  }
+
+  const out = resolve(dir, `recording.${plan.ext}`);
+  const composed = await composeVideo(ffmpeg, plan, frames, fps, out);
+
+  if (composed.code === 0 && existsSync(out)) {
+    lines.push(`Video: ${out}`);
+  } else {
+    lines.push(`Frames kept; ffmpeg failed (exit ${composed.code}): ${composed.err.trim().split('\n').slice(-2).join(' ')}`);
+  }
+  pruneDir(RECORDINGS_DIR, MAX_RECORDINGS);
+  return lines.join('\n');
+}
+
 async function htmlStr(cdp, sid, selector) {
   const expr = selector
     ? `document.querySelector(${JSON.stringify(selector)})?.outerHTML || 'Element not found'`
@@ -437,7 +756,7 @@ async function runDaemon(targetId) {
 
   const cdp = new CDP();
   try {
-    await cdp.connect(getWsUrl());
+    await cdp.connect(await getWsUrl());
   } catch (e) {
     process.stderr.write(`Daemon: cannot connect to Chrome: ${e.message}\n`);
     process.exit(1);
@@ -502,13 +821,21 @@ async function runDaemon(targetId) {
         case 'eval': result = await evalStr(cdp, sessionId, args[0]); break;
         case 'shot': case 'screenshot': result = await shotStr(cdp, sessionId, args[0]); break;
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
-        case 'nav': case 'navigate': result = await navStr(cdp, sessionId, args[0]); break;
+        case 'nav': case 'navigate': result = await withShots(cdp, sessionId, 'nav', () => navStr(cdp, sessionId, args[0])); break;
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
-        case 'click': result = await clickStr(cdp, sessionId, args[0]); break;
-        case 'clickxy': result = await clickXyStr(cdp, sessionId, args[0], args[1]); break;
-        case 'type': result = await typeStr(cdp, sessionId, args[0]); break;
+        case 'click': result = await withShots(cdp, sessionId, 'click', () => clickStr(cdp, sessionId, args[0])); break;
+        case 'clickxy': result = await withShots(cdp, sessionId, 'clickxy', () => clickXyStr(cdp, sessionId, args[0], args[1])); break;
+        case 'type': result = await withShots(cdp, sessionId, 'type', () => typeStr(cdp, sessionId, args[0])); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
+        case 'shots': {
+          if (args[0] === 'on') autoShots = true;
+          else if (args[0] === 'off') autoShots = false;
+          result = `Automatic before/after screenshots: ${autoShots ? 'on' : 'off'} (stored under ${SHOTS_DIR})`;
+          break;
+        }
+        case 'rec': result = await recStartStr(cdp, sessionId, args[0]); break;
+        case 'recstop': case 'rec-stop': result = await recStopStr(cdp, sessionId); break;
         case 'stop': return { ok: true, result: '', stopAfter: true };
         default: return { ok: false, error: `Unknown command: ${cmd}` };
       }
@@ -752,6 +1079,15 @@ async function runBrowserDaemon() {
           result: cmd === 'list_raw' ? JSON.stringify(pages) : formatPageList(pages),
         };
       }
+      // Target-less: the toggle is daemon-wide state, not a page's.
+      if (cmd === 'shots') {
+        if (args[0] === 'on') autoShots = true;
+        else if (args[0] === 'off') autoShots = false;
+        return {
+          ok: true,
+          result: `Automatic before/after screenshots: ${autoShots ? 'on' : 'off'} (stored under ${SHOTS_DIR})`,
+        };
+      }
       if (!targetId) return { ok: false, error: `Target ID required for ${cmd}` };
 
       const sessionId = await getSessionId(targetId);
@@ -761,13 +1097,15 @@ async function runBrowserDaemon() {
         case 'eval': result = await evalStr(cdp, sessionId, args[0]); break;
         case 'shot': case 'screenshot': result = await shotStr(cdp, sessionId, args[0]); break;
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
-        case 'nav': case 'navigate': result = await navStr(cdp, sessionId, args[0]); break;
+        case 'nav': case 'navigate': result = await withShots(cdp, sessionId, 'nav', () => navStr(cdp, sessionId, args[0])); break;
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
-        case 'click': result = await clickStr(cdp, sessionId, args[0]); break;
-        case 'clickxy': result = await clickXyStr(cdp, sessionId, args[0], args[1]); break;
-        case 'type': result = await typeStr(cdp, sessionId, args[0]); break;
+        case 'click': result = await withShots(cdp, sessionId, 'click', () => clickStr(cdp, sessionId, args[0])); break;
+        case 'clickxy': result = await withShots(cdp, sessionId, 'clickxy', () => clickXyStr(cdp, sessionId, args[0], args[1])); break;
+        case 'type': result = await withShots(cdp, sessionId, 'type', () => typeStr(cdp, sessionId, args[0])); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
+        case 'rec': result = await recStartStr(cdp, sessionId, args[0]); break;
+        case 'recstop': case 'rec-stop': result = await recStopStr(cdp, sessionId); break;
         default: return { ok: false, error: `Unknown command: ${cmd}` };
       }
       return { ok: true, result: result ?? '' };
@@ -823,7 +1161,7 @@ async function runBrowserDaemon() {
       }
     });
     cdp.onClose(shutdown);
-    await cdp.connect(getWsUrl());
+    await cdp.connect(await getWsUrl());
   } catch (error) {
     startupError = error;
   } finally {
@@ -881,7 +1219,25 @@ Usage: cdp <command> [args]
                                     Optional interval in ms between clicks (default 1500)
   evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
                                     e.g. evalraw <t> "DOM.getDocument" '{}'
+  rec      <target> [png|jpeg]      Start recording the page (screencast)
+  rec-stop <target>                 Stop recording; composes an mp4 if ffmpeg is present
+  shots    [on|off]                 Automatic before/after screenshots (default on)
   stop                              Stop the shared browser daemon
+
+AUTOMATIC SCREENSHOTS
+  nav, click, clickxy and type capture the page before and after the action and
+  append both paths to the result, so what actually changed is visible and not
+  only what the selector returned. Files land under ~/.claude/cdp/shots and the
+  oldest are pruned. Turn it off with "shots off" or CDP_AUTO_SHOTS=0.
+
+RECORDING
+  rec registers a screencast handler on the daemon and returns immediately;
+  frames accumulate while you drive the page, and rec-stop collects them into
+  ~/.claude/cdp/recordings/<run>/. Chrome emits a frame only when the page
+  changes, so a static page produces few frames and frame index is not time —
+  the frame rate is computed from the stamps. With no ffmpeg on the machine the
+  frames are kept and the exact command to compose them is printed; set
+  CDP_FFMPEG=/path/to/ffmpeg to have it done automatically.
 
 <target> is a unique targetId prefix from "cdp list". If a prefix is ambiguous,
 use more characters.
@@ -911,14 +1267,19 @@ DAEMON IPC (for advanced use / scripting)
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
   Commands mirror the CLI: snap, eval, shot, html, nav, net, click, clickxy,
-  type, loadall, evalraw, stop. Use evalraw to send arbitrary CDP methods.
+  type, loadall, evalraw, rec, rec-stop, shots, stop. Use evalraw to send
+  arbitrary CDP methods.
   The daemon lazily attaches to tabs and exits after 7 days of inactivity.
 `;
 
 const NEEDS_TARGET = new Set([
   'snap','snapshot','eval','shot','screenshot','html','nav','navigate',
   'net','network','click','clickxy','type','loadall','evalraw',
+  'rec','recstop','rec-stop',
 ]);
+
+/** Commands the daemon answers without a page: daemon-wide state. */
+const NO_TARGET = new Set(['shots']);
 
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
@@ -950,6 +1311,14 @@ async function main() {
     } catch {}
     // Also clean up daemons left by versions before the browser-wide broker.
     await stopDaemons(args[0]);
+    return;
+  }
+
+  // Daemon-wide commands — no page to name.
+  if (NO_TARGET.has(cmd)) {
+    const response = await sendBrowserCommand({ cmd, args });
+    if (response.ok) { if (response.result) console.log(response.result); }
+    else { console.error('Error:', response.error); process.exitCode = 1; }
     return;
   }
 
