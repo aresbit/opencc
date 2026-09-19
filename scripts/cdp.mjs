@@ -19,6 +19,8 @@ const IDLE_TIMEOUT = 7 * 24 * 60 * 60 * 1000; // 7 days
 const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
 const MIN_TARGET_PREFIX_LEN = 8;
+/** How long a shutdown waits for in-flight recordings to become videos. */
+const SHUTDOWN_COMPOSE_TIMEOUT = 20000;
 const SOCK_PREFIX = '/tmp/cdp-';
 
 // ── Artefact store ──────────────────────────────────────────────────
@@ -398,6 +400,31 @@ async function withShots(cdp, sid, label, run) {
 // stamps rather than assuming a frame rate.
 const recordings = new Map();
 
+/**
+ * Record everything, for as long as the daemon lives.
+ *
+ * `rec`/`rec-stop` is a bracket you have to remember to open before the
+ * interesting thing happens, which is the one moment nobody predicts. With
+ * this on, every page the daemon attaches to starts recording at the moment it
+ * attaches, and each recording is composed when its page goes away or when the
+ * daemon stops — so the video exists whether or not anyone said `rec-stop`.
+ *
+ * Off by default: it costs a JPEG per repaint per page, and a session that
+ * nobody is going to watch is a session not worth paying for.
+ */
+let autoRec = process.env.CDP_AUTO_REC === '1';
+
+/**
+ * A session recording has no natural end, so it needs a ceiling. Chrome emits
+ * a frame only when the page changes, which keeps an ordinary session far
+ * below these — but an animation or a spinner emits continuously, and an
+ * unattended daemon left running for a week would otherwise fill the disk.
+ * On the cap the screencast is stopped rather than the frames dropped: paying
+ * for frames nobody will keep is the part worth ending.
+ */
+const MAX_RECORDING_FRAMES = 2000;
+const MAX_RECORDING_BYTES = 128 * 1024 * 1024;
+
 function ffmpegPath() {
   for (const candidate of [
     process.env.CDP_FFMPEG,
@@ -510,9 +537,7 @@ function composeVideo(bin, plan, frames, fps, out) {
   });
 }
 
-async function recStartStr(cdp, sid, format) {
-  if (recordings.has(sid)) throw new Error('Already recording this target. Use rec-stop first.');
-
+async function startRecording(cdp, sid, format, targetId) {
   const runId = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = resolve(RECORDINGS_DIR, runId);
   mkdirSync(dir, { recursive: true });
@@ -521,7 +546,9 @@ async function recStartStr(cdp, sid, format) {
   const state = {
     dir,
     runId,
+    targetId,
     frames: [],
+    bytes: 0,
     startedAt: Date.now(),
     ext: png ? 'png' : 'jpg',
     decoder: png ? 'png' : 'mjpeg',
@@ -529,24 +556,55 @@ async function recStartStr(cdp, sid, format) {
   state.off = cdp.onEvent('Page.screencastFrame', (params, msg) => {
     // Only this target's frames: one daemon, potentially several pages.
     if (msg.sessionId && msg.sessionId !== sid) return;
+    // Chrome throttles the stream until each frame is acknowledged, so ack
+    // first: a frame this recording refuses is still a frame Chrome is owed.
+    cdp.send('Page.screencastFrameAck', { sessionId: params.sessionId }, sid).catch(() => {});
+    if (state.capped) return;
     const index = state.frames.length;
     const file = resolve(dir, `frame-${String(index).padStart(5, '0')}.${state.ext}`);
     try {
-      writeFileSync(file, Buffer.from(params.data, 'base64'));
+      const buffer = Buffer.from(params.data, 'base64');
+      writeFileSync(file, buffer);
+      state.bytes += buffer.length;
       state.frames.push({ file, at: Date.now() - state.startedAt });
     } catch { /* a dropped frame is not worth failing the recording */ }
-    // Chrome throttles the stream until each frame is acknowledged.
-    cdp.send('Page.screencastFrameAck', { sessionId: params.sessionId }, sid).catch(() => {});
+    if (
+      state.frames.length >= MAX_RECORDING_FRAMES ||
+      state.bytes >= MAX_RECORDING_BYTES
+    ) {
+      state.capped = true;
+      state.off?.();
+      cdp.send('Page.stopScreencast', {}, sid).catch(() => {});
+    }
   });
 
   await cdp.send('Page.enable', {}, sid);
   await cdp.send('Page.startScreencast', {
-    format: format === 'png' ? 'png' : 'jpeg',
+    format: png ? 'png' : 'jpeg',
     quality: 80,
     everyNthFrame: 1,
   }, sid);
 
   recordings.set(sid, state);
+  return state;
+}
+
+/**
+ * Start recording a page that was just attached, when the session switch is
+ * on. Never throws and never reports: an attach happens inside somebody else's
+ * command, and failing `click` because a recording could not start would be
+ * the wrong trade entirely.
+ */
+async function autoStartRecording(cdp, sid, targetId) {
+  if (!autoRec || recordings.has(sid)) return;
+  try {
+    await startRecording(cdp, sid, 'jpeg', targetId);
+  } catch { /* the page is still usable without a recording of it */ }
+}
+
+async function recStartStr(cdp, sid, format, targetId) {
+  if (recordings.has(sid)) throw new Error('Already recording this target. Use rec-stop first.');
+  const state = await startRecording(cdp, sid, format, targetId);
 
   // Say now, not after the recording is over, if this machine's ffmpeg cannot
   // turn these frames into a video — png is the usual reason, since the ffmpeg
@@ -556,7 +614,7 @@ async function recStartStr(cdp, sid, format) {
     ffmpeg && !composePlan(ffmpeg, state.decoder)
       ? `\nNote: ${ffmpeg} cannot encode ${state.decoder} frames, so rec-stop will keep them as stills.`
       : '';
-  return `Recording to ${dir}\nRun browser actions now, then: rec-stop <target>${note}`;
+  return `Recording to ${state.dir}\nRun browser actions now, then: rec-stop <target>${note}`;
 }
 
 async function recStopStr(cdp, sid) {
@@ -578,6 +636,18 @@ async function recStopStr(cdp, sid) {
   const fps = Math.max(1, Math.min(30, Math.round((frames.length / elapsed) * 1000)));
 
   const lines = [`Recording stopped: ${frames.length} frame(s) over ${(elapsed / 1000).toFixed(1)}s in ${dir}`];
+  if (state.capped) {
+    lines.push(
+      `Capped at ${MAX_RECORDING_FRAMES} frames / ${Math.round(MAX_RECORDING_BYTES / 1024 / 1024)}MB; the page kept repainting and the recording stops here.`,
+    );
+  }
+  // Frames arrive on change, not on a clock, so a session recording plays back
+  // as a time-lapse. Saying by how much is the difference between a video that
+  // looks broken and one the viewer knows to read as compressed time.
+  const speedup = elapsed / ((frames.length / fps) * 1000);
+  if (speedup >= 1.5) {
+    lines.push(`Plays back about ${Math.round(speedup)}x faster than real time (frames come on repaint, not on a clock).`);
+  }
 
   const ffmpeg = ffmpegPath();
   if (!ffmpeg) {
@@ -610,6 +680,30 @@ async function recStopStr(cdp, sid) {
   }
   pruneDir(RECORDINGS_DIR, MAX_RECORDINGS);
   return lines.join('\n');
+}
+
+/**
+ * Finish every live recording.
+ *
+ * The bracket `rec`/`rec-stop` assumes someone closes it. A session recording
+ * is closed by something ending — the page, or the daemon — so every one of
+ * those paths goes through here, and the frames become a video without anyone
+ * having asked.
+ */
+async function stopAllRecordings(cdp, reason) {
+  const sids = [...recordings.keys()];
+  if (sids.length === 0) {
+    return reason === 'command' ? 'Nothing is being recorded.' : '';
+  }
+  const reports = [];
+  for (const sid of sids) {
+    try {
+      reports.push(await recStopStr(cdp, sid));
+    } catch (e) {
+      reports.push(`Recording for ${sid} could not be finished: ${e.message}`);
+    }
+  }
+  return reports.join('\n\n');
 }
 
 async function htmlStr(cdp, sid, selector) {
@@ -1039,12 +1133,21 @@ async function runBrowserDaemon() {
     idleTimer = setTimeout(shutdown, IDLE_TIMEOUT);
   }
 
-  function shutdown() {
+  async function shutdown() {
     if (!alive) return;
     alive = false;
     clearTimeout(idleTimer);
     server.close();
     try { unlinkSync(BROWSER_SOCK); } catch {}
+    // A session recording's end IS the daemon stopping, so compose here or the
+    // recording is a directory of loose frames nobody asked for. Bounded: a
+    // stuck ffmpeg must not keep the daemon alive holding the socket.
+    if (cdp && recordings.size > 0) {
+      await Promise.race([
+        stopAllRecordings(cdp, 'shutdown').catch(() => {}),
+        sleep(SHUTDOWN_COMPOSE_TIMEOUT),
+      ]);
+    }
     try { cdp?.close(); } catch {}
     process.exit(0);
   }
@@ -1055,8 +1158,11 @@ async function runBrowserDaemon() {
     const pending = pendingSessions.get(targetId);
     if (pending) return pending;
     const attaching = cdp.send('Target.attachToTarget', { targetId, flatten: true })
-      .then(({ sessionId }) => {
+      .then(async ({ sessionId }) => {
         sessions.set(targetId, sessionId);
+        // Start at the attach, not at the first command: the action that
+        // caused the attach is usually the one worth having on tape.
+        await autoStartRecording(cdp, sessionId, targetId);
         return sessionId;
       })
       .finally(() => pendingSessions.delete(targetId));
@@ -1066,8 +1172,20 @@ async function runBrowserDaemon() {
 
   async function handleCommand({ cmd, args = [], targetId }) {
     resetIdle();
-    // A pending Chrome approval must still be cancellable from another shell.
-    if (cmd === 'stop') return { ok: true, result: '', stopAfter: true };
+    // A pending Chrome approval must still be cancellable from another shell,
+    // so this stays ahead of `await ready` — but a live recording means Chrome
+    // is already connected, and the person stopping the daemon is exactly who
+    // wants to be told where the video went.
+    if (cmd === 'stop') {
+      if (cdp && recordings.size > 0) {
+        const report = await Promise.race([
+          stopAllRecordings(cdp, 'shutdown').catch(() => ''),
+          sleep(SHUTDOWN_COMPOSE_TIMEOUT).then(() => ''),
+        ]);
+        return { ok: true, result: report, stopAfter: true };
+      }
+      return { ok: true, result: '', stopAfter: true };
+    }
     await ready;
     if (startupError) return { ok: false, error: startupError.message };
 
@@ -1079,7 +1197,33 @@ async function runBrowserDaemon() {
           result: cmd === 'list_raw' ? JSON.stringify(pages) : formatPageList(pages),
         };
       }
-      // Target-less: the toggle is daemon-wide state, not a page's.
+      // Target-less: daemon-wide state, and the two commands whose subject is
+      // the session rather than a page.
+      if (cmd === 'rec-auto' || cmd === 'recauto') {
+        if (args[0] === 'off') {
+          autoRec = false;
+          const report = await stopAllRecordings(cdp, 'command');
+          return {
+            ok: true,
+            result: `Session recording off.${report ? `\n\n${report}` : ''}`,
+          };
+        }
+        autoRec = true;
+        // Pages already attached are part of this session too.
+        for (const [targetId, sessionId] of sessions) {
+          await autoStartRecording(cdp, sessionId, targetId);
+        }
+        return {
+          ok: true,
+          result:
+            `Session recording on: every page this daemon attaches to is recorded from the attach.\n` +
+            `Recording ${recordings.size} page(s) now. Videos are composed when a page closes, ` +
+            `on "rec-auto off", on "rec-stop", or when the daemon stops.`,
+        };
+      }
+      if ((cmd === 'recstop' || cmd === 'rec-stop') && !targetId) {
+        return { ok: true, result: await stopAllRecordings(cdp, 'command') };
+      }
       if (cmd === 'shots') {
         if (args[0] === 'on') autoShots = true;
         else if (args[0] === 'off') autoShots = false;
@@ -1104,7 +1248,7 @@ async function runBrowserDaemon() {
         case 'type': result = await withShots(cdp, sessionId, 'type', () => typeStr(cdp, sessionId, args[0])); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
-        case 'rec': result = await recStartStr(cdp, sessionId, args[0]); break;
+        case 'rec': result = await recStartStr(cdp, sessionId, args[0], targetId); break;
         case 'recstop': case 'rec-stop': result = await recStopStr(cdp, sessionId); break;
         default: return { ok: false, error: `Unknown command: ${cmd}` };
       }
@@ -1154,11 +1298,22 @@ async function runBrowserDaemon() {
 
   try {
     cdp = new CDP();
-    cdp.onEvent('Target.targetDestroyed', ({ targetId }) => sessions.delete(targetId));
+    // A closed tab ends its own recording: waiting for the daemon to stop
+    // would leave it open for days, and its frames are already complete.
+    const finishFor = sessionId => {
+      if (!recordings.has(sessionId)) return;
+      recStopStr(cdp, sessionId).catch(() => {});
+    };
+    cdp.onEvent('Target.targetDestroyed', ({ targetId }) => {
+      const sessionId = sessions.get(targetId);
+      sessions.delete(targetId);
+      if (sessionId) finishFor(sessionId);
+    });
     cdp.onEvent('Target.detachedFromTarget', ({ sessionId }) => {
       for (const [targetId, attachedSessionId] of sessions) {
         if (attachedSessionId === sessionId) sessions.delete(targetId);
       }
+      finishFor(sessionId);
     });
     cdp.onClose(shutdown);
     await cdp.connect(await getWsUrl());
@@ -1220,7 +1375,8 @@ Usage: cdp <command> [args]
   evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
                                     e.g. evalraw <t> "DOM.getDocument" '{}'
   rec      <target> [png|jpeg]      Start recording the page (screencast)
-  rec-stop <target>                 Stop recording; composes an mp4 if ffmpeg is present
+  rec-auto [on|off]                 Record every page for the rest of the session
+  rec-stop [target]                 Stop recording (one page, or all); composes a video
   shots    [on|off]                 Automatic before/after screenshots (default on)
   stop                              Stop the shared browser daemon
 
@@ -1238,6 +1394,13 @@ RECORDING
   the frame rate is computed from the stamps. With no ffmpeg on the machine the
   frames are kept and the exact command to compose them is printed; set
   CDP_FFMPEG=/path/to/ffmpeg to have it done automatically.
+
+  rec-auto on records the whole session instead of one bracket: every page the
+  daemon attaches to starts recording at the attach, and each recording is
+  composed when that page closes, on rec-auto off, on rec-stop with no target,
+  or when the daemon stops. Start the daemon with CDP_AUTO_REC=1 to have it on
+  from the first page. A recording stops at ${MAX_RECORDING_FRAMES} frames or ${Math.round(MAX_RECORDING_BYTES / 1024 / 1024)}MB,
+  whichever comes first, so a page that repaints forever cannot fill the disk.
 
 <target> is a unique targetId prefix from "cdp list". If a prefix is ambiguous,
 use more characters.
@@ -1267,8 +1430,8 @@ DAEMON IPC (for advanced use / scripting)
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
   Commands mirror the CLI: snap, eval, shot, html, nav, net, click, clickxy,
-  type, loadall, evalraw, rec, rec-stop, shots, stop. Use evalraw to send
-  arbitrary CDP methods.
+  type, loadall, evalraw, rec, rec-auto, rec-stop, shots, stop. Use evalraw to
+  send arbitrary CDP methods.
   The daemon lazily attaches to tabs and exits after 7 days of inactivity.
 `;
 
@@ -1279,7 +1442,10 @@ const NEEDS_TARGET = new Set([
 ]);
 
 /** Commands the daemon answers without a page: daemon-wide state. */
-const NO_TARGET = new Set(['shots']);
+const NO_TARGET = new Set(['shots', 'rec-auto', 'recauto']);
+
+/** rec-stop names a page, or, with none, every recording the session has. */
+const OPTIONAL_TARGET = new Set(['recstop', 'rec-stop']);
 
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
@@ -1307,7 +1473,10 @@ async function main() {
   if (cmd === 'stop') {
     try {
       const conn = await connectToSocket(BROWSER_SOCK);
-      await sendCommand(conn, { cmd: 'stop' });
+      const response = await sendCommand(conn, { cmd: 'stop' });
+      // Stopping the daemon ends any session recording, so this is where its
+      // video is reported; printing nothing would hide the file it just wrote.
+      if (response?.result) console.log(response.result);
     } catch {}
     // Also clean up daemons left by versions before the browser-wide broker.
     await stopDaemons(args[0]);
@@ -1315,7 +1484,7 @@ async function main() {
   }
 
   // Daemon-wide commands — no page to name.
-  if (NO_TARGET.has(cmd)) {
+  if (NO_TARGET.has(cmd) || (OPTIONAL_TARGET.has(cmd) && !args[0])) {
     const response = await sendBrowserCommand({ cmd, args });
     if (response.ok) { if (response.result) console.log(response.result); }
     else { console.error('Error:', response.error); process.exitCode = 1; }
