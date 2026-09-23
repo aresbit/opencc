@@ -190,7 +190,16 @@ export type OnRegistrar = {
   (event: FunctionHookEvent | string, matcher: HookMatcher, fn: HookFn): void
 }
 
-export type RegisterFn = (on: OnRegistrar, options?: Record<string, unknown>) => void
+/**
+ * `ctx` is the third argument mods receive (see mods/uiKit.ts). Built-ins are
+ * compiled in and import what they need directly, so they ignore it; a mod
+ * cannot, which is why it is passed rather than imported.
+ */
+export type RegisterFn = (
+  on: OnRegistrar,
+  options?: Record<string, unknown>,
+  ctx?: unknown,
+) => void
 
 export interface HooksModule {
   register: RegisterFn

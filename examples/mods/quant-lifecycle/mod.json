@@ -1,0 +1,7 @@
+{
+  "options": {
+    "agentType": "quant",
+    "brief": "research.md",
+    "runTools": ["quant_verify"]
+  }
+}

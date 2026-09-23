@@ -355,6 +355,65 @@ throwing, with the error.
 
 `OPENCC_DISABLE_MODS=1` turns the whole thing off.
 
+Rendering is also the one hookable capability that can lie to the *user*
+rather than only to the model — a wrapped slot can make a denied action look
+like it succeeded. `$.ui.disable({ pluginId: 'mod:name' })` pulls a mod's UI
+hooks while leaving its `tool.call` and the rest running.
+
+### Worked examples
+
+`examples/mods/` has two, both driven by tests against the real chains:
+
+- **`subagent-trace`** — the built-in dashboard renders from `AppState.tasks`,
+  which knows a subagent exists, its type and its age. It does not know what
+  the agent is *doing*, because the thing that knows is the tool call and the
+  dashboard never sees one. Every subagent's calls carry `agent_id` and
+  `agent_type` through `tool.call`, so the mod keeps its own table and paints
+  current tool, call count, denials and a phase label. Phase names come from
+  `mod.json`, not from the source, so a new agent needs a config line rather
+  than an edit.
+- **`quant-lifecycle`** — Quant's system prompt argues at length that its
+  Brief → Study → Run lifecycle should be structural ("结构优先于告诫 …
+  能落到文件与工具契约上就不要只靠自觉") and then enforces it by prose the
+  model read a hundred thousand tokens ago. Two hooks make it a tool
+  contract: no Run before `research.md` exists, no deleting a Run afterwards.
+
+Neither spends a model token.
+
+### Drawing
+
+A mod is a file at `~/.claude/mods`. It cannot `import { Box } from '../../ink'`
+— that path means nothing from where it sits — and it cannot import
+`react/jsx-runtime` either, because nothing is installed next to it. So
+`register` gets a third argument:
+
+```ts
+export function register(on, options, ctx) {
+  const { h, Box, Text, bumpEpoch, toast } = ctx.ui
+
+  on('ui.slot.render', { slotId: 'subagent-dashboard' }, ($, e, next) => {
+    if (nothingToSay) return next(e)
+    return h(Box, { paddingX: 1 }, h(Text, { color: 'warning' }, '●'))
+  })
+}
+```
+
+`h` is `React.createElement`, so a mod writes its tree as calls: no JSX
+transform, no pragma, no resolvable react. Everything on `ctx.ui` is
+synchronous, because `ui.slot.render` and `ui.press` are dispatched from
+inside a render pass where nothing can be awaited — `$` cannot serve this, as
+every noun on it goes through the async chain.
+
+`bumpEpoch()` re-runs the UI chain when something the mod renders from changed
+outside React. Without it a mod's panel only updates when something else
+happens to redraw.
+
+`ui.press` sees every keypress; returning `{ handled: true }` consumes it.
+Between those two a mod owns a rectangle and the keyboard, which is the whole
+mechanism behind the Tetris mod people have been posting: no model call is
+involved anywhere, so it costs no tokens. The same mechanism is what a status
+panel or an approval widget is built from.
+
 ### Reloading
 
 `loadMods()` again re-runs `register()`, and the entry file is imported keyed

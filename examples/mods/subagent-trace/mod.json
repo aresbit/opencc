@@ -1,0 +1,19 @@
+{
+  "options": {
+    "keepFinishedMs": 20000,
+    "phases": {
+      "quant": {
+        "Write": "brief",
+        "quant_verify": "run",
+        "MythosTool": "research",
+        "BashTool": "build"
+      },
+      "nova": {
+        "ChromeCDPTool": "素材",
+        "MythosTool": "研究",
+        "manuscript_check": "稿检",
+        "Write": "落章"
+      }
+    }
+  }
+}

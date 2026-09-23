@@ -27,6 +27,7 @@ import type {
 import { logError } from '../../../utils/log.js'
 import { discoverMods } from './discovery.js'
 import { scopeEngine } from './capabilities.js'
+import { buildModContext } from './uiKit.js'
 import type { LoadedMod, ModLoadResult, ModSource } from './types.js'
 
 const loaded = new Map<string, LoadedMod>()
@@ -228,7 +229,11 @@ async function loadOne(source: ModSource): Promise<ModLoadResult> {
     )
 
     try {
-      register(on, manifest.options as Record<string, unknown> | undefined)
+      register(
+        on,
+        manifest.options as Record<string, unknown> | undefined,
+        buildModContext(name),
+      )
     } catch (error) {
       registry.removePlugin(pluginId)
       throw error
