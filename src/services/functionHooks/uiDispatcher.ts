@@ -211,6 +211,37 @@ function buildUINext<E extends { node: unknown }>(
  * nobody hooks renders exactly what it would have rendered without this
  * mechanism existing at all.
  */
+/**
+ * Whether a `ui.press` hook's answer should stop the key reaching anything
+ * else.
+ *
+ * The press bridge used to be additive by design: it listened alongside every
+ * other handler and threw the chain's return value away, so a plugin could
+ * react to a key but never take it. That is right for an observer and wrong
+ * for anything interactive — a panel that opens on a key cannot stop that key
+ * also being typed into the prompt, and an app that wants the arrow keys is
+ * fighting the transcript scroller for them.
+ *
+ * So the return value now means something: `{ handled: true }` consumes the
+ * key. The bridge is mounted ahead of the other input handlers in the REPL,
+ * and the event emitter honours stopImmediatePropagation in listener order,
+ * which is what makes that possible at all.
+ *
+ * ctrl+c is never consumable. It is how a person leaves a mod that has gone
+ * wrong, and a mod that could swallow it could trap them in it — the one key
+ * that must not be delegated to code we did not write.
+ */
+export function consumesKey(
+  result: unknown,
+  input: string,
+  key: { ctrl?: boolean } | undefined,
+): boolean {
+  if (!result || typeof result !== 'object') return false
+  if (!(result as { handled?: unknown }).handled) return false
+  if (key?.ctrl && input === 'c') return false
+  return true
+}
+
 export function dispatchUISync<E extends { node: unknown }>(
   $: EngineInterface,
   event: FunctionHookEvent | string,

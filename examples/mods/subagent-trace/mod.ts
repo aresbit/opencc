@@ -102,8 +102,13 @@ export function register(on: any, options: any, ctx: any) {
   })
 
   on('ui.press', ($: any, e: any, next: any) => {
+    // The bridge sends { slotId, props: { input, key }, node } — reading
+    // e.input directly finds undefined and the hook never fires, which is a
+    // failure nothing reports because the mod still loads clean.
+    const input = e.props?.input ?? e.input
+    const key = e.props?.key ?? e.key ?? {}
     // Only while something is running, so the key is free the rest of the time.
-    if (e.input === 's' && e.key?.ctrl && rows.size > 0) {
+    if (input === 's' && key.ctrl && rows.size > 0) {
       expanded = !expanded
       bumpEpoch()
       return { handled: true }

@@ -2,28 +2,39 @@
  * <UIPressBridge> — broadcasts every keypress through the ui.press hook
  * chain, mounted once near the app root.
  *
- * Deliberately additive, not interceptive: Ink lets multiple components call
- * useInput simultaneously, so this listens alongside every existing input
- * handler in the REPL rather than wrapping or replacing any of them — a
- * plugin reacting to a hotkey (screen-share toggle, a structured-inquiry
- * cursor move) cannot break or shadow the input handling that already
- * exists. Hooks are called for their side effects (flipping a plugin's own
- * state, then bumpUIEpoch to repaint); the chain's return value is unused.
+ * Mounted FIRST among the REPL's input handlers, which is load-bearing: Ink's
+ * event emitter calls listeners in registration order and stops at the first
+ * one that calls stopImmediatePropagation, so being first is what lets a hook
+ * take a key before the prompt, the scroller or the keybinding handlers see
+ * it.
+ *
+ * Originally this was additive on purpose — it listened alongside everything
+ * else and discarded the chain's return value, so a plugin could react to a
+ * key but never take it. That is right for an observer and wrong for anything
+ * interactive: a panel that opens on a key cannot stop that key also being
+ * typed into the prompt. A hook that returns `{ handled: true }` now consumes
+ * the key; every other return value, including none, leaves the old additive
+ * behaviour exactly as it was.
+ *
+ * ctrl+c is never consumable — see consumesKey().
  */
 
 import { useInput } from '../ink.js'
 import { getEngine } from '../services/functionHooks/bridge.js'
-import { dispatchUISync } from '../services/functionHooks/uiDispatcher.js'
+import { consumesKey, dispatchUISync } from '../services/functionHooks/uiDispatcher.js'
 
 export function UIPressBridge(): null {
-  useInput((input, key) => {
+  useInput((input, key, event) => {
     const engine = getEngine()
     if (!engine) return
-    dispatchUISync(engine, 'ui.press', {
+    const result = dispatchUISync(engine, 'ui.press', {
       slotId: 'global',
       props: { input, key },
       node: null,
     })
+    if (consumesKey(result, input, key)) {
+      event.stopImmediatePropagation()
+    }
   })
   return null
 }

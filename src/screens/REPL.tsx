@@ -4684,6 +4684,13 @@ export function REPL({
                   </Box>}
               {("external" as string) === 'ant' && <TungstenLiveMonitor />}
               {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
+              {/* A region a mod can own outright. Renders nothing until one
+                  returns a node, exactly like the two slots below it — but
+                  unnamed by any built-in, so a mod is not competing with one
+                  for it. With ui.press able to consume a key, this plus the
+                  press chain is a rectangle and a keyboard: enough to build
+                  something interactive that costs no tokens. */}
+              <HookSlot id="overlay" props={{ isLoading, hasModal: centeredModal != null }}>{null}</HookSlot>
               <HookSlot id="subagent-dashboard" props={{ tasks }}>{null}</HookSlot>
               <HookSlot id="git-status" props={{ backgroundTaskCount: count(Object.values(tasks), t => isBackgroundTask(t)) }}>{null}</HookSlot>
               <Box flexGrow={1} />

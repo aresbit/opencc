@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import { resolve } from 'path'
 import { registry } from '../../registry.js'
 import { dispatch } from '../../dispatcher.js'
-import { dispatchUISync } from '../../uiDispatcher.js'
+import { consumesKey, dispatchUISync } from '../../uiDispatcher.js'
 import type { EngineInterface, HookFn } from '../../types.js'
 import { loadMods, resetMods } from '../loader.js'
 
@@ -35,15 +35,16 @@ async function toolCall(event: Record<string, unknown>): Promise<unknown> {
   return dispatch($, 'tool.call', event, identity)
 }
 
-describe('both examples load', () => {
-  test('from the examples directory, with their manifests', async () => {
-    const results = await loadExamples()
+describe('the examples load', () => {
+  test('every one of them, from the examples directory', async () => {
     const loaded = (await loadMods({ userDir: EXAMPLES, projectDir: EXAMPLES }))
       .filter(r => r.loaded)
       .map(r => r.name)
       .sort()
-    expect(loaded).toEqual(['quant-lifecycle', 'subagent-trace'])
-    void results
+    // Asserted as the whole set rather than a subset: an example that stops
+    // loading should fail here, and a new one should have to be added
+    // deliberately rather than slipping in untested.
+    expect(loaded).toEqual(['quant-lifecycle', 'subagent-trace', 'tetris'])
   })
 })
 
@@ -186,8 +187,15 @@ describe('subagent-trace', () => {
     await loadExamples()
     await dispatch($, 'subagent.start', { agent_id: 'q3', agent_type: 'nova' }, identity)
 
-    const press = dispatchUISync($, 'ui.press', { input: 's', key: { ctrl: true } })
-    expect(press).toMatchObject({ handled: true })
+    // The payload the bridge actually sends. An earlier version of this test
+    // passed { input, key } at the top level — a shape nothing produces — so
+    // it went green against a hook that could never have fired in the app.
+    const press = dispatchUISync($, 'ui.press', {
+      slotId: 'global',
+      props: { input: 's', key: { ctrl: true } },
+      node: null,
+    })
+    expect(consumesKey(press, 's', { ctrl: true })).toBe(true)
 
     const rendered = JSON.stringify(
       dispatchUISync($, 'ui.slot.render', {

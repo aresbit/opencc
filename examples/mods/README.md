@@ -14,10 +14,12 @@ a mod is and what its manifest means.
 |---|---|
 | `subagent-trace` | Replaces the subagent dashboard with per-agent current tool, call count, denials and a phase label. Reads phase names from `mod.json`, so it works for any agent without editing the mod. `ctrl+s` collapses it. |
 | `quant-lifecycle` | Turns the Quant agent's Brief → Study → Run lifecycle from prose in its system prompt into a tool contract: no Run before `research.md` exists, and no deleting a Run afterwards. |
+| `tetris` | Playable, in the transcript, at the `overlay` slot. `ctrl+g` to start. It is here because it fails loudly if any part of the UI surface is fake — a panel would not. |
 
 Both use `position: "outer"`. For `subagent-trace` that is load-bearing: the
 built-in dashboard returns its node without calling `next(e)`, so an inner mod
 would never run.
 
-Neither spends a single model token. A mod is ordinary code in the agent's
-process, reacting to events the agent generates.
+None of them spends a single model token. A mod is ordinary code in the
+agent's process: it reacts to events the agent generates, and — as tetris
+shows — may own a timer, a rectangle and the keyboard while it does.

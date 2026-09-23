@@ -372,6 +372,12 @@ hooks while leaving its `tool.call` and the rest running.
   current tool, call count, denials and a phase label. Phase names come from
   `mod.json`, not from the source, so a new agent needs a config line rather
   than an edit.
+- **`tetris`** — a load-bearing toy. A status panel still looks right when
+  keys leak through to the prompt or when the frame only repaints because
+  something else redrew; a game does not, so it is the test that fails if
+  either half of the UI surface goes back to being decorative. ctrl+g starts
+  it; the arrows belong to the game while it runs and the rest of the
+  keyboard does not.
 - **`quant-lifecycle`** — Quant's system prompt argues at length that its
   Brief → Study → Run lifecycle should be structural ("结构优先于告诫 …
   能落到文件与工具契约上就不要只靠自觉") and then enforces it by prose the
@@ -408,11 +414,41 @@ every noun on it goes through the async chain.
 outside React. Without it a mod's panel only updates when something else
 happens to redraw.
 
-`ui.press` sees every keypress; returning `{ handled: true }` consumes it.
-Between those two a mod owns a rectangle and the keyboard, which is the whole
-mechanism behind the Tetris mod people have been posting: no model call is
-involved anywhere, so it costs no tokens. The same mechanism is what a status
-panel or an approval widget is built from.
+### Keys
+
+`ui.press` sees every keypress. The bridge used to be additive on purpose —
+it listened alongside every other handler and threw the chain's answer away —
+which is right for an observer and wrong for anything interactive: a panel
+that opens on a key could not stop that key also being typed into the prompt.
+
+Returning `{ handled: true }` now consumes the key. Anything else, including
+returning nothing, behaves exactly as before. This works because
+`<UIPressBridge>` is mounted first among the REPL's input handlers and Ink's
+emitter stops at the first listener to call `stopImmediatePropagation`.
+
+**ctrl+c is never consumable.** It is how a person leaves a mod that has gone
+wrong, and a mod that could swallow it could trap them there. `consumesKey`
+refuses it regardless of what the hook returns.
+
+### Slots
+
+| id | where |
+|---|---|
+| `overlay` | Below the transcript, above the prompt. Empty by default and claimed by no built-in — the one a mod can own outright. |
+| `subagent-dashboard` | The running-subagent grid. |
+| `context-gauge` | The context meter in the footer. |
+| `git-status` | The git line. |
+| `tool-result` | Wraps each rendered tool result. |
+
+A slot nobody hooks renders its children as if none of this existed, so
+returning `next(e)` is how a mod stays invisible when it has nothing to say.
+
+A rectangle and the keyboard is the whole mechanism behind the Tetris mod
+people have been posting, and `examples/mods/tetris` is that, in 200 lines: no
+model call is involved anywhere, so it costs no tokens per frame. The clock is
+an ordinary `setInterval` — a mod is ordinary code in the process — and
+`bumpEpoch()` is how a tick outside React reaches the screen. The same three
+pieces are what a status panel or an approval widget is built from.
 
 ### Reloading
 
