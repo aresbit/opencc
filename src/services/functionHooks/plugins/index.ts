@@ -69,6 +69,7 @@ import { register as registerTaintFirewall } from './taintFirewallHook.js'
 import { register as registerTransaction } from './transactionHook.js'
 import { register as registerRetry } from './retryHook.js'
 import { register as registerWriteGuard } from './writeGuardHook.js'
+import { register as registerEvalApplyGuard } from './evalApplyGuardHook.js'
 import { register as registerCache } from './cacheHook.js'
 import { register as registerCompress } from './compressHook.js'
 import { register as registerContextHandle } from './contextHandleHook.js'
@@ -202,6 +203,12 @@ function pluginTable(): PluginEntry[] {
     { name: 'replay', id: 'builtin:replay', register: registerReplay },
     { name: 'taintFirewall', id: 'builtin:taintFirewall', register: registerTaintFirewall },
     { name: 'mprotect', id: 'builtin:mprotect', register: registerMprotect },
+    // Outermost of the write-path plugins, because it is the only one whose
+    // answer makes the others pointless: a write the eval/apply gate has not
+    // admitted should not be journalled by transaction, broadcast by ipc or
+    // linted by writeGuard first. Registration order is nesting order, so
+    // "outermost" means "before them here".
+    { name: 'evalApplyGuard', id: 'builtin:evalApplyGuard', register: registerEvalApplyGuard },
     { name: 'ipc', id: 'builtin:ipc', register: registerIpc },
     { name: 'transaction', id: 'builtin:transaction', register: registerTransaction },
     { name: 'retry', id: 'builtin:retry', register: registerRetry },

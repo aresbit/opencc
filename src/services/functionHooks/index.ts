@@ -136,6 +136,13 @@ export {
 } from './eval/optimizer.js'
 export type { SearchSpace, Objective, Candidate, OptimizeResult } from './eval/optimizer.js'
 export type { Trace, TraceStep, EvalConfig, EvalMetrics, EvalResult, ProbeOutcome } from './eval/types.js'
+export {
+  clearEvalApplyGuardStats,
+  getEvalApplyGuardStats,
+  isEvalApplyEnforcing,
+  setEvalApplyEnforcing,
+  type EvalApplyGuardStats,
+} from './plugins/evalApplyGuardHook.js'
 export { getTaintedCount, isTainted, clearTainted, setTaintBlockingEnabled, getTaintStats } from './plugins/taintFirewallHook.js'
 export { getActiveTransaction, rollbackManual, clearTransaction, setTransactionRollbackEnabled, getTransactionStats } from './plugins/transactionHook.js'
 export { getEventLog, getToolEvents, getErrors, getTimingStats, exportLog, getLogSize, clearLog } from './plugins/replayHook.js'

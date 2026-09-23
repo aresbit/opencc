@@ -228,6 +228,29 @@ export function buildCoreNouns(): Record<
           .map(p => ({ name: p.name, optIn: p.optIn, requested: p.requested }))
       },
     },
+    evalApply: {
+      /**
+       * How many writes the eval/apply gate actually covered.
+       *
+       * The number that matters is `bypassed`: writes that landed in the
+       * repository with no ready run naming them. In shadow mode that is the
+       * measurement; with enforcing on it is what would now be refused.
+       */
+      stats: async () => {
+        const { getEvalApplyGuardStats } = await import(
+          './plugins/evalApplyGuardHook.js'
+        )
+        return getEvalApplyGuardStats()
+      },
+      /** Turn refusal on. Shadow until someone has read the stats. */
+      enforce: async (e: { enabled?: boolean }) => {
+        const { setEvalApplyEnforcing, isEvalApplyEnforcing } = await import(
+          './plugins/evalApplyGuardHook.js'
+        )
+        setEvalApplyEnforcing(e.enabled !== false)
+        return { enforcing: isEvalApplyEnforcing() }
+      },
+    },
     mods: {
       /** Mods in the chain, with what each declared it may touch. */
       list: async () => {

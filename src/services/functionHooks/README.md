@@ -47,8 +47,9 @@ was discarded for its entire life until `tool.content` was added.
 Printed from the registry rather than transcribed:
 
 ```
-tool.call     mount → mcpBroker → sudo → replay → taintFirewall → ipc
-              → transaction → writeGuard → knowledge → adaptive → ⊥ (identity)
+tool.call     mount → mcpBroker → sudo → replay → taintFirewall
+              → evalApplyGuard → ipc → transaction → writeGuard → knowledge
+              → adaptive → ⊥ (identity)
 
 tool.invoke   retry → cache → adaptive → ⊥ (the real tool execution)
 
@@ -63,9 +64,10 @@ prompt.submit   select → mprotect
 file.changed    select
 ```
 
-`ipc`, `transaction`, `writeGuard` and `knowledge` appear more than once in
-the registry because they register per-tool matchers (`{ tool_name: 'Write' }`
-and `{ tool_name: 'Edit' }`); at most one fires for a given call.
+`evalApplyGuard`, `ipc`, `transaction`, `writeGuard` and `knowledge` appear
+more than once in the registry because they register per-tool matchers
+(`{ tool_name: 'Write' }`, `'Edit'`, and for the guard `'NotebookEdit'` as
+well); at most one fires for a given call.
 
 ---
 
@@ -112,6 +114,52 @@ one off because it looks idle.
 | `traceRecorder` | `tool.content` | Records full-fidelity traces for `eval/` to replay. Recording is opt-in. |
 | `replay` | `tool.call`, `tool.content` | Audit log of calls and results. |
 | `select` | `tool.content`, `prompt.submit`, `subagent.stop`, `file.changed` | Feeds events into the `select()` event loop. **The actor inbox depends on this one** — see `hooks/useActorInboxPoller.ts`. |
+
+---
+
+## evalApplyGuard
+
+MateBot's eval/apply ledger decides admission well and bound nothing.
+`deriveStatus` is deterministic — any `fail` rejects, too few evaluations
+means evaluating, only all-pass above the risk threshold reaches `ready` — and
+independence is counted by the evaluating agent's runtime id rather than by a
+label the model picks, so one agent cannot be two evaluators. The role split
+holds too: researcher, planner and evaluator are all denied Edit/Write, so
+nobody grades work they can fix.
+
+None of which bound a write. The gate governed exactly one action,
+`eval_apply apply`, while `builder` and `worker` carry `tools: ['*']` and
+could Edit the real file having never proposed a run. The whole apparatus
+constrained only the agent that volunteered to route through it — the same
+shape as two other gates here: a good deterministic judge reached by an
+optional path. `tool.call` is not optional, which is why this belongs in the
+chain rather than in the tool.
+
+It is outermost of the write-path plugins because its answer makes the others
+pointless: a write the gate has not admitted should not be journalled by
+`transaction`, broadcast by `ipc` or linted by `writeGuard` first.
+
+**Shadow by default.** It observes and records; it refuses nothing until
+`setEvalApplyEnforcing(true)` or `$.evalApply.enforce()`. Same convention as
+cache, transaction and taintFirewall — they act, so acting is opt-in — and
+also the honest order: nobody yet knows how many writes in a real swarm run
+bypass the ledger, and turning enforcement on before that number exists is
+either a no-op nobody notices or a wall that stops every session, with no way
+to tell which in advance. Run a swarm, read `$.evalApply.stats()`, then
+decide. `bypassed` and `byAgent` are the numbers that answer it.
+
+Three deliberate holes, each of which would otherwise make the guard the
+reason work stops:
+
+- Outside `--matebot` it never looks at anything, so an ordinary session pays
+  nothing for a swarm feature.
+- Paths outside the repository — scratch, `/tmp`, a worker's own notes — are
+  not the product code the gate protects.
+- An unreadable ledger fails open. A guard that refuses because it could not
+  decide turns one bad mount into a swarm-wide write freeze. An *empty* one
+  still refuses: "cannot tell" and "nothing is approved" are different
+  answers, and `EvalApplyLedger.list()` now distinguishes them rather than
+  flattening every readdir error into `[]`.
 
 ---
 

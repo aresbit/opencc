@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { mkdir, readFile, rename, writeFile } from 'fs/promises'
+import { mkdir, readdir, readFile, rename, writeFile } from 'fs/promises'
 import { join } from 'path'
 import * as lockfile from '../utils/lockfile.js'
 
@@ -97,7 +97,7 @@ function defaultThreshold(risk: MateBotRisk): number {
   return 0.7
 }
 
-function deriveStatus(run: EvalApplyRun): EvalApplyStatus {
+export function deriveStatus(run: EvalApplyRun): EvalApplyStatus {
   if (run.appliedAt) return 'applied'
   if (run.evaluations.some(item => item.verdict === 'fail')) return 'rejected'
   if (run.evaluations.length < run.requiredEvaluations) {
@@ -117,7 +117,7 @@ function deriveStatus(run: EvalApplyRun): EvalApplyStatus {
  * invites the model to retry the same call; naming the shortfall points it at
  * the action that actually advances the run.
  */
-function explainNotReady(run: EvalApplyRun): string {
+export function explainNotReady(run: EvalApplyRun): string {
   const failed = run.evaluations.filter(item => item.verdict !== 'pass')
   if (failed.length > 0) {
     const who = failed.map(item => `${item.evaluator}=${item.verdict}`)
@@ -223,6 +223,41 @@ export class EvalApplyLedger {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
     return lockfile.lock(sentinel, LOCK_OPTIONS)
+  }
+
+  /**
+   * Every run in the ledger, newest first.
+   *
+   * The ledger only ever answered `get(id)`, which is all the tool needed:
+   * the caller of `apply` has the id in its hand. A guard has the opposite
+   * problem — it has a file path and has to find out whether ANY run covers
+   * it — so it needs to be able to look without knowing what it is looking
+   * for. Unreadable and half-written entries are skipped rather than thrown:
+   * one corrupt run must not make every write undecidable.
+   */
+  async list(): Promise<EvalApplyRun[]> {
+    let names: string[]
+    try {
+      names = await readdir(this.directory)
+    } catch (error) {
+      // A ledger that does not exist yet holds no runs — that is the first
+      // call in every session. Anything else means the ledger is there and
+      // unreadable, which is not the same answer and must not be flattened
+      // into "no runs": a caller gating on emptiness would read a broken
+      // mount as permission.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+    const runs: EvalApplyRun[] = []
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue
+      try {
+        runs.push(await this.get(name.slice(0, -'.json'.length)))
+      } catch {
+        // Skipped, not fatal — see above.
+      }
+    }
+    return runs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
   async get(id: string): Promise<EvalApplyRun> {
