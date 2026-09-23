@@ -270,18 +270,30 @@ export const AUTO_MODE_ATTACHMENT_CONFIG = {
   FULL_REMINDER_EVERY_N_ATTACHMENTS: 5,
 } as const
 
-const MAX_MEMORY_LINES = 200
-// Line cap alone doesn't bound size (200 × 500-char lines = 100KB).  The
+// Raised with MAX_MEMORY_BYTES below.  Whichever cap binds first truncates,
+// and at 200 lines a bullet-heavy memory.md is cut at ~8KB — under the byte
+// cap, which would make the larger byte cap do nothing for exactly the files
+// it was raised for.  At 500 the byte cap is the one that binds, which is
+// what the comment below assumes.
+const MAX_MEMORY_LINES = 500
+// Line cap alone doesn't bound size (500 × 500-char lines = 250KB).  The
 // surfacer injects up to 5 files per turn via <system-reminder>, bypassing
-// the per-message tool-result budget, so a tight per-file byte cap keeps
-// aggregate injection bounded (5 × 4KB = 20KB/turn).  Enforced via
+// the per-message tool-result budget, so a per-file byte cap keeps
+// aggregate injection bounded (5 × 10KB = 50KB/turn).  Enforced via
 // readFileInRange's truncateOnByteLimit option.  Truncation means the
 // most-relevant memory still surfaces: the frontmatter + opening context
 // is usually what matters.
-const MAX_MEMORY_BYTES = 4096
+//
+// 4KB was the original cap and it cut an ordinary memory.md in half: the
+// agent got the frontmatter and the opening section, then a note telling it
+// to go read the file — which a long-running agent pays for over and over,
+// once per session, for a file it was already handed.  10KB fits the whole
+// of most memory files, so the note appears when a file is genuinely large
+// rather than as the normal case.
+const MAX_MEMORY_BYTES = 10240
 
 export const RELEVANT_MEMORIES_CONFIG = {
-  // Per-turn cap (5 × 4KB = 20KB) bounds a single injection, but over a
+  // Per-turn cap (5 × 10KB = 50KB) bounds a single injection, but over a
   // long session the selector keeps surfacing distinct files — ~26K tokens/
   // session observed in prod.  Cap the cumulative bytes: once hit, stop
   // prefetching entirely.  Budget is ~3 full injections; after that the
@@ -289,7 +301,13 @@ export const RELEVANT_MEMORIES_CONFIG = {
   // (rather than tracking in toolUseContext) means compact naturally
   // resets the counter — old attachments are gone from context, so
   // re-surfacing is valid.
-  MAX_SESSION_BYTES: 60 * 1024,
+  //
+  // Scaled with MAX_MEMORY_BYTES on purpose.  This budget is three
+  // injections' worth, not an independent number: left at 60KB against a
+  // 10KB per-file cap it would be barely one, so raising the per-file cap
+  // alone would cut a long session's recall off after the first turn — the
+  // opposite of what the larger cap is for.
+  MAX_SESSION_BYTES: 150 * 1024,
 } as const
 
 export const VERIFY_PLAN_REMINDER_CONFIG = {
