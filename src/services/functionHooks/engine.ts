@@ -228,6 +228,30 @@ export function buildCoreNouns(): Record<
           .map(p => ({ name: p.name, optIn: p.optIn, requested: p.requested }))
       },
     },
+    mods: {
+      /** Mods in the chain, with what each declared it may touch. */
+      list: async () => {
+        const { listMods } = await import('./mods/index.js')
+        return listMods().map(mod => ({
+          name: mod.manifest.name,
+          description: mod.manifest.description ?? '',
+          scope: mod.scope,
+          position: mod.manifest.position ?? 'inner',
+          capabilities: mod.manifest.capabilities ?? [],
+          events: mod.events,
+          entry: mod.entry,
+        }))
+      },
+      /**
+       * Every mod found on disk, including the ones that are not running.
+       * Disabled, shadowed and broken are three different absences and
+       * `list` shows none of them.
+       */
+      status: async () => {
+        const { getModResults } = await import('./mods/index.js')
+        return getModResults()
+      },
+    },
     perf: {
       // Each of these carries `registered`. perfTelescopy is off by default,
       // so the bare numbers are zero in the normal case and mean "this never

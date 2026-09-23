@@ -25,6 +25,30 @@ export {
   type ModuleLoadResult,
 } from './moduleLoader.js'
 export { matchesSubstructural } from './matcher.js'
+
+// Mods — the same loader, given somewhere to look, something to read and a
+// bound on what it may touch. See mods/types.ts for why the manifest exists.
+export {
+  ALL_CAPABILITIES,
+  ModCapabilityError,
+  discoverMods,
+  getModResults,
+  getProjectModsDir,
+  getQuarantinedMods,
+  getUserModsDir,
+  listMods,
+  loadMods,
+  modPluginId,
+  modsDisabled,
+  resetMods,
+  scopeEngine,
+  unloadMod,
+  type LoadedMod,
+  type ModLoadResult,
+  type ModManifest,
+  type ModPosition,
+  type ModSource,
+} from './mods/index.js'
 export type {
   FunctionHookEvent,
   HookFn,

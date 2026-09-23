@@ -228,3 +228,139 @@ each went unnoticed:
 Before shipping one: run `__tests__/hookChain.test.ts`, and if the hook can
 refuse or rewrite, add a case there proving an inner decision still reaches
 the top.
+
+---
+
+## Mods
+
+Everything above is built in: a table in `plugins/index.ts`, compiled into the
+binary. A mod is the same thing written by someone who is not us, in a file on
+disk, loaded at startup.
+
+The loader for this was always here. `loadHooksModule` has been able to import
+a file and call its `register` since the beginning, and **nothing ever called
+it** — there was nowhere to put such a file, no way to switch one off, no
+bound on what it could reach through `$`, and no way to see what had loaded.
+`mods/` is those four things.
+
+### Where they live
+
+```
+~/.claude/mods/              yours, every project
+<project>/.claude/mods/      this repository's, checked in with it
+```
+
+A project mod shadows a user mod of the same name; both loading would put two
+hooks with one name in the chain, and which of them denied a call would depend
+on an order nobody chose. Mods load in name order so the chain is identical on
+every start.
+
+Two shapes:
+
+```
+mods/my-mod/mod.ts       a directory, optionally with mod.json beside it
+mods/quick-hack.ts       one file, named by its basename
+```
+
+### A mod
+
+```ts
+export const manifest = {
+  description: 'Refuse Bash commands that pipe to sh.',
+  capabilities: ['ctx'],
+  position: 'outer',
+}
+
+export function register(on, options) {
+  on('tool.call', { tool_name: 'Bash' }, ($, e, next) => {
+    if (/\|\s*sh\b/.test(String(e.input?.command ?? ''))) {
+      return { deny: true, reason: 'piped to sh' }
+    }
+    return next(e)
+  })
+}
+```
+
+`register` receives the same `on` the built-ins get, so everything in this
+document applies unchanged — the same events, the same three chokepoints, the
+same rule that a value the event cannot carry is dropped.
+
+### The manifest
+
+| field | meaning |
+|---|---|
+| `name` | Directory name by default. Unique across both roots. |
+| `description` | One line, shown in `$.mods.list()`. |
+| `enabled` | `false` keeps it out of the chain. |
+| `position` | `inner` (default, append) or `outer` (prepend). |
+| `capabilities` | Which `$` nouns it may touch. `['*']` for all. |
+| `options` | Passed as the second argument to `register`. |
+
+`mod.json` is read first and applied last, so it overrides anything the mod
+says about itself in `export const manifest`. That is deliberate: it is the
+channel an admin has that does not involve editing the mod.
+
+### Position
+
+Registration order is nesting order, so this is the whole of it:
+
+- `inner` — below every built-in. The mod sees an event only if every guard
+  above it allowed it through. The right place for a default.
+- `outer` — wrapping the built-ins. The mod sees the event first and can
+  refuse it before anything else spends work. The control position.
+
+### Capabilities
+
+A mod's power is not the event it receives — that is data — but `$`, where
+every noun is a real effect: `$.fs` writes, `$.actor.tx` reaches another
+agent, `$.sudo` escalates. A mod gets a view of `$` holding exactly the nouns
+its manifest declares. Reaching past it throws, naming the noun and where to
+declare it, rather than returning `undefined` and failing three frames later
+as a `TypeError` about something else.
+
+This is **not a sandbox**. The mod runs in this process and can `import`
+anything Bun can import. Scoping `$` does not change that and is not
+pretending to; what it does is make the engine's own surface declared rather
+than ambient, so `$.mods.list()` answers "what can this thing do" with
+something better than "everything".
+
+### When things go wrong
+
+A built-in that throws takes the chain with it, and for a built-in that is
+right: it is ours, it is tested, and a failure there is a bug we want loud. A
+mod is a file someone dropped in a directory. If it throws on every
+`tool.call`, the agent is bricked — every tool call fails — and the cause is
+three frames inside a stranger's typo. So mods are contained:
+
+- **At registration.** A mod that throws in `register()` is removed whole and
+  reported. A half-registered mod is worse than none: its hooks run without
+  whatever the rest of `register()` was about to set up. One broken mod never
+  costs you the others, and is never silent.
+- **At dispatch.** A mod's first throw is its last. It is reported, taken out
+  of the chain, and the chain continues as if it were not there. Installing a
+  mod can mean "that mod stopped working"; it must never mean "the agent
+  stopped working".
+- **Without re-running the tool.** If the mod already called `next(e)` and
+  then threw, the chain below has already run — on `tool.invoke` that means
+  the tool has already executed. Recovery returns what the chain produced
+  rather than descending a second time. (This is the `replayHook` bug from the
+  list above, contained rather than repeated.)
+- A mod that registers **no** hooks loads clean and does nothing forever, so
+  that is flagged too.
+
+`$.mods.list()` is what is running; `$.mods.status()` is everything found,
+including disabled, shadowed and broken — three different absences that `list`
+shows none of. `getQuarantinedMods()` is the fourth: loaded, then removed for
+throwing, with the error.
+
+`OPENCC_DISABLE_MODS=1` turns the whole thing off.
+
+### Reloading
+
+`loadMods()` again re-runs `register()`, and the entry file is imported keyed
+by its mtime — so editing a mod and reloading runs the edit, rather than the
+cached old copy that a plain re-import would return. Reloading also clears the
+quarantine, since trying the fix is the point of it.
+
+Only the entry file. A mod's own imports are cached under their own paths, so
+editing a helper beside `mod.ts` still needs a restart.

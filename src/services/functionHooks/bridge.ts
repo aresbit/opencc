@@ -18,6 +18,7 @@ import { buildEngineInterface, buildCoreNouns } from './engine.js'
 import { registry } from './registry.js'
 import { REVERSE_ALIASES, isDenyResult, type EngineInterface, type FunctionHookEvent, type HookFn } from './types.js'
 import { registerBuiltinPlugins, resetBuiltinPlugins } from './plugins/index.js'
+import { loadMods, resetMods } from './mods/index.js'
 import { logError } from 'src/utils/log.js'
 
 let engineInterface: EngineInterface | null = null
@@ -37,10 +38,23 @@ export async function initEngine(): Promise<EngineInterface> {
 
   registerBuiltinPlugins()
 
-  engineInitPromise = buildEngineInterface(buildCoreNouns()).then(iface => {
-    engineInterface = iface
-    return iface
-  })
+  // Mods load between the built-ins and $ on purpose. After the built-ins,
+  // so an ordinary mod appends below them and only sees what the guards let
+  // through; before buildEngineInterface, so a mod hooking engine.create can
+  // still contribute a noun — which it cannot do once $ is frozen.
+  engineInitPromise = loadMods()
+    .catch(error => {
+      // Discovery failing must not cost the session its engine. A person
+      // with no ~/.claude/mods at all is the common case and reaches here
+      // only through some other fault.
+      logError(error)
+      return []
+    })
+    .then(() => buildEngineInterface(buildCoreNouns()))
+    .then(iface => {
+      engineInterface = iface
+      return iface
+    })
 
   return engineInitPromise
 }
@@ -59,6 +73,7 @@ export function resetEngine(): void {
   engineInterface = null
   engineInitPromise = null
   resetBuiltinPlugins()
+  resetMods()
   registry.clear()
 }
 
