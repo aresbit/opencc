@@ -242,16 +242,22 @@ export function register(on: OnRegistrar): void {
   on('prompt.submit', async ($, e: any, next) => {
     if (!config.enabled) return next(e)
 
-    const text = e.text as string
+    // The field is `prompt`. This hook read `e.text`, which the event has never
+    // carried, so the guard below returned early on every prompt and the
+    // directive was never injected once in its life.
+    const text = e.prompt as string
     if (!text) return next(e)
 
-    if (shouldInject()) {
-      const directive = promptCount === 1 ? ISO_24495_DIRECTIVE : ISO_24495_REMINDER
-      e.text = text + directive
-      stats.promptsEnhanced++
-    }
+    if (!shouldInject()) return next(e)
 
-    return next(e)
+    const directive = promptCount === 1 ? ISO_24495_DIRECTIVE : ISO_24495_REMINDER
+    stats.promptsEnhanced++
+
+    // Returned, not appended to the event. bridge.ts acts only on a result that
+    // is not the event object itself, and the caller's prompt string was passed
+    // by value — so `e.prompt = text + directive; return next(e)` would be read
+    // as a no-op and dropped even with the field name fixed.
+    return { additionalContext: directive }
   })
 
   // Hook tool.result — score readability and tag

@@ -246,13 +246,15 @@ export function register(on: OnRegistrar): void {
 
   // Check prompt.submit for injection attempts against protected patterns
   on('prompt.submit', async ($, e: any, next) => {
-    const text = e.text as string
+    // `prompt` is the field the event carries; `text` is not one it has ever
+    // had, so this check never saw a user prompt and the branch below was dead.
+    const text = e.prompt as string
     if (!text) return next(e)
 
     const check = checkPermission(text, 'exec', 'user-prompt')
     if (!check.allowed) {
       return {
-        text: e.text,
+        text,
         _mprotectBlocked: true,
         _mprotectSegment: check.segment?.label,
         _mprotectWarning: `Content matched protected pattern "${check.segment?.label}". ` +

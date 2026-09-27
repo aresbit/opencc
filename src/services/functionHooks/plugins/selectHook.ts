@@ -382,7 +382,9 @@ export function register(on: OnRegistrar): void {
     fireEvent({
       kind: 'user_input',
       id: 'stdin',
-      payload: { text: e.text },
+      // `prompt`, not `text` — the event never carried `text`, so every
+      // wait({ source: 'user_input' }) was handed undefined.
+      payload: { text: e.prompt },
       firedAt: Date.now(),
     })
 
