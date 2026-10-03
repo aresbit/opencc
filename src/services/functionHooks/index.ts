@@ -357,6 +357,12 @@ export {
   type ToolCallRecord,
 } from './plugins/dreamHook.js'
 
+// fframes — activity counters for the fframes video tool
+export {
+  getFramesStats,
+  resetFramesStats,
+} from './plugins/fframesHook.js'
+
 // scheduler — model routing + budget limits
 export {
   route as schedulerRoute,

@@ -8,6 +8,16 @@ if [ -z "$STAGED_FILES" ]; then
   exit 0
 fi
 
+# Biome 只为部分平台发布预编译二进制。在它跑不起来的机器上（例如
+# Android/aarch64：既没有 android-arm64 包，linux-arm64 又是 glibc 链接、
+# 在 bionic 上无法执行），每次都失败会让作者除了 --no-verify 别无选择，
+# 而 -no-verify 会连真正的问题一起跳过。这里先探测一次：跑不起来就明确
+# 跳过并说明，跑得起来就照常 lint。探测的是「二进制能否执行」，不是代码质量。
+if ! bunx biome --version >/dev/null 2>&1; then
+  echo "pre-commit: Biome CLI 在本机 ($(uname -s)/$(uname -m)) 无法运行，跳过 lint。"
+  exit 0
+fi
+
 echo "Running Biome lint on staged files..."
 
 # 使用 biome lint 对暂存文件进行检查（仅 lint，不格式化，不自动修复）

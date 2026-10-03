@@ -135,6 +135,7 @@ import { NumberTheoryMasterTool } from './tools/NumberTheoryMasterTool/NumberThe
 import { CombinatoricsMasterTool } from './tools/CombinatoricsMasterTool/CombinatoricsMasterTool.js'
 import { AnalysisMasterTool } from './tools/AnalysisMasterTool/AnalysisMasterTool.js'
 import { AlgebraMasterTool } from './tools/AlgebraMasterTool/AlgebraMasterTool.js'
+import { FFramesTool } from './tools/FFramesTool/FFramesTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -298,6 +299,7 @@ export function getAllBaseTools(): Tools {
     CombinatoricsMasterTool,
     AnalysisMasterTool,
     AlgebraMasterTool,
+    FFramesTool,
     EvalApplyTool,
     ActorTool,
     SSHRemoteTool,

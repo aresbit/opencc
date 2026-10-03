@@ -862,6 +862,16 @@ export function buildCoreNouns(): Record<
         return getActivity()
       },
     },
+    frames: {
+      stats: async () => {
+        const { getFramesStats } = await import('./plugins/fframesHook.js')
+        return getFramesStats()
+      },
+      reset: async () => {
+        const { resetFramesStats } = await import('./plugins/fframesHook.js')
+        return resetFramesStats()
+      },
+    },
     think: {
       loop: async (e: { program: import('./plugins/thinkLoopHook.js').ThinkProgram; externalApply?: (fn: string, args: unknown[]) => Promise<unknown> }) => {
         const { loop } = await import('./plugins/thinkLoopHook.js')

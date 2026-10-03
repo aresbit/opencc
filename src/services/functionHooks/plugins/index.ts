@@ -102,6 +102,7 @@ import { register as registerUiGitStatus } from './uiGitStatusHook.js'
 import { register as registerUiFold } from './uiFoldHook.js'
 import { register as registerUiRsiHeartbeat } from './uiRsiHeartbeatHook.js'
 import { register as registerImageView } from './imageViewHook.js'
+import { register as registerFFrames } from './fframesHook.js'
 
 let registered = false
 
@@ -240,6 +241,7 @@ function pluginTable(): PluginEntry[] {
     { name: 'uiFold', id: 'builtin:uiFold', register: registerUiFold },
     { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat, optIn: true },
     { name: 'imageView', id: 'builtin:imageView', register: registerImageView },
+    { name: 'fframes', id: 'builtin:fframes', register: registerFFrames },
   ]
 }
 
@@ -328,6 +330,12 @@ export function resetBuiltinPlugins(): void {
     'builtin:uiGitStatus',
     'builtin:uiFold',
     'builtin:uiRsiHeartbeat',
+    // Default-on plugins added after this list was first written. Omitting one
+    // leaves its hooks in the registry after reset, so a later
+    // registerBuiltinPlugins() appends a duplicate and every event is counted
+    // twice. Keep in sync with pluginTable().
+    'builtin:fframes',
+    'builtin:imageView',
   ]) {
     registry.removePlugin(id)
   }
@@ -672,6 +680,9 @@ export {
   type McpAclRule,
   type McpCallRecord,
 } from './mcpBrokerHook.js'
+
+// fframes — activity counters for the fframes video tool
+export { getFramesStats, resetFramesStats } from './fframesHook.js'
 
 // Evaluation substrate — record a trace, replay it under different hook
 // configurations, compare the cost. See eval/types.ts for why.

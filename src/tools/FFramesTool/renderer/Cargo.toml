@@ -1,0 +1,11 @@
+[package]
+name = "fframes-render"
+version = "0.1.0"
+edition = "2024"
+
+# Same pure-Rust rasteriser as ~/rstest (resvg 0.48.1 -> tiny-skia), no GPU needed.
+[dependencies]
+resvg = "0.48.1"
+
+[profile.release]
+opt-level = 3
