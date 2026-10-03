@@ -68,7 +68,8 @@ import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { PromptInputHelpers } from '../../utils/handlePromptSubmit.js';
 import { getImageFromClipboard, PASTE_THRESHOLD } from '../../utils/imagePaste.js';
 import type { ImageDimensions } from '../../utils/imageResizer.js';
-import { cacheImagePath, storeImage } from '../../utils/imageStore.js';
+import { cacheImagePath, getStoredImagePath, storeImage } from '../../utils/imageStore.js';
+import { normalizeThumbSize } from '../../utils/imageThumbnail.js';
 import { isMacosOptionChar, MACOS_OPTION_SPECIAL_CHARS } from '../../utils/keyboardShortcuts.js';
 import { logError } from '../../utils/log.js';
 import { isOpus1mMergeEnabled, modelDisplayString } from '../../utils/model/model.js';
@@ -108,6 +109,8 @@ import { ThinkingToggle } from '../ThinkingToggle.js';
 import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js';
 import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { TeamsDialog } from '../teams/TeamsDialog.js';
+import { HookSlot } from '../UIHookSlot.js';
+import { bumpUIEpoch } from '../../services/functionHooks/uiDispatcher.js';
 import VimTextInput from '../VimTextInput.js';
 import { getModeFromInput, getValueFromInput } from './inputModes.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
@@ -1176,8 +1179,11 @@ function PromptInput({
     // Cache path immediately (fast) so links work on render
     cacheImagePath(newContent);
 
-    // Store image to disk in background
-    void storeImage(newContent);
+    // Store image to disk in background, then nudge the UI hook chain so a
+    // slot that measures the file (the prompt-images thumbnails, when the
+    // paste carried no dimensions) re-renders once the bytes are actually
+    // there instead of waiting for an unrelated redraw.
+    void storeImage(newContent).then(() => bumpUIEpoch());
 
     // Update UI
     setPastedContents(prev => ({
@@ -1999,6 +2005,29 @@ function PromptInput({
     rows
   } = useTerminalSize();
   const textInputColumns = columns - 3 - companionReservedColumns(columns, companionSpeaking);
+  const promptImages = useMemo(() => {
+    const list: Array<{
+      n: number;
+      path: string | null;
+      size: {
+        width: number;
+        height: number;
+      } | null;
+    }> = [];
+    for (const c of Object.values(pastedContents)) {
+      if (c.type !== 'image') continue;
+      list.push({
+        n: c.id,
+        path: getStoredImagePath(c.id),
+        size: normalizeThumbSize(c.dimensions)
+      });
+    }
+    return list;
+  }, [pastedContents]);
+
+  // Budget the thumbnail row a quarter of the screen, floored at the 4 rows a
+  // one-cell-body tile needs and capped at 10 so it never crowds the prompt.
+  const promptImageMaxRows = Math.min(10, Math.max(4, Math.floor(rows / 4)));
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
@@ -2252,6 +2281,7 @@ function PromptInput({
   }
   const textInputElement = isVimModeEnabled() ? <VimTextInput {...baseProps} initialMode={vimMode} onModeChange={setVimMode} /> : <TextInput {...baseProps} />;
   return <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
+      <HookSlot id="prompt-images" props={{ images: promptImages, columns, maxRows: promptImageMaxRows }} />
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
       {hasSuppressedDialogs && <Box marginTop={1} marginLeft={2}>
           <Text dimColor>Waiting for permission…</Text>

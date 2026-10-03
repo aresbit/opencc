@@ -101,6 +101,7 @@ import { register as registerUiSubagentDashboard } from './uiSubagentDashboardHo
 import { register as registerUiGitStatus } from './uiGitStatusHook.js'
 import { register as registerUiFold } from './uiFoldHook.js'
 import { register as registerUiRsiHeartbeat } from './uiRsiHeartbeatHook.js'
+import { register as registerImageView } from './imageViewHook.js'
 
 let registered = false
 
@@ -238,6 +239,7 @@ function pluginTable(): PluginEntry[] {
     { name: 'uiGitStatus', id: 'builtin:uiGitStatus', register: registerUiGitStatus },
     { name: 'uiFold', id: 'builtin:uiFold', register: registerUiFold },
     { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat, optIn: true },
+    { name: 'imageView', id: 'builtin:imageView', register: registerImageView },
   ]
 }
 
@@ -617,6 +619,9 @@ export type { ContextGaugeProps } from './uiContextGaugeHook.js'
 
 // ui.subagentDashboard — running-agent status grid
 export type { SubagentDashboardProps } from './uiSubagentDashboardHook.js'
+
+// imageView — image thumbnail row for the prompt-images slot
+export type { PromptImagesProps, PromptImageView } from './imageViewHook.js'
 
 // ui.gitStatus — branch/uncommitted/background-task bar
 export {
