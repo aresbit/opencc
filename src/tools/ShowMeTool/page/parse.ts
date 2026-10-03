@@ -1,0 +1,179 @@
+// 稿件解析：frontmatter → meta；`## ` 标题 → 面板（slot）；面板体 → markdown 块与围栏块。
+// 只做结构切分，不渲染。所有行号均为 1 起算的源文件行号，供错误提示与 STE lint 使用。
+
+import type { Attrs, AttrValue, Block, Doc, Meta, Panel, RenderOverrides } from './types.js';
+
+export class ParseError extends Error {
+  line: number;
+  constructor(message: string, line: number) {
+    super(message);
+    this.name = 'ParseError';
+    this.line = line;
+  }
+}
+
+export const CHOICES: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  template: ['sheet', 'doc'],
+  theme: ['blueprint', 'shadcn'],
+  style: ['off', '80', 'strict'],
+  mode: ['auto', 'light', 'dark'],
+});
+
+const DEFAULT_META = Object.freeze({
+  template: 'sheet',
+  theme: 'blueprint',
+  style: '80',
+  mode: 'auto',
+  cols: 3,
+  title: '',
+});
+
+const NUMERIC_KEYS = new Set(['cols', 'span']);
+const FENCE_OPEN = /^(`{3,}|~{3,})\s*([^\s`]*)\s*(.*)$/;
+const PANEL_HEADING = /^##\s+(.+?)\s*$/;
+const ATTR_BLOCK = /\s*\{([^{}]*)\}\s*$/;
+const PANEL_ID = /^([A-Z][0-9]?)\s+(.+)$/;
+const ATTR_TOKEN = /([\w-]+)(?:=("[^"]*"|'[^']*'|\S+))?/g;
+
+// defaults：用户配置提供的默认值（如 theme / mode / style），稿件 frontmatter 显式写的值优先。
+export function parseDoc(source: unknown, { defaults = {} }: { defaults?: RenderOverrides } = {}): Doc {
+  const lines = String(source).replace(/\r\n?/g, '\n').split('\n');
+  const { meta, bodyStart } = parseFrontmatter(lines, { ...DEFAULT_META, ...defaults } as Meta);
+  const sections = splitSections(lines, bodyStart);
+  const intro = extractTitle(sections.intro, meta);
+  const panels = assignIds(sections.panels);
+  return { meta, intro, panels };
+}
+
+function parseFrontmatter(lines: string[], base: Meta): { meta: Meta; bodyStart: number } {
+  if (lines[0]?.trim() !== '---') return { meta: { ...base }, bodyStart: 0 };
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
+  if (end === -1) throw new ParseError('frontmatter 未闭合：缺少结束行 ---', 1);
+
+  const entries: Record<string, { value: AttrValue; line: number }> = {};
+  for (let i = 1; i < end; i++) {
+    const raw = lines[i].replace(/\s+#.*$/, '').trim();
+    if (!raw || raw.startsWith('#')) continue;
+    const m = raw.match(/^([\w-]+)\s*:\s*(.*)$/);
+    if (!m) throw new ParseError(`frontmatter 无法解析："${lines[i]}"，应为 key: value`, i + 1);
+    entries[m[1]] = { value: coerce(m[1], unquote(m[2])), line: i + 1 };
+  }
+
+  const meta: Meta = { ...base };
+  for (const [key, { value, line }] of Object.entries(entries)) {
+    if (CHOICES[key] && !CHOICES[key].includes(String(value))) {
+      throw new ParseError(`${key} 的值 "${value}" 无效，可选：${CHOICES[key].join(' | ')}`, line);
+    }
+    meta[key] = CHOICES[key] ? String(value) : value;
+  }
+  return { meta, bodyStart: end + 1 };
+}
+
+function splitSections(lines: string[], start: number): { intro: Block[]; panels: Panel[] } {
+  const intro: Block[] = [];
+  const panels: Panel[] = [];
+  let current: Panel = { id: null, title: '', attrs: {}, line: start, blocks: intro };
+  let mdBuf: { line: number; lines: string[] } | null = null;
+  const flushMd = () => {
+    if (mdBuf && mdBuf.lines.some((l) => l.trim())) {
+      current.blocks.push({ type: 'md', text: mdBuf.lines.join('\n'), line: mdBuf.line });
+    }
+    mdBuf = null;
+  };
+
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = line.match(FENCE_OPEN);
+    if (fence) {
+      flushMd();
+      const close = findFenceClose(lines, i, fence[1]);
+      if (close === -1) throw new ParseError(`围栏块 ${fence[1]}${fence[2]} 未闭合`, i + 1);
+      current.blocks.push({
+        type: 'fence',
+        lang: fence[2].toLowerCase(),
+        args: fence[3].trim(),
+        text: lines.slice(i + 1, close).join('\n'),
+        line: i + 1,
+      });
+      i = close;
+      continue;
+    }
+    const heading = line.match(PANEL_HEADING);
+    if (heading) {
+      flushMd();
+      current = { ...parseHeading(heading[1]), line: i + 1, blocks: [] };
+      panels.push(current);
+      continue;
+    }
+    if (!mdBuf) mdBuf = { line: i + 1, lines: [] };
+    mdBuf.lines.push(line);
+  }
+  flushMd();
+  return { intro, panels };
+}
+
+function findFenceClose(lines: string[], openIdx: number, marker: string): number {
+  const closeRe = new RegExp(`^${marker[0] === '`' ? '`' : '~'}{${marker.length},}\\s*$`);
+  for (let j = openIdx + 1; j < lines.length; j++) {
+    if (closeRe.test(lines[j])) return j;
+  }
+  return -1;
+}
+
+function parseHeading(text: string): { id: string | null; title: string; attrs: Attrs } {
+  let rest = text;
+  let attrs: Attrs = {};
+  const attrMatch = rest.match(ATTR_BLOCK);
+  if (attrMatch && attrMatch.index !== undefined) {
+    attrs = parseAttrs(attrMatch[1]);
+    rest = rest.slice(0, attrMatch.index);
+  }
+  const idMatch = rest.match(PANEL_ID);
+  return idMatch
+    ? { id: idMatch[1], title: idMatch[2].trim(), attrs }
+    : { id: null, title: rest.trim(), attrs };
+}
+
+export function parseAttrs(text: string): Attrs {
+  const attrs: Attrs = {};
+  for (const m of text.matchAll(ATTR_TOKEN)) {
+    attrs[m[1]] = m[2] === undefined ? true : coerce(m[1], unquote(m[2]));
+  }
+  return attrs;
+}
+
+function extractTitle(intro: Block[], meta: Meta): Block[] {
+  if (meta.title || intro[0]?.type !== 'md') return intro;
+  const [first, ...rest] = intro as [Block, ...Block[]];
+  const lines = (first.text as string).split('\n');
+  const idx = lines.findIndex((l) => l.trim());
+  const m = lines[idx]?.match(/^#\s+(.+)$/);
+  if (!m) return intro;
+  meta.title = m[1].trim();
+  const remaining = lines.slice(idx + 1);
+  if (!remaining.some((l) => l.trim())) return rest;
+  return [{ ...first, text: remaining.join('\n'), line: first.line + idx + 1 }, ...rest];
+}
+
+function assignIds(panels: Panel[]): Panel[] {
+  const used = new Set(panels.map((p) => p.id).filter(Boolean) as string[]);
+  let code = 'A'.charCodeAt(0);
+  const nextFree = () => {
+    while (used.has(String.fromCharCode(code))) code++;
+    const id = code <= 90 ? String.fromCharCode(code) : `P${code - 64}`;
+    used.add(id);
+    code++;
+    return id;
+  };
+  return panels.map((p) => (p.id ? p : { ...p, id: nextFree() }));
+}
+
+function unquote(v: string): string {
+  const s = v.trim();
+  return /^(["']).*\1$/.test(s) ? s.slice(1, -1) : s;
+}
+
+function coerce(key: string, value: string): AttrValue {
+  if (NUMERIC_KEYS.has(key) && /^\d+$/.test(value)) return Number(value);
+  return value;
+}

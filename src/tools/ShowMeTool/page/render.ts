@@ -1,0 +1,152 @@
+// 稿件 → 单文件 HTML。流程：parse → STE lint → 渲染面板（markdown / 组件 / raw）→ 套模板 → 内联 CSS 与运行时。
+
+import { parseDoc, ParseError, CHOICES } from './parse.js';
+import { md } from './markdown.js';
+import { COMPONENTS, RAW_LANGS, ComponentError } from './components/index.js';
+import { TEMPLATES } from './templates/index.js';
+import { pageCss } from './themes/index.js';
+import { lintDoc } from './lint/ste.js';
+import { esc, isCJK } from './svg/text.js';
+import { RUNTIME_JS } from './runtime/page.js';
+import type { Block, FenceBlock, Meta, RenderOverrides, RenderResult, RenderStats, Warning } from './types.js';
+
+// 上游 answer-me-with-html v0.2.2 的版本号，写入 <meta name="generator"> 与页脚。
+export const VERSION = '0.2.2';
+
+export class RenderError extends Error {
+  line: number;
+  component: string;
+  example: string;
+  constructor(message: string, { line, component, example }: { line: number; component: string; example: string }) {
+    super(message);
+    this.name = 'RenderError';
+    this.line = line;
+    this.component = component;
+    this.example = example;
+  }
+}
+
+export class LintError extends Error {
+  warnings: Warning[];
+  constructor(warnings: Warning[]) {
+    super(`STE 检查未通过（style: strict）：${warnings.length} 条`);
+    this.name = 'LintError';
+    this.warnings = warnings;
+  }
+}
+
+interface UILang {
+  theme: Record<string, string>;
+  mode: Record<string, string>;
+  copy: string;
+  done: string;
+}
+
+const UI: Record<string, UILang> = {
+  zh: {
+    theme: { blueprint: '主题：图纸', shadcn: '主题：卡片' },
+    mode: { auto: '明暗：跟随系统', light: '明暗：亮', dark: '明暗：暗' },
+    copy: '复制源稿', done: '已复制 ✓',
+  },
+  en: {
+    theme: { blueprint: 'Theme: Blueprint', shadcn: 'Theme: Cards' },
+    mode: { auto: 'Mode: Auto', light: 'Mode: Light', dark: 'Mode: Dark' },
+    copy: 'Copy source', done: 'Copied ✓',
+  },
+};
+
+export function detectLang(text: string): 'zh' | 'en' {
+  let cjk = 0;
+  let latin = 0;
+  for (const ch of String(text)) {
+    if (isCJK(ch)) cjk++;
+    else if (/[a-z]/i.test(ch)) latin++;
+  }
+  return cjk * 3 >= latin ? 'zh' : 'en';
+}
+
+export function renderPage(source: string, overrides: RenderOverrides = {}, defaults: RenderOverrides = {}): RenderResult {
+  const doc = parseDoc(source, { defaults });
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) continue;
+    if (CHOICES[key] && !CHOICES[key].includes(String(value))) {
+      throw new ParseError(`${key} 的值 "${value}" 无效，可选：${CHOICES[key].join(' | ')}`, 0);
+    }
+    doc.meta[key] = value;
+  }
+
+  const warnings = doc.meta.style === 'off' ? [] : lintDoc(doc);
+  if (doc.meta.style === 'strict' && warnings.length) throw new LintError(warnings);
+
+  const stats: RenderStats = { panels: doc.panels.length, components: {} };
+  const ctx: RenderCtx = { seq: 0, stats };
+  const introHtml = renderBlocks(doc.intro, ctx);
+  const panels = doc.panels.map((p) => ({ ...p, html: renderBlocks(p.blocks, ctx) }));
+  const lang = doc.meta.lang || detectLang(source);
+  const body = TEMPLATES[doc.meta.template]({ meta: doc.meta, introHtml, panels });
+  const html = shell({ meta: doc.meta, lang: String(lang), body, source });
+  return { html, warnings, stats, meta: doc.meta };
+}
+
+interface RenderCtx {
+  seq: number;
+  stats: RenderStats;
+}
+
+function renderBlocks(blocks: Block[], ctx: RenderCtx): string {
+  return blocks.map((b) => (b.type === 'md' ? `<div class="am-md">${md(b.text)}</div>` : renderFence(b, ctx))).join('\n');
+}
+
+function renderFence(block: FenceBlock, ctx: RenderCtx): string {
+  const { lang, args, text, line } = block;
+  if (RAW_LANGS.has(lang)) return text;
+  const comp = COMPONENTS.get(lang);
+  if (!comp) {
+    return `<pre class="am-code"><code${lang ? ` data-lang="${esc(lang)}"` : ''}>${esc(text)}</code></pre>`;
+  }
+  ctx.stats.components[lang] = (ctx.stats.components[lang] ?? 0) + 1;
+  try {
+    return comp.render(text, { args, uid: () => `am${++ctx.seq}` });
+  } catch (err) {
+    if (!(err instanceof ComponentError)) throw err;
+    throw new RenderError(err.message, {
+      line: line + (err.line || 0),
+      component: lang,
+      example: comp.example,
+    });
+  }
+}
+
+function timestamp(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function shell({ meta, lang, body, source }: { meta: Meta; lang: string; body: string; source: string }): string {
+  const ui = UI[lang] ?? UI.zh;
+  return `<!doctype html>
+<html lang="${lang === 'zh' ? 'zh-CN' : 'en'}" data-theme="${esc(meta.theme)}" data-mode="${esc(meta.mode)}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Answer me with HTML ${VERSION}">
+<title>${esc(meta.title || 'Answer me with HTML')}</title>
+<style>
+${pageCss()}
+</style>
+</head>
+<body>
+<div class="am-toolbar">
+<button class="am-btn" type="button" data-am="theme" data-labels="${esc(JSON.stringify(ui.theme))}">${esc(ui.theme[meta.theme])}</button>
+<button class="am-btn" type="button" data-am="mode" data-labels="${esc(JSON.stringify(ui.mode))}">${esc(ui.mode[meta.mode])}</button>
+<button class="am-btn" type="button" data-am="copy" data-done="${esc(ui.done)}">${esc(ui.copy)}</button>
+</div>
+${body}
+<footer class="am-colophon">Generated by Answer me with HTML ${VERSION} · ${esc(timestamp())}</footer>
+<textarea id="am-source" hidden readonly aria-hidden="true">${esc(source)}</textarea>
+<script>
+${RUNTIME_JS}</script>
+</body>
+</html>
+`;
+}

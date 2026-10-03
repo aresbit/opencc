@@ -1,0 +1,227 @@
+// 流程 / 架构图：模型只写关系（A -> B: 标签），dagre 计算坐标，这里负责把布局结果画成 SVG。
+import dagre from '@dagrejs/dagre';
+import { esc, measure, wrap } from '../svg/text.js';
+import { f, smoothPath, arrowDefs, svgOpen, textLines, type Point } from '../svg/shapes.js';
+import { ComponentError, contentLines } from './error.js';
+import type { Component } from '../types.js';
+
+const FS = 13;
+const LH = 17;
+const TEXT_MAX = 150;
+const EDGE_FS = 11.5;
+const DIRS = new Set(['TB', 'LR', 'BT', 'RL']);
+
+// 形状括号：先匹配更长的开括号。
+const BRACKETS = [
+  { open: '[(', close: ')]', shape: 'db' },
+  { open: '[', close: ']', shape: 'rect' },
+  { open: '(', close: ')', shape: 'round' },
+  { open: '{', close: '}', shape: 'diamond' },
+];
+const ARROW = /^\s*(-->|->)\s*/;
+
+interface FlowSpec { id: string; label: string; shape: string; explicit: boolean; hi: boolean }
+interface FlowNode extends FlowSpec { line: number }
+interface FlowEdge { from: string; to: string; dashed: boolean; label: string; line: number }
+interface FlowGroup { name: string; members: string[]; line: number }
+interface FlowModel { nodes: Map<string, FlowNode>; edges: FlowEdge[]; groups: FlowGroup[] }
+
+const flow: Component = {
+  name: 'flow',
+  summary: '流程图 / 架构图（自动布局）',
+  syntax: `\`\`\`flow [TB|LR|BT|RL]
+A -> B: 标签                  ← 实线，冒号后为边标签
+A --> C                       ← 虚线
+A -> B -> C                   ← 链式
+A -> B & C                    ← 扇出
+(开始)  {判断?}  [(数据库)]  [含: 冒号的文本]   ← 圆角 / 菱形 / 圆柱 / 矩形
+*重点节点                      ← * 前缀高亮
+group 分组名: B, C            ← 把节点框进一个分组
+\`\`\`
+- 节点以括号内的文字作为身份，之后可直接写文字引用。默认方向 TB（自上而下）。`,
+  example: '```flow LR\n(用户) -> 网关: HTTPS\n网关 -> 鉴权 & *业务服务\n业务服务 -> [(数据库)]\ngroup 后端: 鉴权, 业务服务\n```',
+  render(text, { args, uid }) {
+    const model = parseFlow(text);
+    const dir = (args.match(/\b(TB|LR|BT|RL)\b/i)?.[1] ?? 'TB').toUpperCase();
+    return `<figure class="am-diagram am-flow">${layout(model, DIRS.has(dir) ? dir : 'TB', uid())}</figure>`;
+  },
+};
+
+export function parseFlow(text: unknown): FlowModel {
+  const nodes = new Map<string, FlowNode>();
+  const edges: FlowEdge[] = [];
+  const groups: FlowGroup[] = [];
+  const upsert = (spec: FlowSpec, line: number): string => {
+    const prev = nodes.get(spec.id);
+    if (!prev) nodes.set(spec.id, { ...spec, line });
+    else nodes.set(spec.id, { ...prev, shape: spec.explicit ? spec.shape : prev.shape, hi: prev.hi || spec.hi });
+    return spec.id;
+  };
+
+  for (const { text: t, line } of contentLines(text)) {
+    const g = t.match(/^group\s+(.+?)\s*[:：]\s*(.+)$/i);
+    if (g) {
+      groups.push({ name: g[1], members: g[2].split(/[,，]/).map((s) => s.trim()).filter(Boolean), line });
+      continue;
+    }
+    const { chain, label } = parseChain(t, line);
+    const ids = chain.map((step) => ({ ...step, ids: step.nodes.map((n) => upsert(n, line)) }));
+    for (let k = 1; k < ids.length; k++) {
+      const isLast = k === ids.length - 1;
+      for (const from of ids[k - 1].ids) {
+        for (const to of ids[k].ids) {
+          edges.push({ from, to, dashed: ids[k].arrow === '-->', label: isLast ? label : '', line });
+        }
+      }
+    }
+  }
+  if (!nodes.size) throw new ComponentError('flow 至少需要一个节点', 1);
+  for (const grp of groups) {
+    const missing = grp.members.filter((m) => !nodes.has(m));
+    if (missing.length) throw new ComponentError(`group ${grp.name} 引用了不存在的节点：${missing.join('、')}`, grp.line);
+  }
+  return { nodes, edges, groups };
+}
+
+// 一行 = 节点组（& 分隔）以箭头相连，末尾可带 ": 标签"。
+function parseChain(t: string, line: number): { chain: { arrow: string | null; nodes: FlowSpec[] }[]; label: string } {
+  const chain: { arrow: string | null; nodes: FlowSpec[] }[] = [];
+  let pos = 0;
+  let arrow: string | null = null;
+  for (;;) {
+    const group: FlowSpec[] = [];
+    for (;;) {
+      const { node, end } = parseNode(t, pos, line);
+      group.push(node);
+      pos = end;
+      const amp = t.slice(pos).match(/^\s*&\s*/);
+      if (!amp) break;
+      pos += amp[0].length;
+    }
+    chain.push({ arrow, nodes: group });
+    const a = t.slice(pos).match(ARROW);
+    if (!a) break;
+    arrow = a[1];
+    pos += a[0].length;
+  }
+  const rest = t.slice(pos).trim();
+  if (rest && !/^[:：]/.test(rest)) {
+    throw new ComponentError(`flow 无法解析："${t}"。关系写作 A -> B: 标签`, line);
+  }
+  return { chain, label: rest.replace(/^[:：]\s*/, '') };
+}
+
+function parseNode(t: string, start: number, line: number): { node: FlowSpec; end: number } {
+  let pos = start + t.slice(start).match(/^\s*/)![0].length;
+  const hi = t[pos] === '*';
+  if (hi) pos++;
+  const bracket = BRACKETS.find((b) => t.startsWith(b.open, pos));
+  let label: string;
+  let end: number;
+  if (bracket) {
+    const close = t.indexOf(bracket.close, pos + bracket.open.length);
+    if (close === -1) throw new ComponentError(`flow 形状括号未闭合：缺少 ${bracket.close}`, line);
+    label = t.slice(pos + bracket.open.length, close).trim();
+    end = close + bracket.close.length;
+  } else {
+    const m = t.slice(pos).match(/^(.*?)(?=\s*(?:-->|->|&|[:：]|$))/);
+    label = m![1].trim();
+    end = pos + m![0].length;
+  }
+  if (!label) throw new ComponentError(`flow 存在空节点："${t}"`, line);
+  return { node: { id: label, label, shape: bracket?.shape ?? 'rect', explicit: Boolean(bracket), hi }, end };
+}
+
+function nodeSize(node: FlowNode): { lines: string[]; width: number; height: number } {
+  const lines = wrap(node.label, TEXT_MAX, FS);
+  const tw = Math.max(...lines.map((l) => measure(l, FS)));
+  const th = lines.length * LH;
+  const w = Math.max(tw + 28, 64);
+  const h = th + 18;
+  const size = ({
+    rect: [w, h],
+    round: [w + 12, h],
+    diamond: [(tw + 28) * 1.5, h * 1.6],
+    db: [w, h + 14],
+  } as Record<string, [number, number]>)[node.shape];
+  return { lines, width: size[0], height: size[1] };
+}
+
+function layout({ nodes, edges, groups }: FlowModel, rankdir: string, id: string): string {
+  const g = new dagre.graphlib.Graph({ compound: groups.length > 0, multigraph: true });
+  g.setGraph({ rankdir, nodesep: 36, ranksep: 46, marginx: 14, marginy: groups.length ? 26 : 14 });
+  g.setDefaultEdgeLabel(() => ({}));
+  const sizes = new Map<string, { lines: string[]; width: number; height: number }>();
+  for (const n of nodes.values()) {
+    const s = nodeSize(n);
+    sizes.set(n.id, s);
+    g.setNode(n.id, { width: s.width, height: s.height });
+  }
+  groups.forEach((grp, i) => {
+    g.setNode(`__group${i}`, { label: grp.name });
+    grp.members.forEach((m) => g.setParent(m, `__group${i}`));
+  });
+  edges.forEach((e, i) => {
+    const label = e.label ? { label: e.label, width: measure(e.label, EDGE_FS) + 12, height: 18, labelpos: 'c' } : {};
+    g.setEdge(e.from, e.to, label, `e${i}`);
+  });
+  dagre.layout(g);
+
+  const clusters = groups.map((grp, i) => {
+    const c = g.node(`__group${i}`);
+    const x = c.x - c.width / 2;
+    const y = c.y - c.height / 2;
+    return `<rect class="am-cluster" x="${f(x)}" y="${f(y)}" width="${f(c.width)}" height="${f(c.height)}" rx="4"/><text class="am-cluster-label" x="${f(x + 8)}" y="${f(y + 14)}">${esc(grp.name)}</text>`;
+  });
+
+  const edgeSvg = edges.map((e, i) => {
+    const data = g.edge({ v: e.from, w: e.to, name: `e${i}` });
+    const pts = clipEnds(data.points, g.node(e.from), nodes.get(e.from)!.shape, g.node(e.to), nodes.get(e.to)!.shape);
+    const path = `<path class="am-edge${e.dashed ? ' am-edge--dashed' : ''}" d="${smoothPath(pts)}" marker-end="url(#${id}-arrow)"/>`;
+    if (!e.label) return path;
+    const w = measure(e.label, EDGE_FS) + 10;
+    return `${path}<g class="am-edge-label"><rect x="${f(data.x - w / 2)}" y="${f(data.y - 9)}" width="${f(w)}" height="18" rx="3"/>${textLines([e.label], data.x, data.y, LH)}</g>`;
+  });
+
+  const nodeSvg = [...nodes.values()].map((n) => {
+    const { x, y } = g.node(n.id);
+    const { width: w, height: h, lines } = sizes.get(n.id)!;
+    return `<g class="am-node am-node--${n.shape}${n.hi ? ' am-node--hi' : ''}">${shapeSvg(n.shape, x, y, w, h)}${textLines(lines, x, y + (n.shape === 'db' ? 4 : 0), LH)}</g>`;
+  });
+
+  const { width, height } = g.graph();
+  const label = `流程图：${[...nodes.keys()].slice(0, 8).join('、')}`;
+  return `${svgOpen(width, height, label)}${arrowDefs(id)}<g>${clusters.join('')}</g><g>${edgeSvg.join('')}</g><g>${nodeSvg.join('')}</g></svg>`;
+}
+
+function shapeSvg(shape: string, x: number, y: number, w: number, h: number): string {
+  const l = x - w / 2;
+  const t = y - h / 2;
+  if (shape === 'diamond') {
+    return `<polygon class="am-node-shape" points="${f(x)},${f(t)} ${f(x + w / 2)},${f(y)} ${f(x)},${f(t + h)} ${f(l)},${f(y)}"/>`;
+  }
+  if (shape === 'db') {
+    const ry = 7;
+    return `<path class="am-node-shape" d="M${f(l)},${f(t + ry)} A${f(w / 2)},${ry} 0 0 1 ${f(l + w)},${f(t + ry)} V${f(t + h - ry)} A${f(w / 2)},${ry} 0 0 1 ${f(l)},${f(t + h - ry)} Z"/><path class="am-node-shape" d="M${f(l)},${f(t + ry)} A${f(w / 2)},${ry} 0 0 0 ${f(l + w)},${f(t + ry)}"/>`;
+  }
+  const rx = shape === 'round' ? h / 2 : 3;
+  return `<rect class="am-node-shape" x="${f(l)}" y="${f(t)}" width="${f(w)}" height="${f(h)}" rx="${f(rx)}"/>`;
+}
+
+// dagre 按矩形边界裁剪边端点；菱形需要重新求与斜边的交点，否则箭头悬空。
+function clipEnds(points: Point[], from: any, fromShape: string, to: any, toShape: string): Point[] {
+  const pts = points.map((p) => ({ ...p }));
+  if (fromShape === 'diamond' && pts.length > 1) pts[0] = diamondPoint(from, pts[1]);
+  if (toShape === 'diamond' && pts.length > 1) pts[pts.length - 1] = diamondPoint(to, pts[pts.length - 2]);
+  return pts;
+}
+
+function diamondPoint(node: any, toward: Point): Point {
+  const dx = toward.x - node.x;
+  const dy = toward.y - node.y;
+  const k = Math.abs(dx) / (node.width / 2) + Math.abs(dy) / (node.height / 2);
+  if (k === 0) return { x: node.x, y: node.y };
+  return { x: node.x + dx / k, y: node.y + dy / k };
+}
+
+export default flow;
