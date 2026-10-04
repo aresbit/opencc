@@ -3,6 +3,7 @@ import * as React from 'react'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import stripAnsi from 'strip-ansi'
 import { registry } from '../../registry.js'
 import { dispatchUISync } from '../../uiDispatcher.js'
 import type { EngineInterface } from '../../types.js'
@@ -57,6 +58,21 @@ function collectText(node: unknown): string {
 function tileText(node: unknown, i: number): string {
   const children = (node as React.ReactElement).props.children as unknown[]
   return collectText(children[i])
+}
+
+/**
+ * The picture a tile i drew, as the pre-rendered ANSI lines handed to
+ * <RawAnsi>, or null when the tile fell back to its text body. The body is the
+ * tile's first child; a fallback body is a <Box>, a thumbnail is a component
+ * carrying `lines`.
+ */
+function tileThumbnail(node: unknown, i: number): string[] | null {
+  const tiles = (node as React.ReactElement).props.children as unknown[]
+  const tile = tiles[i] as React.ReactElement
+  const body = (tile.props.children as unknown[])[0]
+  if (!React.isValidElement(body) || typeof body.type !== 'function') return null
+  const lines = (body.props as { lines?: unknown }).lines
+  return Array.isArray(lines) ? (lines as string[]) : null
 }
 
 describe('imageView slot', () => {
@@ -117,16 +133,37 @@ describe('imageView slot', () => {
     expect(tileText(node, 0)).toContain('no preview')
   })
 
-  test('a real PNG on disk is measured from its header', () => {
+  test('a real PNG on disk is drawn as a picture, not a dimension label', () => {
     mount()
     const dir = mkdtempSync(join(tmpdir(), 'imageview-'))
     const file = join(dir, 'one.png')
     writeFileSync(file, Buffer.from(PNG_1X1, 'base64'))
     try {
-      const node = render([{ n: 9, path: file, size: null }])
-      const text = tileText(node, 0)
-      expect(text).toContain('1×1')
-      expect(text).not.toContain('no preview')
+      const node = render([{ n: 9, path: file, size: null }], 40, 8)
+      const lines = tileThumbnail(node, 0)
+      expect(lines).not.toBeNull()
+      expect(lines!.length).toBeGreaterThan(0)
+      // Every line is one terminal row of half-blocks, whatever the colours.
+      for (const line of lines!) {
+        expect(stripAnsi(line)).toMatch(/^▀+$/)
+      }
+      expect(tileText(node, 0)).not.toContain('no preview')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('an undecodable file still falls back to the text body', () => {
+    mount()
+    const dir = mkdtempSync(join(tmpdir(), 'imageview-'))
+    const file = join(dir, 'truncated.png')
+    // A PNG signature with nothing behind it: the header check passes, the
+    // decode does not, and the tile must say so rather than show an empty box.
+    writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    try {
+      const node = render([{ n: 12, path: file, size: null }], 40, 8)
+      expect(tileThumbnail(node, 0)).toBeNull()
+      expect(tileText(node, 0)).toContain('no preview')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

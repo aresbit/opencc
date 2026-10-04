@@ -64,8 +64,14 @@ describe('normalizeThumbSize', () => {
 })
 
 describe('fitCells', () => {
-  test('clips a very wide image to MAX_COLUMNS and recomputes its height', () => {
+  test('clips a very wide image to the default column cap and recomputes its height', () => {
     expect(fitCells({ width: 100, height: 10 }, 6)).toEqual({ columns: 32, rows: 2 })
+  })
+
+  test('a wider column budget buys a wider tile at the same height', () => {
+    // The whole point of the budget: at 40 columns the same 100:10 image keeps
+    // its full six-row body instead of being squashed to two.
+    expect(fitCells({ width: 100, height: 10 }, 6, 60)).toEqual({ columns: 60, rows: 3 })
   })
 
   test('FALLBACK_SIZE at full height gives a 19x6 tile', () => {
@@ -87,11 +93,22 @@ describe('fitCells', () => {
 })
 
 describe('fitRow', () => {
-  test('two fallback tiles fit at full height inside a wide body', () => {
+  test('tiles grow to the tallest height the row budget allows', () => {
+    // 10 rows budgeted, 3 spent on chrome, so a 7-row body; two 19-column
+    // tiles plus chrome and a gap still fit inside 80 columns.
     expect(fitRow([null, null], 10, 80)).toEqual([
-      { columns: 19, rows: 6 },
-      { columns: 19, rows: 6 },
+      { columns: 22, rows: 7 },
+      { columns: 22, rows: 7 },
     ])
+  })
+
+  test('a document screenshot is legible only with a generous row budget', () => {
+    // The constraint that made the first version useless: for a wide image the
+    // row budget is what buys columns. At the old quarter-screen budget the
+    // 880x492 screenshot came out 18 columns wide — an unreadable white blur.
+    const screenshot = { width: 880, height: 492 }
+    expect(fitRow([screenshot], 8, 98)).toEqual([{ columns: 18, rows: 5 }])
+    expect(fitRow([screenshot], 17, 98)).toEqual([{ columns: 50, rows: 14 }])
   })
 
   test('a row that cannot fit falls back to single-row tiles', () => {

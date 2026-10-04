@@ -40,9 +40,9 @@ export type ThumbCells = { columns: number; rows: number }
 /** Assumed size when the real one is unknown (no PNG header, unreadable file). */
 export const FALLBACK_SIZE: ThumbSize = { width: 16, height: 10 }
 
-/** Rows a lone tile may occupy before aspect-based clipping kicks in. */
+/** Default body rows for a standalone tile; fitRow lets the caller override. */
 const TILE_ROWS = 6
-/** Width cap: past this a wide image is clipped and its height recomputed. */
+/** Default width cap: past this a wide image is clipped and its height recomputed. */
 const MAX_COLUMNS = 32
 /** Width floor: a tile never collapses narrower than this. */
 const MIN_COLUMNS = 4
@@ -172,15 +172,19 @@ export function normalizeThumbSize(input: unknown): ThumbSize | null {
  * divide by zero or emit NaN columns, so a caller that hands over a mismatched
  * shape gets a fallback tile rather than the text "undefined×undefined".
  */
-export function fitCells(size: ThumbSize | null, tileRows = TILE_ROWS): ThumbCells {
+export function fitCells(
+  size: ThumbSize | null,
+  tileRows = TILE_ROWS,
+  maxColumns = MAX_COLUMNS,
+): ThumbCells {
   const s = normalizeThumbSize(size) ?? FALLBACK_SIZE
   const { width, height } = s
   let rows = tileRows
   let columns = Math.round((rows * CELL_ASPECT * width) / height)
 
-  if (columns > MAX_COLUMNS) {
-    columns = MAX_COLUMNS
-    rows = Math.max(1, Math.round((MAX_COLUMNS * height) / (CELL_ASPECT * width)))
+  if (columns > maxColumns) {
+    columns = maxColumns
+    rows = Math.max(1, Math.round((maxColumns * height) / (CELL_ASPECT * width)))
   }
 
   return { columns: Math.max(MIN_COLUMNS, columns), rows: Math.min(rows, tileRows) }
@@ -189,6 +193,13 @@ export function fitCells(size: ThumbSize | null, tileRows = TILE_ROWS): ThumbCel
 /**
  * Lay out a whole row of tiles so it fits within `bodyColumns` without
  * scrolling, using the tallest uniform body height that fits.
+ *
+ * `maxRows` is the caller's whole budget for the row and is taken as given —
+ * there is no fixed height cap here, because how much screen a thumbnail may
+ * claim is a product decision, not a layout one. That matters: pixel content
+ * is what makes a thumbnail useful, and for a wide screenshot the height is
+ * the binding constraint (a 1.8:1 image at 9 body rows is only ~32 columns
+ * wide). Callers pass a budget large enough for the picture to be recognisable.
  *
  * Chrome (border, scrollbar, gaps) is subtracted from `maxRows` before the body
  * height is chosen: a tile that fills the budget body-and-all would push its own
@@ -202,15 +213,18 @@ export function fitRow(
   maxRows: number,
   bodyColumns: number,
 ): ThumbCells[] {
-  const tallest = Math.max(1, Math.min(TILE_ROWS, maxRows - TILE_CHROME_ROWS))
+  const tallest = Math.max(1, maxRows - TILE_CHROME_ROWS)
+  // One tile's share of the row: what is left of the body after its own
+  // chrome. fitRow's total-width check is what keeps the sum honest.
+  const maxColumns = Math.max(MIN_COLUMNS, bodyColumns - TILE_CHROME_COLUMNS)
 
   for (let tileRows = tallest; tileRows > 1; tileRows--) {
-    const cells = sizes.map(s => fitCells(s, tileRows))
+    const cells = sizes.map(s => fitCells(s, tileRows, maxColumns))
     const width =
       cells.reduce((sum, c) => sum + c.columns + TILE_CHROME_COLUMNS, 0) +
       GAP * (cells.length - 1)
     if (width <= bodyColumns) return cells
   }
 
-  return sizes.map(s => fitCells(s, 1))
+  return sizes.map(s => fitCells(s, 1, maxColumns))
 }

@@ -2025,9 +2025,12 @@ function PromptInput({
     return list;
   }, [pastedContents]);
 
-  // Budget the thumbnail row a quarter of the screen, floored at the 4 rows a
-  // one-cell-body tile needs and capped at 10 so it never crowds the prompt.
-  const promptImageMaxRows = Math.min(10, Math.max(4, Math.floor(rows / 4)));
+  // Budget the thumbnail row a share of the screen, floored at the 4 rows a
+  // one-cell-body tile needs and capped at 20 so it never crowds the prompt
+  // entirely. Deliberately generous: for a wide screenshot the tile's height is
+  // what decides how many columns it gets, and below roughly 20 body rows a
+  // document screenshot shrinks to an unreadable blur.
+  const promptImageMaxRows = Math.min(20, Math.max(4, Math.floor(rows * 0.4)));
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen REPL.
