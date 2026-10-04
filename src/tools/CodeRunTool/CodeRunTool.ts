@@ -825,23 +825,6 @@ export function createToolProxy(
     return _dreamProxy
   }
 
-  // Lazy-load fframes proxy for the fframes video tool's activity counters
-  let _framesProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
-  function getFramesProxy() {
-    if (_framesProxy) return _framesProxy
-    _framesProxy = {
-      async stats() {
-        const { getFramesStats } = await import('../../services/functionHooks/plugins/fframesHook.js')
-        return getFramesStats()
-      },
-      async reset() {
-        const { resetFramesStats } = await import('../../services/functionHooks/plugins/fframesHook.js')
-        return resetFramesStats()
-      },
-    }
-    return _framesProxy
-  }
-
   // Lazy-load thinkLoop proxy for deliberative reasoning loops
   let _thinkProxy: Record<string, (...args: unknown[]) => Promise<unknown>> | null = null
   function getThinkProxy() {
@@ -1096,7 +1079,6 @@ export function createToolProxy(
     get curriculum() { return getCurriculumProxy() },
     get constitution() { return getConstitutionProxy() },
     get dream() { return getDreamProxy() },
-    get frames() { return getFramesProxy() },
     get think() { return getThinkProxy() },
     get perf() { return getPerfProxy() },
     get mcpBroker() { return getMcpBrokerProxy() },

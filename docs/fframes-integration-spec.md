@@ -1,4 +1,4 @@
-# fframes integration spec — new built-in tool + algebraic-effect hook plugin
+# fframes integration spec — new built-in tool
 
 Target repo: `/data/data/com.termux/files/home/opencc` (opencc, a decompiled Claude Code fork).
 Runtime: Bun. Do NOT modify anything under `src/` while reading this spec; the builder
@@ -437,151 +437,13 @@ next to its siblings so the diff stays reviewable. Do NOT add anything before li
 
 ---
 
-## 4. Hook plugin skeleton + exact registration diff
-
-### 4.1 Event/placement choice (evidence-based)
-
-Available placements (src/services/functionHooks/index.ts:10–16):
-`before` -> work then `next(e)`; `after` -> `await next(e)` then work; `during` -> float
-`next(e)`; `instead` -> do not call `next`; `modify` -> `next({...e, changes})`.
-
-Handler signature (types.ts:164–168): `($: EngineInterface, e, next: NextFunction) => R | Promise<R>`.
-`NextFunction` (types.ts:139) supports `next(e)`, `.signal`, `.is(type, e)`, `.event`, `.origin`.
-Events are the `FunctionHookEvent` union (types.ts:14–106); `'tool.call'` bridges
-`PreToolUse`, `'tool.error'` bridges `PostToolUseFailure`, `'tool.content'` carries the
-result text (types.ts:109–129). Matchers are substructural but primitives compare by
-STRICT EQUALITY (matcher.ts:30) — you can match `{ tool_name: 'Bash' }`, but a
-"command contains ffmpeg" test must run in the hook body, not the matcher.
-
-Chosen placements for a genuinely useful video hook:
-1. **`tool.call` + matcher `{tool_name:'Bash'}`**, `modify` placement: detects `ffmpeg`/
-   `ffprobe` in `e.tool_input.command` and rewrites it to inject `-hide_banner -nostdin`,
-   so renders are non-interactive and their stderr is parseable. Same shape as
-   knowledgeHook.ts:142–152 but with a rewrite instead of a hint annotation — the doc at
-   plugins/index.ts:16 confirms `tool.call` supports "rewrite input".
-2. **`tool.error` + matcher `{tool_name:'fframes'}`**, `after` placement: records failed
-   renders so diagnostics are retrievable. `tool.error` is documented as observer-only
-   (plugins/index.ts:39), which is exactly its use here.
-3. **`tool.content` + matcher `{tool_name:'fframes'}`** is available if you later want to
-   index produced frame paths; it is deliberately NOT used initially to keep the plugin to
-   two hooks with observable state.
-
-### 4.2 `src/services/functionHooks/plugins/fframesHook.ts`
-
-```ts
-/**
- * FFrames — keep video tooling non-interactive and observable.
- *
- * On tool.call for Bash it rewrites ffmpeg/ffprobe invocations to inject
- * -hide_banner -nostdin, so a render cannot block on stdin and its stderr is
- * machine-parseable. Matcher is tool_name only (primitives compare by strict
- * equality — see matcher.ts), so the ffmpeg substring test lives in the body.
- *
- * On tool.error for the fframes tool it records the failure so a later turn can
- * read what failed and why.
- */
-
-import type { OnRegistrar } from '../types.js'
-
-const FFMPEG_RE = /\b(ffmpeg|ffprobe)\b/
-const ALREADY_NORMALIZED_RE = /(^|\s)-hide_banner(\s|$)/
-const INJECT = ['-hide_banner', '-nostdin']
-
-/** Returns a rewritten command, or null when there is nothing to change. */
-export function normalizeFfmpegCommand(command: string): string | null {
-  if (!FFMPEG_RE.test(command)) return null
-  if (ALREADY_NORMALIZED_RE.test(command)) return null
-  return command.replace(FFMPEG_RE, m => `${m} ${INJECT.join(' ')}`)
-}
-
-const failures: Array<{ at: number; input: string }> = []
-const MAX_FAILURES = 50
-
-export function getFfmpegFailures(): ReadonlyArray<{ at: number; input: string }> {
-  return failures
-}
-export function clearFfmpegFailures(): void {
-  failures.length = 0
-}
-
-export function register(on: OnRegistrar): void {
-  // modify: rewrite the Bash command, then continue the chain.
-  on('tool.call', { tool_name: 'Bash' }, async ($, e: any, next) => {
-    const command = e.tool_input?.command
-    if (typeof command === 'string') {
-      const rewritten = normalizeFfmpegCommand(command)
-      if (rewritten && rewritten !== command) {
-        return next({ ...e, tool_input: { ...e.tool_input, command: rewritten } })
-      }
-    }
-    return next(e)
-  })
-
-  // after: observe fframes failures. Observer only — the event passes through.
-  on('tool.error', { tool_name: 'fframes' }, async ($, e: any, next) => {
-    failures.push({ at: Date.now(), input: JSON.stringify(e.tool_input ?? {}) })
-    if (failures.length > MAX_FAILURES) failures.shift()
-    return next(e)
-  })
-}
-```
-
-### 4.3 Exact registration diff for `src/services/functionHooks/plugins/index.ts`
-
-**(a) Import — insert after line 78 (`import { register as registerAdaptive } ...`), before line 79:**
-
-```ts
-import { register as registerFFrames } from './fframesHook.js'
-```
-
-Anchor (plugins/index.ts:77–79):
-```ts
-import { register as registerKnowledge } from './knowledgeHook.js'
-import { register as registerAdaptive } from './adaptiveHintHook.js'
-import { register as registerJitSynthesis } from './jitSynthesisHook.js'
-```
-
-**(b) `pluginTable()` entry — insert after line 225 (`{ name: 'knowledge', ... }`), before line 226:**
-
-```ts
-    { name: 'fframes', id: 'builtin:fframes', register: registerFFrames },
-```
-
-Anchor (plugins/index.ts:224–227):
-```ts
-    { name: 'contextHandle', id: 'builtin:contextHandle', register: registerContextHandle },
-    { name: 'knowledge', id: 'builtin:knowledge', register: registerKnowledge },
-    { name: 'jitSynthesis', id: 'builtin:jitSynthesis', register: registerJitSynthesis, optIn: true },
-    { name: 'adaptive', id: 'builtin:adaptive', register: registerAdaptive },
-```
-
-Leave it default-ON (no `optIn: true`): it acts on every Bash command, but the action is a
-cheap in-memory string test with no I/O, and the plugin's value is highest when it is
-always on. If reviewers want it opt-in, add `optIn: true` and register it via
-`enableOptInPlugins('fframes')` in the test.
-
-**(c) `resetBuiltinPlugins()` id list — insert `'builtin:fframes',` into the array at
-plugins/index.ts:292–331 (e.g. after `'builtin:knowledge',` on line 316).**
-
-This is REQUIRED for test isolation. `resetEngine()` (bridge.ts:72–78) calls
-`resetBuiltinPlugins()`, which removes plugins by id (registry.ts:71). A plugin omitted
-from this list survives resets and leaks hooks into every later test file in the same Bun
-process — the exact leak documented at plugins/index.ts:144–156.
-
-**Engine init (no change needed):** `src/setup.ts:171–173` does
-`void import('./services/functionHooks/bridge.js').then(m => m.initEngine())`;
-`initEngine()` calls `registerBuiltinPlugins()` (bridge.ts:39), which walks `pluginTable()`.
-Registering in the table is the only wiring required.
-
----
-
-## 5. Validation & completion gate
+## 4. Validation & completion gate
 
 There is NO `--list-tools` flag in this CLI (verified: no such option in `src/main.tsx`,
 no `getAllBaseTools` call in `src/entrypoints/`). Smoke-test tool loading by importing the
 registry directly.
 
-### 5.1 Tool load smoke (exact command)
+### 4.1 Tool load smoke (exact command)
 
 ```bash
 bun -e "
@@ -593,7 +455,7 @@ console.log('OK: fframes registered; total tools =', names.length)
 ```
 Pass criterion: exit 0, prints `OK: fframes registered`.
 
-### 5.2 Direct `call()` smoke (exact command)
+### 4.2 Direct `call()` smoke (exact command)
 
 ```bash
 cd /data/data/com.termux/files/home/opencc && bun -e "
@@ -611,28 +473,7 @@ Pass criteria: (1) each return has a `data` key; (2) `list` returns `success:tru
 `availableReferences`/`availableScripts` arrays; (3) `guide` returns non-zero `bytes`;
 (4) `probe` with no `input` returns `success:false` (no throw).
 
-### 5.3 Hook smoke (exact command)
-
-```bash
-cd /data/data/com.termux/files/home/opencc && bun -e "
-import { registry } from './src/services/functionHooks/registry.ts'
-import { dispatch } from './src/services/functionHooks/dispatcher.ts'
-import { register, normalizeFfmpegCommand } from './src/services/functionHooks/plugins/fframesHook.ts'
-const on = registry.createRegistrar('fframesTest', 'test-fframes')
-register(on)
-const e = { tool_name: 'Bash', tool_input: { command: 'ffmpeg -i a.mp4 b.mp4' } }
-const out = await dispatch({}, 'tool.call', e, (_$, e2) => e2)
-console.log(JSON.stringify(out.tool_input.command))
-if (!/ffmpeg -hide_banner -nostdin/.test(out.tool_input.command)) { console.error('FAIL'); process.exit(1) }
-console.log('OK: normalize =>', normalizeFfmpegCommand('ffprobe x'))
-registry.removePlugin('test-fframes')
-"
-```
-Pass criteria: exit 0; rewritten command contains `ffmpeg -hide_banner -nostdin`;
-`normalizeFfmpegCommand('ffprobe x')` returns a string (non-null) and returns `null` for a
-non-ffmpeg command.
-
-### 5.4 Unit tests (bun test)
+### 4.3 Unit tests (bun test)
 
 Existing patterns to copy: `src/services/functionHooks/plugins/__tests__/writeGuardHook.test.ts`
 (dispatch + registrar), `src/services/functionHooks/__tests__/pluginStatus.test.ts`
@@ -640,43 +481,37 @@ Existing patterns to copy: `src/services/functionHooks/plugins/__tests__/writeGu
 
 Create:
 - `src/tools/FFramesTool/__tests__/fframes.test.ts`
-- `src/services/functionHooks/plugins/__tests__/fframesHook.test.ts`
 
 Run:
 ```bash
 cd /data/data/com.termux/files/home/opencc && bun test src/tools/FFramesTool/__tests__/fframes.test.ts
-cd /data/data/com.termux/files/home/opencc && bun test src/services/functionHooks/plugins/__tests__/fframesHook.test.ts
 ```
 Regression (proves a default-ON plugin did not break the opt-in invariant):
 ```bash
 cd /data/data/com.termux/files/home/opencc && bun test src/services/functionHooks/__tests__/pluginStatus.test.ts
 ```
-Pass criteria: all tests pass. `pluginStatus.test.ts` asserts
-`plugin.registered === !plugin.optIn` for EVERY table entry (lines 62–67) — so a
-default-ON `fframes` entry must register successfully, and the reset list must include its
-id or the leak tests will fail.
+Pass criteria: all tests pass.
 
-### 5.5 Build gate
+### 4.4 Build gate
 
 ```bash
 cd /data/data/com.termux/files/home/opencc && bun run build
 ```
 Pass criterion: exit 0 and `dist/cli.js` is produced (bundles the text assets inline).
 
-### 5.6 Completion gate (do not claim done until all true)
+### 4.5 Completion gate (do not claim done until all true)
 
 1. `bun run build` exits 0.
-2. 5.1 and 5.2 smoke commands exit 0.
-3. 5.3 hook smoke exits 0.
-4. 5.4 tests all pass, including the `pluginStatus.test.ts` regression.
-5. Tool returns `{ data: ... }` and `mapToolResultToToolResultBlockParam` exists.
-6. `FFramesTool` is present in `getAllBaseTools()`.
+2. 4.1 and 4.2 smoke commands exit 0.
+3. 4.3 tests all pass, including the `pluginStatus.test.ts` regression.
+4. Tool returns `{ data: ... }` and `mapToolResultToToolResultBlockParam` exists.
+5. `FFramesTool` is present in `getAllBaseTools()`.
 
 If any fails, report exactly which and stop — do not imply "done except tests".
 
 ---
 
-## 6. Pitfalls found in the code
+## 5. Pitfalls found in the code
 
 1. **`lazySchema` is a factory, not the schema.** Define
    `const inputSchema = lazySchema(() => z.strictObject({...}))`, then expose
