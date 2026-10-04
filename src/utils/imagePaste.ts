@@ -62,11 +62,22 @@ function getClipboardCommands() {
       deleteFile: `rm -f "${screenshotPath}"`,
     },
     linux: {
+      // Wayland first, X11 second. On a Wayland session xclip talks to
+      // XWayland's clipboard, which is a mirror that can be stale or empty;
+      // wl-paste reads the compositor directly. On X11 wl-paste exits
+      // non-zero (no WAYLAND_DISPLAY) and the `||` falls through, so the
+      // order is safe on both.
       checkImage:
-        'xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)" || wl-paste -l 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)"',
-      saveImage: `xclip -selection clipboard -t image/png -o > "${screenshotPath}" 2>/dev/null || wl-paste --type image/png > "${screenshotPath}" 2>/dev/null || xclip -selection clipboard -t image/bmp -o > "${screenshotPath}" 2>/dev/null || wl-paste --type image/bmp > "${screenshotPath}"`,
+        'wl-paste -l 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)" || xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -E "image/(png|jpeg|jpg|gif|webp|bmp)"',
+      // Ask the clipboard which image type it actually offers instead of
+      // assuming PNG. checkImage above accepts five types, so a screenshot
+      // tool that publishes only image/jpeg (or webp/gif) used to pass the
+      // check and then fail every hard-coded save. `[ -s … ] || exit 1`
+      // rejects the zero-byte file a failed `cmd > file` leaves behind —
+      // otherwise a failed save looked like a successful one.
+      saveImage: `img_type=$( { wl-paste -l 2>/dev/null; xclip -selection clipboard -t TARGETS -o 2>/dev/null; } | grep -oE "image/(png|jpeg|jpg|gif|webp|bmp)" | head -n1 ); [ -n "$img_type" ] || exit 1; if command -v wl-paste >/dev/null 2>&1; then wl-paste --type "$img_type" > "${screenshotPath}" 2>/dev/null || xclip -selection clipboard -t "$img_type" -o > "${screenshotPath}" 2>/dev/null; else xclip -selection clipboard -t "$img_type" -o > "${screenshotPath}" 2>/dev/null; fi; [ -s "${screenshotPath}" ] || exit 1`,
       getPath:
-        'xclip -selection clipboard -t text/plain -o 2>/dev/null || wl-paste 2>/dev/null',
+        'wl-paste -n 2>/dev/null || xclip -selection clipboard -t text/plain -o 2>/dev/null',
       deleteFile: `rm -f "${screenshotPath}"`,
     },
     win32: {
@@ -94,6 +105,22 @@ export type ImageWithDimensions = {
  * Check if clipboard contains an image without retrieving it.
  */
 export async function hasImageInClipboard(): Promise<boolean> {
+  // Linux: ask the clipboard for its TARGETS. Same command the paste path
+  // uses, so the "ctrl+v to paste" hint can never advertise an image that
+  // getImageFromClipboard would then fail to read.
+  if (process.platform === 'linux') {
+    const { commands } = getClipboardCommands()
+    try {
+      const result = await execa(commands.checkImage, {
+        shell: true,
+        reject: false,
+      })
+      return result.exitCode === 0
+    } catch {
+      return false
+    }
+  }
+
   if (process.platform !== 'darwin') {
     return false
   }
