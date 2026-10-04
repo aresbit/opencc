@@ -1,6 +1,6 @@
-import { mkdir, rm, writeFile, readdir, readFile, stat } from 'node:fs/promises'
+import { mkdir, rm, writeFile, readdir, readFile, stat, copyFile } from 'node:fs/promises'
 import { join, dirname, basename } from 'node:path'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -22,7 +22,10 @@ const FRAMES_TOOL_NAME = 'fframes'
 // src/tools/FFramesTool; the bundled assets are inlined as text regardless.
 const TOOL_DIR = import.meta.dir
 const RENDERER_DIR = join(TOOL_DIR, 'renderer')
-const RENDERER_BIN = join(RENDERER_DIR, 'target', 'release', 'fframes-render')
+const RENDERER_BIN_DIR = join(RENDERER_DIR, 'target', 'release')
+const RENDERER_BIN = join(RENDERER_BIN_DIR, 'fframes-render')
+/** User cache for a built renderer, so the deployed bundle (no renderer/ beside it) still finds it. */
+const CACHE_BIN = join(homedir(), '.cache', 'opencc', 'fframes-render')
 const FONT_ABS = join(TOOL_DIR, FONT_FILE)
 
 const DESCRIPTION = `FFrames 视频生成器 (fframes video generator) —— 把 Rust + SVG + ffmpeg 的视频框架 fframes 内置成工具：取回 SKILL.md 人格/方法论指南、API/音频/设计/Rust 核心参考文档，按真实 cargo-fframes 模板脚手架出一个 fframes 项目，或在本机直接把每帧 SVG 光栅化并编码成 .mp4（纯 CPU：resvg -> tiny-skia -> ffmpeg libx264，无需 GPU）。触发词："fframes"、"视频生成"、"生成视频"、"视频"、"动画"、"SVG 动画"、"render mp4"、"video"、"animation"、"svg to video"、"scaffold video project"。`
@@ -34,7 +37,7 @@ const USAGE_PROMPT = `
 - \`reference\`  取回打包的参考文档，\`reference\` 参数取 api / audio / design / rust-core-api。用 \`list\` 查看全部。
 - \`list\`  列出所有打包参考文档及字节大小。
 - \`scaffold\`  把一份真实的 fframes 项目源码写到 \`outputDir\`（Cargo.toml、src/lib.rs、src/main.rs、tests/frames.rs、README.md、.gitignore、media/DMSans-Medium.ttf）。参数：outputDir(必填)、template('single-scene'|'multi-scene')、title。
-- \`render\`  在本机真正产出一个 .mp4。参数：outputPath(必填, .mp4)、scene({text,bg,fg}) 或 svgDir(每帧一个 SVG)、fps(默认 30)、duration 秒(默认 3)、size px(默认 640)。首次会 \`cargo build --release\` 编译内置渲染器 (~3 分钟)。
+- \`render\`  在本机真正产出一个 .mp4。参数：outputPath(必填, .mp4)、scene({text,bg,fg}) 或 svgDir(每帧一个 SVG)、fps(默认 30)、duration 秒(默认 3)、size px(默认 640)。优先复用预编译渲染器（模块旁 / 安装目录旁 / ~/.cache/opencc / $OPENCC_FFRAMES_RENDERER）；仅当都不存在时才用 cargo 现场编译。
 
 render 是无 GPU 的软件管线：每帧 SVG -> resvg/tiny-skia 光栅化为 PNG -> ffmpeg (libx264, yuv420p) 合成。渲染器与字体都打包在工具目录内，不依赖外部 fframes 安装。
 `
@@ -255,13 +258,32 @@ interface CmdResult {
 }
 
 async function runCmd(args: string[], cwd?: string, signal?: AbortSignal): Promise<CmdResult> {
-  const proc = Bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', signal })
+  const proc = Bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', signal, env: toolEnv() })
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ])
   return { code, stdout, stderr }
+}
+
+/** PATH augmented with the usual toolchain dirs, so cargo/ffmpeg/ffprobe resolve
+ *  even when the CLI was launched with a minimal PATH (e.g. a bundle spawned by
+ *  a GUI/daemon, or Termux where the linker bin dir is not exported). */
+function toolEnv(): Record<string, string> {
+  const extra = [
+    RENDERER_BIN_DIR,
+    join(homedir(), '.cargo', 'bin'),
+    process.env.PREFIX ? join(process.env.PREFIX, 'bin') : '',
+    '/data/data/com.termux/files/usr/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+  ].filter((v): v is string => !!v)
+  const path = [...extra, ...(process.env.PATH ?? '').split(':')]
+    .filter((v, i, a) => v && a.indexOf(v) === i)
+    .join(':')
+  return { ...(process.env as Record<string, string>), PATH: path }
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -273,21 +295,89 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-async function ensureRenderer(log: string[], signal?: AbortSignal): Promise<string> {
-  if (await exists(RENDERER_BIN)) {
-    log.push(`renderer present: ${RENDERER_BIN}`)
-    return RENDERER_BIN
+/** A prebuilt renderer may live next to this module (dev tree), next to the
+ *  installed bundle, in a user cache written by a previous build, or at a path
+ *  given by OPENCC_FFRAMES_RENDERER. `render` must not need cargo when one of
+ *  these already exists — that was the bug: the deployed bundle had no
+ *  `renderer/` next to it, so it fell through to a `cargo build` whose spawn
+ *  could not even find cargo. */
+async function findRendererBin(): Promise<string | null> {
+  const candidates = [
+    process.env.OPENCC_FFRAMES_RENDERER,
+    RENDERER_BIN,
+    join(TOOL_DIR, 'renderer', 'fframes-render'),
+    CACHE_BIN,
+  ].filter((p): p is string => !!p)
+  for (const p of candidates) {
+    if (await exists(p)) return p
   }
-  log.push(`building renderer: cargo build --release (cwd ${RENDERER_DIR})`)
-  const r = await runCmd(['cargo', 'build', '--release'], RENDERER_DIR, signal)
+  return null
+}
+
+/** Resolve a usable cargo: the augmented PATH first, then well-known locations. */
+async function resolveCargo(): Promise<string | null> {
+  const r = await runCmd(['sh', '-c', 'command -v cargo 2>/dev/null || true'])
+  const found = r.stdout.trim().split('\n')[0]?.trim()
+  if (found) return found
+  for (const p of [
+    join(homedir(), '.cargo', 'bin', 'cargo'),
+    process.env.PREFIX ? join(process.env.PREFIX, 'bin', 'cargo') : '',
+    '/usr/local/bin/cargo',
+    '/usr/bin/cargo',
+  ]) {
+    if (p && (await exists(p))) return p
+  }
+  return null
+}
+
+async function ensureRenderer(log: string[], signal?: AbortSignal): Promise<string> {
+  const present = await findRendererBin()
+  if (present) {
+    log.push(`renderer present: ${present}`)
+    return present
+  }
+
+  const srcDir = (await exists(join(RENDERER_DIR, 'Cargo.toml')))
+    ? RENDERER_DIR
+    : (await exists(join(TOOL_DIR, 'renderer', 'Cargo.toml')))
+      ? join(TOOL_DIR, 'renderer')
+      : null
+  if (!srcDir) {
+    throw new Error(
+      'renderer binary not found and no renderer sources to build from. ' +
+        `Looked for a prebuilt fframes-render (${[RENDERER_BIN, join(TOOL_DIR, 'renderer', 'fframes-render'), CACHE_BIN].join(', ')}) ` +
+        'and for renderer/Cargo.toml next to the tool. Set OPENCC_FFRAMES_RENDERER to a prebuilt fframes-render.',
+    )
+  }
+
+  const cargo = await resolveCargo()
+  if (!cargo) {
+    throw new Error(
+      'no prebuilt renderer and no cargo to build one. Install Rust (or set PATH to include cargo), ' +
+        'or point OPENCC_FFRAMES_RENDERER at a prebuilt fframes-render.',
+    )
+  }
+  log.push(`building renderer: ${cargo} build --release (cwd ${srcDir})`)
+  const r = await runCmd([cargo, 'build', '--release'], srcDir, signal)
   log.push(`cargo build --release exited ${r.code}`)
   if (r.code !== 0) {
     throw new Error(`renderer build failed:\n${clip(r.stderr, 4000)}`)
   }
-  if (!(await exists(RENDERER_BIN))) {
+  const built = join(srcDir, 'target', 'release', 'fframes-render')
+  if (!(await exists(built))) {
     throw new Error('cargo build reported success but the renderer binary is missing')
   }
-  return RENDERER_BIN
+  // Cache it so the deployed bundle (which has no renderer/ beside it) finds it next time.
+  try {
+    if (built !== CACHE_BIN) {
+      await mkdir(dirname(CACHE_BIN), { recursive: true })
+      await copyFile(built, CACHE_BIN)
+      log.push(`cached renderer: ${CACHE_BIN}`)
+    }
+  } catch {
+    // caching is best-effort; the freshly built path still works this run
+  }
+  return built
 }
 
 function escapeXml(s: string): string {
