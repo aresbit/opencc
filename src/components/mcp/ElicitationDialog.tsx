@@ -37,6 +37,56 @@ function resetTypeahead(ta: {
 }
 
 /**
+ * Are all required fields of the form satisfied by the given values?
+ * Shared by the initial-focus decision and the Accept-button validation so
+ * the two can never disagree about what "complete" means.
+ */
+function isFormComplete(
+  requestedSchema: ElicitRequestFormParams['requestedSchema'],
+  values: Record<string, string | number | boolean | string[]>
+): boolean {
+  const requiredFields = requestedSchema.required ?? [];
+  return requiredFields.every(name => {
+    const value = values[name];
+    if (value === undefined || value === null || value === '') return false;
+    if (Array.isArray(value) && value.length === 0) return false;
+    return true;
+  });
+}
+
+/**
+ * Build the initial form values for an elicitation form.
+ *
+ * Applies each schema `default`. Additionally, a *required* single-select enum
+ * with no default gets a preselected option, so that accepting the dialog
+ * never requires manually expanding the accordion and picking a value — the
+ * user can just hit Accept (or Enter). An option whose value is "accept" is
+ * preferred; otherwise the first option is used, the usual radio-group
+ * convention.
+ */
+function computeInitialFormValues(
+  requestedSchema: ElicitRequestFormParams['requestedSchema']
+): Record<string, string | number | boolean | string[]> {
+  const initialValues: Record<string, string | number | boolean | string[]> = {};
+  const requiredFields = requestedSchema.required ?? [];
+  for (const [propName, propSchema] of Object.entries(requestedSchema.properties ?? {})) {
+    if (typeof propSchema !== 'object' || propSchema === null) continue;
+    if (propSchema.default !== undefined) {
+      initialValues[propName] = propSchema.default;
+      continue;
+    }
+    if (requiredFields.includes(propName) && isEnumSchema(propSchema)) {
+      const enumValues = getEnumValues(propSchema);
+      const preferred = enumValues.find(v => v.toLowerCase() === 'accept') ?? enumValues[0];
+      if (preferred !== undefined) {
+        initialValues[propName] = preferred;
+      }
+    }
+  }
+  return initialValues;
+}
+
+/**
  * Isolated spinner glyph for a field that is being resolved asynchronously.
  * Owns its own 80ms animation timer so ticks only re-render this tiny leaf,
  * not the entire ElicitationFormDialog (~1200 lines + renderFormFields).
@@ -157,20 +207,15 @@ function ElicitationFormDialog({
     requestedSchema
   } = request;
   const hasFields = Object.keys(requestedSchema.properties).length > 0;
-  const [focusedButton, setFocusedButton] = useState<'accept' | 'decline' | null>(hasFields ? null : 'accept');
-  const [formValues, setFormValues] = useState<Record<string, string | number | boolean | string[]>>(() => {
-    const initialValues: Record<string, string | number | boolean | string[]> = {};
-    if (requestedSchema.properties) {
-      for (const [propName, propSchema] of Object.entries(requestedSchema.properties)) {
-        if (typeof propSchema === 'object' && propSchema !== null) {
-          if (propSchema.default !== undefined) {
-            initialValues[propName] = propSchema.default;
-          }
-        }
-      }
-    }
-    return initialValues;
+  const initialFormValues = useMemo(() => computeInitialFormValues(requestedSchema), [requestedSchema]);
+  // Start on Accept whenever the form is already complete (schema defaults and
+  // preselected required enums), so a single Enter accepts with no manual field
+  // selection. Otherwise focus the first field, as before.
+  const [focusedButton, setFocusedButton] = useState<'accept' | 'decline' | null>(() => {
+    if (!hasFields) return 'accept';
+    return isFormComplete(requestedSchema, initialFormValues) ? 'accept' : null;
   });
+  const [formValues, setFormValues] = useState<Record<string, string | number | boolean | string[]>>(() => initialFormValues);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>(() => {
     const initialErrors: Record<string, string> = {};
     for (const [propName_0, propSchema_0] of Object.entries(requestedSchema.properties)) {
@@ -205,7 +250,7 @@ function ElicitationFormDialog({
       isRequired: requiredFields.includes(name)
     }));
   }, [requestedSchema]);
-  const [currentFieldIndex, setCurrentFieldIndex] = useState<number | undefined>(hasFields ? 0 : undefined);
+  const [currentFieldIndex, setCurrentFieldIndex] = useState<number | undefined>(hasFields && focusedButton !== 'accept' ? 0 : undefined);
   const [textInputValue, setTextInputValue] = useState(() => {
     // Initialize from the first field's value if it's a text field
     const firstField = schemaFields[0];
@@ -729,17 +774,7 @@ function ElicitationFormDialog({
     isActive: true
   });
   function validateRequired(): boolean {
-    const requiredFields_1 = requestedSchema.required || [];
-    for (const fieldName_8 of requiredFields_1) {
-      const value_2 = formValues[fieldName_8];
-      if (value_2 === undefined || value_2 === null || value_2 === '') {
-        return false;
-      }
-      if (Array.isArray(value_2) && value_2.length === 0) {
-        return false;
-      }
-    }
-    return true;
+    return isFormComplete(requestedSchema, formValues);
   }
 
   // Scroll windowing: compute visible field range
