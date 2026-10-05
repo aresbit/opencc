@@ -31,6 +31,7 @@ import {
 } from '../managedPath.js'
 import { type SettingsJson, SettingsSchema } from '../types.js'
 import {
+  filterInvalidHooks,
   filterInvalidPermissionRules,
   formatZodError,
   type ValidationError,
@@ -190,12 +191,14 @@ export function parseCommandOutputAsSettings(
   }
 
   const ruleWarnings = filterInvalidPermissionRules(data, sourcePath)
+  const hookWarnings = filterInvalidHooks(data, sourcePath)
+  const sanitizeWarnings = [...ruleWarnings, ...hookWarnings]
   const parseResult = SettingsSchema().safeParse(data)
   if (!parseResult.success) {
     const errors = formatZodError(parseResult.error, sourcePath)
-    return { settings: {}, errors: [...ruleWarnings, ...errors] }
+    return { settings: {}, errors: [...sanitizeWarnings, ...errors] }
   }
-  return { settings: parseResult.data, errors: ruleWarnings }
+  return { settings: parseResult.data, errors: sanitizeWarnings }
 }
 
 /**

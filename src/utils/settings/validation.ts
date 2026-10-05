@@ -1,5 +1,7 @@
 import type { ConfigScope } from 'src/services/mcp/types.js'
+import { HOOK_EVENTS } from 'src/entrypoints/agentSdkTypes.js'
 import type { ZodError, ZodIssue } from 'zod/v4'
+import { HookCommandSchema, HookMatcherSchema } from '../../schemas/hooks.js'
 import { jsonParse } from '../slowOperations.js'
 import { plural } from '../stringUtils.js'
 import { validatePermissionRule } from './permissionValidation.js'
@@ -260,6 +262,120 @@ export function filterInvalidPermissionRules(
       }
       return true
     })
+  }
+  return warnings
+}
+
+/**
+ * Filters unusable hooks from raw parsed JSON before schema validation.
+ *
+ * This is the same hazard `filterInvalidPermissionRules` guards against for
+ * permissions, but for hooks — and for hooks it is worse. `parseSettingsFile`
+ * returns `settings: null` whenever the whole settings object fails
+ * `SettingsSchema`, which discards the file's `env` block too. When `env` holds
+ * ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL (the usual way a third-party provider
+ * is wired up), a single hook the build doesn't understand silently logs every
+ * session out — "Not logged in" with no hint of the cause.
+ *
+ * Removes, with a warning for each: a `hooks` value that isn't an object,
+ * event keys not in HOOK_EVENTS, non-array matcher lists, non-object matchers,
+ * hook entries whose `type` isn't one of command/prompt/agent/http/mcp_tool,
+ * and any matcher that still fails validation afterwards. The returned
+ * warnings are surfaced next to the file so the removal isn't silent.
+ */
+export function filterInvalidHooks(
+  data: unknown,
+  filePath: string,
+): ValidationError[] {
+  if (!data || typeof data !== 'object') return []
+  const obj = data as Record<string, unknown>
+  if (obj.hooks === undefined) return []
+
+  const warnings: ValidationError[] = []
+
+  if (
+    obj.hooks === null ||
+    typeof obj.hooks !== 'object' ||
+    Array.isArray(obj.hooks)
+  ) {
+    warnings.push({
+      file: filePath,
+      path: 'hooks',
+      message:
+        'Malformed `hooks` (expected an object keyed by event name) was removed',
+      invalidValue: obj.hooks,
+    })
+    delete obj.hooks
+    return warnings
+  }
+
+  const hooks = obj.hooks as Record<string, unknown>
+  for (const [event, matchers] of Object.entries(hooks)) {
+    if (!(HOOK_EVENTS as readonly string[]).includes(event)) {
+      warnings.push({
+        file: filePath,
+        path: `hooks.${event}`,
+        message: `Unknown hook event "${event}" was removed (valid events: ${HOOK_EVENTS.join(', ')})`,
+        invalidValue: matchers,
+      })
+      delete hooks[event]
+      continue
+    }
+
+    if (!Array.isArray(matchers)) {
+      warnings.push({
+        file: filePath,
+        path: `hooks.${event}`,
+        message: `hooks.${event} must be an array of matchers; it was removed`,
+        invalidValue: matchers,
+      })
+      delete hooks[event]
+      continue
+    }
+
+    const kept: unknown[] = []
+    for (const matcher of matchers) {
+      if (!matcher || typeof matcher !== 'object') {
+        warnings.push({
+          file: filePath,
+          path: `hooks.${event}`,
+          message: 'Non-object hook matcher was removed',
+          invalidValue: matcher,
+        })
+        continue
+      }
+      const entry = matcher as Record<string, unknown>
+      if (Array.isArray(entry.hooks)) {
+        entry.hooks = entry.hooks.filter(hook => {
+          if (HookCommandSchema().safeParse(hook).success) return true
+          const type =
+            hook && typeof hook === 'object' && 'type' in hook
+              ? (hook as Record<string, unknown>).type
+              : undefined
+          warnings.push({
+            file: filePath,
+            path: `hooks.${event}`,
+            message:
+              `Hook with unsupported type ${JSON.stringify(type)} was removed ` +
+              `(supported: command, prompt, agent, http, mcp_tool)`,
+            invalidValue: hook,
+          })
+          return false
+        })
+      }
+      if (HookMatcherSchema().safeParse(entry).success) {
+        kept.push(entry)
+      } else {
+        warnings.push({
+          file: filePath,
+          path: `hooks.${event}`,
+          message:
+            'Hook matcher failed validation after filtering and was removed',
+          invalidValue: entry,
+        })
+      }
+    }
+    hooks[event] = kept
   }
   return warnings
 }

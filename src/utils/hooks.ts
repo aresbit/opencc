@@ -35,7 +35,10 @@ import {
   addToTurnHookDuration,
   getOriginalCwd,
   getMainThreadAgentType,
+  getPromptId,
 } from '../bootstrap/state.js'
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js'
+import type { MCPServerConnection } from '../services/mcp/types.js'
 import { checkHasTrustDialogAccepted } from './config.js'
 import {
   getHooksConfigFromSnapshot,
@@ -168,6 +171,72 @@ import {
 } from '../services/functionHooks/bridge.js'
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
+
+/**
+ * Substitutes `${field}` / `$field` references in an `mcp_tool` hook's input
+ * values with fields of the hook input (e.g. `${session_id}`,
+ * `${tool_use_id}`, `${prompt_id}`). Unresolved references become ''.
+ */
+function interpolateHookInput(template: string, hookInput: HookInput): string {
+  return template.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (_match, braced: string | undefined, bare: string | undefined) => {
+      const value = (hookInput as Record<string, unknown>)[braced ?? bare!]
+      if (value === undefined || value === null) return ''
+      return typeof value === 'string' ? value : jsonStringify(value)
+    },
+  )
+}
+
+/**
+ * Runs an `mcp_tool` hook: resolves the named MCP server among the connected
+ * clients, interpolates the hook input into the tool arguments, and calls the
+ * tool on the existing connection. Returns the tool's text output; `ok: false`
+ * marks a non-blocking error (unreachable server, tool error, or thrown call).
+ */
+async function execMcpToolHook(
+  hook: { server: string; tool: string; input?: Record<string, string> },
+  hookInput: HookInput,
+  clients: MCPServerConnection[] | undefined,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<{ ok: true; text: string } | { ok: false; text: string }> {
+  const connection = clients?.find(
+    c => c.type === 'connected' && c.name === hook.server,
+  )
+  if (!connection) {
+    return { ok: false, text: `MCP server "${hook.server}" is not connected` }
+  }
+
+  const args: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(hook.input ?? {})) {
+    args[key] = interpolateHookInput(value, hookInput)
+  }
+
+  try {
+    const result = await connection.client.callTool(
+      { name: hook.tool, arguments: args },
+      CallToolResultSchema,
+      { signal, ...(timeoutMs ? { timeout: timeoutMs } : {}) },
+    )
+    const text = (Array.isArray(result.content) ? result.content : [])
+      .filter(
+        (item): item is { type: 'text'; text: string } =>
+          item.type === 'text' && typeof item.text === 'string',
+      )
+      .map(item => item.text)
+      .join('\n')
+    if (result.isError) {
+      return {
+        ok: false,
+        text: text || `MCP tool "${hook.tool}" returned an error`,
+      }
+    }
+    return { ok: true, text }
+  } catch (error) {
+    return { ok: false, text: errorMessage(error) }
+  }
+}
 
 async function runAlgebraicHooksOutsideREPL(
   hookEvent: HookEvent,
@@ -346,6 +415,7 @@ export function createBaseHookInput(
   permission_mode?: string
   agent_id?: string
   agent_type?: string
+  prompt_id?: string
 } {
   const resolvedSessionId = sessionId ?? getSessionId()
   // agent_type: subagent's type (from toolUseContext) takes precedence over
@@ -359,6 +429,7 @@ export function createBaseHookInput(
     permission_mode: permissionMode,
     agent_id: agentInfo?.agentId,
     agent_type: resolvedAgentType,
+    prompt_id: getPromptId() ?? undefined,
   }
 }
 
@@ -1935,6 +2006,26 @@ export async function getMatchingHooks(
       ).values(),
     )
     const callbackHooks = matchedHooks.filter(m => m.hook.type === 'callback')
+    const uniqueMcpToolHooks = Array.from(
+      new Map(
+        matchedHooks
+          .filter(m => m.hook.type === 'mcp_tool')
+          .map(m => {
+            const h = m.hook as {
+              server: string
+              tool: string
+              input?: Record<string, string>
+            }
+            return [
+              hookDedupKey(
+                m,
+                `${h.server}\0${h.tool}\0${jsonStringify(h.input ?? {})}\0${getIfCondition(h)}`,
+              ),
+              m,
+            ]
+          }),
+      ).values(),
+    )
     // Function hooks don't need deduplication - each callback is unique
     const functionHooks = matchedHooks.filter(m => m.hook.type === 'function')
     const uniqueHooks = [
@@ -1942,6 +2033,7 @@ export async function getMatchingHooks(
       ...uniquePromptHooks,
       ...uniqueAgentHooks,
       ...uniqueHttpHooks,
+      ...uniqueMcpToolHooks,
       ...callbackHooks,
       ...functionHooks,
     ]
@@ -1954,7 +2046,8 @@ export async function getMatchingHooks(
         (h.hook.type === 'command' ||
           h.hook.type === 'prompt' ||
           h.hook.type === 'agent' ||
-          h.hook.type === 'http') &&
+          h.hook.type === 'http' ||
+          h.hook.type === 'mcp_tool') &&
         (h.hook as { if?: string }).if,
     )
     const ifMatcher = hasIfCondition
@@ -1965,7 +2058,8 @@ export async function getMatchingHooks(
         h.hook.type !== 'command' &&
         h.hook.type !== 'prompt' &&
         h.hook.type !== 'agent' &&
-        h.hook.type !== 'http'
+        h.hook.type !== 'http' &&
+        h.hook.type !== 'mcp_tool'
       ) {
         return true
       }
@@ -2585,6 +2679,82 @@ async function* executeHooks({
           return
         }
 
+        return
+      }
+
+      if (hook.type === 'mcp_tool') {
+        emitHookStarted(hookId, hookName, hookEvent)
+        const outcome = await execMcpToolHook(
+          hook,
+          hookInput,
+          toolUseContext?.options?.mcpClients,
+          abortSignal,
+          commandTimeoutMs,
+        )
+        cleanup?.()
+        const durationMs = Date.now() - hookStartMs
+        emitHookResponse({
+          hookId,
+          hookName,
+          hookEvent,
+          output: outcome.text,
+          stdout: outcome.text,
+          stderr: outcome.ok ? '' : outcome.text,
+          exitCode: outcome.ok ? 0 : 1,
+          outcome: outcome.ok ? 'success' : 'error',
+        })
+
+        // A tool error is a non-blocking error. An ok call's text output is
+        // treated like command-hook stdout: it may carry a JSON decision.
+        const mcpParse = outcome.ok
+          ? parseHookOutput(outcome.text)
+          : { json: undefined, plainText: undefined, validationError: undefined }
+        if (!outcome.ok || mcpParse.validationError) {
+          yield {
+            message: createAttachmentMessage({
+              type: 'hook_non_blocking_error',
+              hookName,
+              toolUseID,
+              hookEvent,
+              stderr: mcpParse.validationError
+                ? `JSON validation failed: ${mcpParse.validationError}`
+                : outcome.text,
+              stdout: '',
+              exitCode: 1,
+              command: hookCommand,
+              durationMs,
+            }),
+            outcome: 'non_blocking_error' as const,
+            hook,
+          }
+          return
+        }
+
+        if (mcpParse.json && !isAsyncHookJSONOutput(mcpParse.json)) {
+          const processed = processHookJSONOutput({
+            json: mcpParse.json,
+            command: hookCommand,
+            hookName,
+            toolUseID,
+            hookEvent,
+            expectedHookEvent: hookEvent,
+            stdout: outcome.text,
+            stderr: '',
+            exitCode: 0,
+            durationMs,
+          })
+          yield {
+            ...processed,
+            outcome: 'success' as const,
+            hook,
+          }
+          return
+        }
+
+        yield {
+          outcome: 'success' as const,
+          hook,
+        }
         return
       }
 
@@ -3458,6 +3628,45 @@ async function executeHooksOutsideREPL({
             output: errorMessage,
             blocked: false,
           }
+        }
+      }
+
+      // Handle mcp_tool hooks (call a tool on an already-connected MCP server)
+      if (hook.type === 'mcp_tool') {
+        const { signal: mcpSignal, cleanup: mcpCleanup } =
+          createCombinedAbortSignal(signal, {
+            timeoutMs: hook.timeout ? hook.timeout * 1000 : timeoutMs,
+          })
+        const outcome = await execMcpToolHook(
+          hook,
+          hookInput,
+          appState?.mcp?.clients,
+          mcpSignal,
+        )
+        mcpCleanup?.()
+        // The tool's text output is treated like command-hook stdout: it may
+        // carry a JSON decision, so a hook can still block from here.
+        const mcpParsed = parseHookOutput(outcome.text)
+        if (outcome.ok && mcpParsed.validationError) {
+          return {
+            command: getHookDisplayText(hook),
+            succeeded: false,
+            output: `JSON validation failed: ${mcpParsed.validationError}`,
+            blocked: false,
+          }
+        }
+        const typedMcpJson = mcpParsed.json as TypedSyncHookOutput | undefined
+        const mcpBlocked =
+          outcome.ok &&
+          mcpParsed.json &&
+          !isAsyncHookJSONOutput(mcpParsed.json) &&
+          isSyncHookJSONOutput(mcpParsed.json) &&
+          typedMcpJson?.decision === 'block'
+        return {
+          command: getHookDisplayText(hook),
+          succeeded: outcome.ok,
+          output: outcome.text,
+          blocked: !!mcpBlocked,
         }
       }
 
@@ -5229,6 +5438,8 @@ function getHookDefinitionsForTelemetry(
       return { type: 'prompt', prompt: hook.prompt }
     } else if (hook.type === 'http') {
       return { type: 'http', command: hook.url }
+    } else if (hook.type === 'mcp_tool') {
+      return { type: 'mcp_tool', name: `${hook.server}:${hook.tool}` }
     } else if (hook.type === 'function') {
       return { type: 'function', name: 'function' }
     } else if (hook.type === 'callback') {

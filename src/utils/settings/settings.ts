@@ -46,6 +46,7 @@ import {
 } from './settingsCache.js'
 import { type SettingsJson, SettingsSchema } from './types.js'
 import {
+  filterInvalidHooks,
   filterInvalidPermissionRules,
   formatZodError,
   type SettingsWithErrors,
@@ -212,18 +213,22 @@ function parseSettingsFileUncached(path: string): {
 
     const data = safeParseJSON(content, false)
 
-    // Filter invalid permission rules before schema validation so one bad
-    // rule doesn't cause the entire settings file to be rejected.
+    // Filter invalid permission rules and unusable hooks before schema
+    // validation so one bad entry doesn't cause the entire settings file to be
+    // rejected — dropping the file also drops its `env` block, which silently
+    // removes ANTHROPIC_AUTH_TOKEN/ANTHROPIC_BASE_URL and logs every session out.
     const ruleWarnings = filterInvalidPermissionRules(data, path)
+    const hookWarnings = filterInvalidHooks(data, path)
+    const sanitizeWarnings = [...ruleWarnings, ...hookWarnings]
 
     const result = SettingsSchema().safeParse(data)
 
     if (!result.success) {
       const errors = formatZodError(result.error, path)
-      return { settings: null, errors: [...ruleWarnings, ...errors] }
+      return { settings: null, errors: [...sanitizeWarnings, ...errors] }
     }
 
-    return { settings: result.data, errors: ruleWarnings }
+    return { settings: result.data, errors: sanitizeWarnings }
   } catch (error) {
     handleFileSystemError(error, path)
     return { settings: null, errors: [] }
