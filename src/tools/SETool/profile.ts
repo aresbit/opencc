@@ -21,6 +21,11 @@ function today(): string {
  * heading nobody had filled in. A verify expression has to name evidence that
  * only exists once the work is really done; scaffolding does not qualify, and
  * only the person defining the task knows what does.
+ *
+ * Every seed starts `pending`, including the first. Seeding T1 as `in_progress`
+ * made a freshly-initialized project report one task already underway before
+ * any work had begun — `effectiveStatus` returns a stored status verbatim, so
+ * nothing recomputed it away.
  */
 function taskPlanTemplate(projectName: string): string {
   return `# Task Plan: ${projectName}
@@ -32,7 +37,7 @@ function taskPlanTemplate(projectName: string): string {
 
 | ID | Task | Status | Depends On | Verify |
 |----|------|--------|------------|--------|
-| T1 | Understand user intent and constraints | in_progress | — | — |
+| T1 | Understand user intent and constraints | pending | — | — |
 | T2 | Define approach and structure | pending | T1 | — |
 | T3 | Implement the plan | pending | T2 | — |
 | T4 | Verify requirements are met | pending | T3 | — |

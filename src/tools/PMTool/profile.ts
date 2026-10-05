@@ -20,6 +20,9 @@ function today(): string {
  *
  * Seed tasks carry no `verify` on purpose; see SETool's profile for why a
  * verify pointed at template scaffolding auto-completes work nobody did.
+ *
+ * Every seed starts `pending`; see SETool's profile for why T1 is not seeded
+ * `in_progress`.
  */
 function pmCharterTemplate(projectName: string): string {
   return `# PM Charter: ${projectName}
@@ -32,7 +35,7 @@ function pmCharterTemplate(projectName: string): string {
 
 | ID | Task | Status | Depends On | Verify |
 |----|------|--------|------------|--------|
-| T1 | Agree problem statement and success metrics | in_progress | — | — |
+| T1 | Agree problem statement and success metrics | pending | — | — |
 | T2 | Select and freeze the language/runtime | pending | T1 | — |
 | T3 | Document module boundaries and data flow | pending | T2 | — |
 | T4 | Implement features with a refactor pass each cycle | pending | T3 | — |
