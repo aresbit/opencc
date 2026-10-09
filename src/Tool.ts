@@ -21,6 +21,7 @@ export type ToolInputJSONSchema = {
 }
 
 import type { Notification } from './context/notifications.js'
+import type { FunctionHookOperation } from './services/functionHooks/types.js'
 import type {
   MCPServerConnection,
   ServerResource,
@@ -408,12 +409,39 @@ export type Tool<
    * What should happen when the user submits a new message while this tool
    * is running.
    *
-   * - `'cancel'` — stop the tool and discard its result
-   * - `'block'`  — keep running; the new message waits
+   * - `'cancel'`      — stop the tool and discard its result
+   * - `'block'`       — keep running; the new message waits
+   * - `'restartable'` — fire the interrupt so the tool can observe it, but do
+   *                     not force-cancel the call: a `tool.invoke` hook may
+   *                     return `{ resume: amendedArgs }` (see `ResumeResult`)
+   *                     to re-enter the computation from the point it was
+   *                     interrupted. With no resuming hook it behaves like
+   *                     `'block'` — the call is left to finish on its own.
    *
    * Defaults to `'block'` when not implemented.
    */
-  interruptBehavior?(): 'cancel' | 'block'
+  interruptBehavior?(): 'cancel' | 'block' | 'restartable'
+  /**
+   * The effects this tool may perform, declared at its boundary.
+   *
+   * Stage 6 of the control-structure ladder (R8: effect types). A tool names
+   * each `FunctionHookOperation` it may `perform` while running, and the
+   * runtime refuses to invoke a tool whose declared effects are not all
+   * handled:
+   *
+   * - a declared effect with no registered handler → the call is REJECTED
+   *   before the tool runs. "An unhandled effect is a type error" (§10), so a
+   *   tool cannot silently perform an effect nobody will interpret;
+   * - every declared effect has a handler → the call runs.
+   *
+   * This is fail-CLOSED, the opposite polarity from `performOperation`'s
+   * fail-open `default` arm: silence about a declared effect is a refusal, not
+   * a fallback.
+   *
+   * Optional. A tool that implements nothing here declares the empty set — no
+   * effects, so it is always runnable.
+   */
+  effects?(): readonly FunctionHookOperation[]
   /**
    * Returns information about whether this tool use is a search or read operation
    * that should be collapsed into a condensed display in the UI. Examples include

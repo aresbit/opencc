@@ -89,14 +89,11 @@ function scopedRegistrar(
   modName: string,
   capabilities: readonly string[],
 ): OnRegistrar {
-  return ((
-    event: string,
-    matcherOrFn: HookMatcher | HookFn,
-    maybeFn?: HookFn,
-  ) => {
-    const fn = (typeof matcherOrFn === 'function' ? matcherOrFn : maybeFn) as HookFn
-
-    const wrapped: HookFn = ($, e, next) => {
+  // Build the quarantine-wrapping hook once per registration; both the event
+  // and the operation registrar wrap the same way, so a mod's `on.operation(…)`
+  // handler is quarantined on error exactly like its `on(…)` handlers.
+  const wrap = (event: string, fn: HookFn): HookFn => {
+    return ($, e, next) => {
       if (quarantined.has(modName)) return next(e)
 
       // Whether the mod already descended matters more than it looks. A mod
@@ -134,6 +131,15 @@ function scopedRegistrar(
         return recover(error)
       }
     }
+  }
+
+  const register = (
+    event: string,
+    matcherOrFn: HookMatcher | HookFn,
+    maybeFn?: HookFn,
+  ): void => {
+    const fn = (typeof matcherOrFn === 'function' ? matcherOrFn : maybeFn) as HookFn
+    const wrapped = wrap(event, fn)
 
     if (typeof matcherOrFn === 'function') {
       ;(on as (event: string, fn: HookFn) => void)(event, wrapped)
@@ -144,7 +150,24 @@ function scopedRegistrar(
         wrapped,
       )
     }
-  }) as OnRegistrar
+  }
+
+  const registrar = register as OnRegistrar
+  registrar.operation = ((
+    operation: string,
+    matcherOrFn: HookMatcher | HookFn,
+    maybeFn?: HookFn,
+  ) => {
+    const fn = (typeof matcherOrFn === 'function' ? matcherOrFn : maybeFn) as HookFn
+    const wrapped = wrap(operation, fn)
+    if (typeof matcherOrFn === 'function') {
+      on.operation(operation, wrapped)
+    } else {
+      on.operation(operation, matcherOrFn as HookMatcher, wrapped)
+    }
+  }) as OnRegistrar['operation']
+
+  return registrar
 }
 
 /**

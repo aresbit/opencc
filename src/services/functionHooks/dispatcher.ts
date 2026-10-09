@@ -24,12 +24,15 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type {
+  Continuation,
   EngineInterface,
   FunctionHookEvent,
+  FunctionHookOperation,
   HookFn,
   HookRegistration,
   NextFunction,
 } from './types.js'
+import { ContinuationConsumedError } from './types.js'
 import { matchesSubstructural } from './matcher.js'
 import { registry } from './registry.js'
 
@@ -62,6 +65,45 @@ function bottomHook(event: FunctionHookEvent | string): never {
 }
 
 /**
+ * Wrap an invoke function as a first-class, one-shot continuation.
+ *
+ * Shared by `next.capture()` (the rest of the chain) and by the tool.invoke
+ * resume arm (the tool computation): both are delimited continuations resumed
+ * at most once, so both get the same reuse error rather than each inventing
+ * its own.
+ */
+export function oneShotContinuation<E, R>(
+  invoke: (e: E) => R | Promise<R>,
+  meta: {
+    event: FunctionHookEvent | string
+    origin: string
+    operation?: FunctionHookOperation
+  },
+): Continuation<E, R> {
+  let consumed = false
+  const cont = ((e: E): Promise<R> => {
+    if (consumed) throw new ContinuationConsumedError(meta)
+    consumed = true
+    return Promise.resolve(invoke(e))
+  }) as Continuation<E, R>
+  cont.resume = (e: E) => cont(e)
+  Object.defineProperty(cont, 'consumed', {
+    get: () => consumed,
+    enumerable: true,
+  })
+  // Object.assign, not property writes: event/origin/operation are declared
+  // readonly on Continuation (a continuation's provenance must not be
+  // rewritten after capture), and Object.assign's signature does not check
+  // readonly on the source.
+  Object.assign(cont, {
+    event: meta.event,
+    origin: meta.origin,
+    operation: meta.operation,
+  })
+  return cont
+}
+
+/**
  * Build a next function with dispatch metadata.
  */
 function buildNext<E, R>(
@@ -71,6 +113,7 @@ function buildNext<E, R>(
   event: FunctionHookEvent | string,
   origin: string,
   controller: AbortController,
+  operation?: FunctionHookOperation,
 ): NextFunction<E, R> {
   const next = async (e: E): Promise<R> => {
     // Frames active in this dispatch lineage, not process-wide.
@@ -106,6 +149,7 @@ function buildNext<E, R>(
       event,
       reg.pluginName,
       controller,
+      operation,
     )
 
     // Copy-on-enter: the child context owns its frame set, so a sibling
@@ -121,12 +165,80 @@ function buildNext<E, R>(
   ;(next as NextFunction<E, R>).signal = controller.signal
   ;(next as NextFunction<E, R>).event = event
   ;(next as NextFunction<E, R>).origin = origin
+  ;(next as NextFunction<E, R>).operation = operation
   ;(next as NextFunction<E, R>).is = (
     type: FunctionHookEvent,
     _e: unknown,
   ): boolean => event === type
 
+  // R7: the rest of the chain from here, as a holdable one-shot continuation.
+  ;(next as NextFunction<E, R>).capture = (): Continuation<E, R> =>
+    oneShotContinuation<E, R>(e => next(e), { event, origin, operation })
+
+  // R7: resume from this interruption point. The capture is lazy and consumed
+  // by the first call, so a second resume throws (see ContinuationConsumedError).
+  let captured: Continuation<E, R> | null = null
+  ;(next as NextFunction<E, R>).resume = (e: E): Promise<R> => {
+    if (!captured) captured = (next as NextFunction<E, R>).capture!()
+    return captured(e)
+  }
+
   return next as NextFunction<E, R>
+}
+
+/**
+ * Dispatch a key through the hook chain.
+ *
+ * `operation` switches the chain-selection axis: when present, registrations
+ * are resolved with `getForOperation()` and the dispatch is marked
+ * operation-addressed, so `next.operation` and captured continuations carry it.
+ */
+async function dispatchKeyed<E = unknown, R = unknown>(
+  $: EngineInterface,
+  key: FunctionHookEvent | string,
+  e: E,
+  defaultHandler: HookFn<E, R> | undefined,
+  operation?: FunctionHookOperation,
+): Promise<R> {
+  const chain = operation
+    ? registry.getForOperation(operation)
+    : registry.getForEvent(key)
+
+  // If a default handler is provided, register it as the bottom of the chain.
+  const effectiveChain: HookRegistration[] = defaultHandler
+    ? [
+        ...chain,
+        {
+          event: key,
+          fn: defaultHandler as HookFn,
+          pluginName: 'engine',
+          pluginId: 'engine',
+          order: Number.MAX_SAFE_INTEGER,
+        },
+      ]
+    : chain
+
+  if (effectiveChain.length === 0) {
+    // No hooks and no default — bottom throws.
+    bottomHook(key)
+  }
+
+  const controller = new AbortController()
+  const next = buildNext<E, R>(
+    effectiveChain,
+    0,
+    $,
+    key,
+    'engine',
+    controller,
+    operation,
+  )
+
+  try {
+    return await next(e)
+  } finally {
+    controller.abort()
+  }
 }
 
 /**
@@ -141,42 +253,25 @@ export async function dispatch<E = unknown, R = unknown>(
   e: E,
   defaultHandler?: HookFn<E, R>,
 ): Promise<R> {
-  const chain = registry.getForEvent(event)
+  return dispatchKeyed($, event, e, defaultHandler)
+}
 
-  // If a default handler is provided, register it as the bottom of the chain.
-  const effectiveChain: HookRegistration[] = defaultHandler
-    ? [
-        ...chain,
-        {
-          event,
-          fn: defaultHandler as HookFn,
-          pluginName: 'engine',
-          pluginId: 'engine',
-          order: Number.MAX_SAFE_INTEGER,
-        },
-      ]
-    : chain
-
-  if (effectiveChain.length === 0) {
-    // No hooks and no default — bottom throws.
-    bottomHook(event)
-  }
-
-  const controller = new AbortController()
-  const next = buildNext<E, R>(
-    effectiveChain,
-    0,
-    $,
-    event,
-    'engine',
-    controller,
-  )
-
-  try {
-    return await next(e)
-  } finally {
-    controller.abort()
-  }
+/**
+ * Dispatch an OPERATION through the hook chain (R7).
+ *
+ * Same fold, recursion guard and bottom semantics as `dispatch`, but the chain
+ * is resolved by operation rather than by event name — `perform (TestFailed …)`
+ * runs every handler registered with `on.operation('TestFailed', …)`, wherever
+ * the perform happened. `next.operation` carries the operation name and any
+ * captured continuation resumes under it.
+ */
+export async function dispatchOperation<E = unknown, R = unknown>(
+  $: EngineInterface,
+  operation: FunctionHookOperation,
+  e: E,
+  defaultHandler?: HookFn<E, R>,
+): Promise<R> {
+  return dispatchKeyed($, operation, e, defaultHandler, operation)
 }
 
 /**

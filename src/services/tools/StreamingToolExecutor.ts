@@ -220,6 +220,15 @@ export class StreamingToolExecutor {
       // 'interrupt' means the user typed a new message while tools were
       // running. Only cancel tools whose interruptBehavior is 'cancel';
       // 'block' tools shouldn't reach here (abort isn't fired).
+      //
+      // 'restartable' tools DO reach here — the abort has to fire so the tool
+      // can observe the interrupt — but are deliberately not force-cancelled.
+      // Stage 1's resume path lives inside the tool execution: a `tool.invoke`
+      // hook catches the abort and returns `{ resume: amendedArgs }`, and that
+      // re-entry only happens if the executor does not pre-empt it. Pushing a
+      // terminal 'user_interrupted' result here would discard exactly the
+      // result the resume path produces, so a restartable tool falls through
+      // to null and finishes on its own terms.
       if (this.toolUseContext.abortController.signal.reason === 'interrupt') {
         return this.getToolInterruptBehavior(tool) === 'cancel'
           ? 'user_interrupted'
@@ -230,7 +239,9 @@ export class StreamingToolExecutor {
     return null
   }
 
-  private getToolInterruptBehavior(tool: TrackedTool): 'cancel' | 'block' {
+  private getToolInterruptBehavior(
+    tool: TrackedTool,
+  ): 'cancel' | 'block' | 'restartable' {
     const definition = findToolByName(this.toolDefinitions, tool.block.name)
     if (!definition?.interruptBehavior) return 'block'
     try {
@@ -255,7 +266,13 @@ export class StreamingToolExecutor {
     const executing = this.tools.filter(t => t.status === 'executing')
     this.toolUseContext.setHasInterruptibleToolInProgress?.(
       executing.length > 0 &&
-        executing.every(t => this.getToolInterruptBehavior(t) === 'cancel'),
+        executing.every(t => {
+          const behavior = this.getToolInterruptBehavior(t)
+          // 'restartable' counts as interruptible as well: the abort must
+          // fire for the tool's resume path to run (see getAbortReason).
+          // Only 'block' tools are non-interruptible here.
+          return behavior === 'cancel' || behavior === 'restartable'
+        }),
     )
   }
 

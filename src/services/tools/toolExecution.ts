@@ -1218,9 +1218,9 @@ async function checkPermissionsAndCallTool(
         tool_use_id: toolUseID,
         agent_id: toolUseContext.agentId,
       },
-      () =>
+      (amendedInput) =>
         tool.call(
-          callInput,
+          (amendedInput ?? callInput) as typeof callInput,
           {
             ...toolUseContext,
             toolUseId: toolUseID,

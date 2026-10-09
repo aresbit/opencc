@@ -7,6 +7,7 @@
 
 import type {
   FunctionHookEvent,
+  FunctionHookOperation,
   HookFn,
   HookMatcher,
   HookRegistration,
@@ -14,6 +15,21 @@ import type {
 } from './types.js'
 
 let globalOrder = 0
+
+/**
+ * Whether a registration participates in a dispatch keyed by `key`.
+ *
+ * `key` is either an event name (event-keyed dispatch) or an operation name
+ * (operation-keyed dispatch), and a registration matches if it named that key
+ * on either axis, or wildcarded its event with '*'. Resolving both axes against
+ * one key is what keeps the two addressing modes backward compatible: a hook
+ * written as `on('tool.call', …)` still fires, and a hook written as
+ * `on.operation('Denied', …)` fires for a `perform (Denied …)` without the
+ * dispatch knowing which spelling was used.
+ */
+function matchesKey(reg: HookRegistration, key: string): boolean {
+  return reg.event === key || reg.operation === key || reg.event === '*'
+}
 
 export class HookRegistry {
   private hooks: HookRegistration[] = []
@@ -25,7 +41,16 @@ export class HookRegistry {
 
   /** Registrations for a specific event (including '*' wildcard hooks). */
   getForEvent(event: FunctionHookEvent | string): HookRegistration[] {
-    return this.hooks.filter(h => h.event === event || h.event === '*')
+    return this.hooks.filter(h => matchesKey(h, event))
+  }
+
+  /**
+   * Registrations for a specific operation — the R7 dispatch axis. Same
+   * resolution rule as getForEvent, so a handler registered by operation and
+   * one registered by the equivalent event name both participate.
+   */
+  getForOperation(operation: FunctionHookOperation): HookRegistration[] {
+    return this.hooks.filter(h => matchesKey(h, operation))
   }
 
   /** Create an `on` registrar scoped to a plugin. */
@@ -54,6 +79,36 @@ export class HookRegistry {
         order: globalOrder++,
       })
     }
+
+    // Operation-addressed registration. The operation name is also recorded as
+    // `event` so `listPluginEvents()`/`getForEvent()` keep seeing the hook, and
+    // the `operation` field marks it for `getForOperation()`.
+    function onOperation(
+      operation: FunctionHookOperation,
+      matcherOrFn: HookMatcher | HookFn,
+      maybeFn?: HookFn,
+    ): void {
+      let matcher: HookMatcher
+      let fn: HookFn
+      if (typeof matcherOrFn === 'function') {
+        matcher = undefined
+        fn = matcherOrFn
+      } else {
+        matcher = matcherOrFn as HookMatcher
+        fn = maybeFn!
+      }
+      self.hooks.push({
+        event: operation,
+        operation,
+        matcher,
+        fn,
+        pluginName,
+        pluginId,
+        order: globalOrder++,
+      })
+    }
+
+    ;(on as OnRegistrar).operation = onOperation as OnRegistrar['operation']
     return on as OnRegistrar
   }
 
@@ -83,6 +138,17 @@ export class HookRegistry {
     return [
       ...new Set(
         this.hooks.filter(h => h.pluginId === pluginId).map(h => h.event),
+      ),
+    ]
+  }
+
+  /** List operations a plugin handles by operation (R7 dispatch axis). */
+  listPluginOperations(pluginId: string): string[] {
+    return [
+      ...new Set(
+        this.hooks
+          .filter(h => h.pluginId === pluginId && h.operation)
+          .map(h => h.operation!),
       ),
     ]
   }

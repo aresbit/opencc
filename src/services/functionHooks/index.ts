@@ -16,7 +16,13 @@
  */
 
 export { registry, HookRegistry } from './registry.js'
-export { dispatch, dispatchWithDefault, HookChainBottomError } from './dispatcher.js'
+export {
+  dispatch,
+  dispatchWithDefault,
+  dispatchOperation,
+  oneShotContinuation,
+  HookChainBottomError,
+} from './dispatcher.js'
 export { buildEngineInterface, buildCoreNouns } from './engine.js'
 export {
   loadHooksModule,
@@ -51,18 +57,28 @@ export {
 } from './mods/index.js'
 export type {
   FunctionHookEvent,
+  FunctionHookOperation,
+  Continuation,
   HookFn,
   HookMatcher,
   HookRegistration,
   NextFunction,
   OnRegistrar,
+  OnOperationRegistrar,
   RegisterFn,
   HooksModule,
   EngineInterface,
   EngineNoun,
   DenyResult,
+  ResumeResult,
 } from './types.js'
-export { EVENT_ALIASES, REVERSE_ALIASES, isDenyResult } from './types.js'
+export {
+  EVENT_ALIASES,
+  REVERSE_ALIASES,
+  isDenyResult,
+  isResumeResult,
+  ContinuationConsumedError,
+} from './types.js'
 export {
   initEngine,
   getEngine,
@@ -114,8 +130,19 @@ export { applyToolContentHooks, type ToolContentEvent } from './toolContent.js'
 export { shouldDedupContext, getKvCacheStats, clearKvCacheAffinity } from './contextDedup.js'
 
 // tool.invoke — the event whose ⊥ actually runs the tool, so a hook can
-// replace the computation instead of only allowing/denying it.
-export { invokeToolThroughHooks, type ToolInvokeEvent } from './toolInvoke.js'
+// replace the computation instead of only allowing/denying it. `performOperation`
+// is the R7 "perform an effect and interpret its handlers" entry point.
+// `assertEffectsHandled` is the R8 fail-closed check: a tool declaring an
+// effect with no handler is refused before it runs.
+export {
+  invokeToolThroughHooks,
+  performOperation,
+  assertEffectsHandled,
+  UnhandledEffectError,
+  type ToolInvokeEvent,
+  type PerformOperationOptions,
+  type EffectDeclaringTool,
+} from './toolInvoke.js'
 
 // Evaluation substrate — record a trace, replay it under different hook
 // configurations, compare the cost. See eval/types.ts for why.

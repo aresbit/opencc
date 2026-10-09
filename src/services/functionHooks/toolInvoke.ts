@@ -28,6 +28,12 @@
  * and calling next(e) more than once genuinely re-executes the tool, which
  * is what a retry hook needs.
  *
+ * A hook may also return `{ resume: amendedArgs }` (a `ResumeResult`) without
+ * calling next at all. That is the interception-with-correction arm: the tool
+ * is re-entered with the amended input instead of being discarded, so an
+ * aborted call can be restarted from where it stopped rather than failing the
+ * whole turn. See ResumeResult in types.ts.
+ *
  * Failure semantics, chosen deliberately rather than blanket fail-open:
  *
  * - A hook that throws BEFORE the tool ran is aborting the call on purpose.
@@ -43,9 +49,17 @@
  */
 
 import { getEngine } from './bridge.js'
-import { dispatch, HookChainBottomError } from './dispatcher.js'
+import {
+  dispatch,
+  dispatchOperation,
+  oneShotContinuation,
+  HookChainBottomError,
+} from './dispatcher.js'
+import { registry } from './registry.js'
+import type { HookRegistry } from './registry.js'
+import { isResumeResult } from './types.js'
 import { logError } from '../../utils/log.js'
-import type { HookFn } from './types.js'
+import type { EngineInterface, FunctionHookOperation, HookFn } from './types.js'
 
 export interface ToolInvokeEvent {
   tool_name: string
@@ -59,11 +73,13 @@ export interface ToolInvokeEvent {
  *
  * @param meta  event fields plugins match on (same shape as tool.call, so a
  *              plugin moving here needs no matcher changes)
- * @param run   the real tool execution; becomes ⊥ for this dispatch
+ * @param run   the real tool execution; becomes ⊥ for this dispatch. Called
+ *              with no argument for the ordinary path, or with an amended
+ *              tool input when a hook returns `{ resume }`.
  */
 export async function invokeToolThroughHooks<T>(
   meta: ToolInvokeEvent,
-  run: () => Promise<T>,
+  run: (toolInput?: Record<string, unknown>) => Promise<T>,
 ): Promise<T> {
   const $ = getEngine()
   if (!$) return run()
@@ -84,6 +100,20 @@ export async function invokeToolThroughHooks<T>(
     return value
   }
 
+  // The resume arm is a first-class one-shot continuation over the tool
+  // computation (R7). A hook that returns `{ resume }` re-enters the
+  // computation exactly once from the point it was interrupted; the second
+  // resume throws ContinuationConsumedError rather than silently re-running a
+  // tool whose side effects already landed. One continuation per dispatch, so
+  // two different hooks each get their own restart.
+  const resumeCont = oneShotContinuation<
+    Record<string, unknown> | undefined,
+    T
+  >(input => run(input), {
+    event: 'tool.invoke',
+    origin: 'resume',
+  })
+
   try {
     const result = await dispatch($, 'tool.invoke', meta, bottom)
 
@@ -92,6 +122,21 @@ export async function invokeToolThroughHooks<T>(
       // nothing to say — run it. If it did complete, a hook discarded a real
       // result; keep the result rather than the plugin's mistake.
       return completed ? (realResult as T) : await run()
+    }
+
+    // { resume } — the interception returned an amended tool input instead of
+    // a result or a denial. Re-enter the computation from the point that was
+    // interrupted, now with corrected arguments. This is the restart arm the
+    // deny path lacks: a hook that catches an abort can hand back a fixed
+    // input rather than only refusing the call.
+    //
+    // Honored only when the tool did NOT already run. A hook that awaited
+    // next(e) (the tool ran, side effects and all) and then returned a stray
+    // resume must not discard that real result — the same reason an
+    // after-phase throw keeps the real result below.
+    if (isResumeResult(result)) {
+      if (completed) return realResult as T
+      return await resumeCont.resume(result.resume)
     }
 
     // A tool result is an envelope (`{ data, ... }`) that the caller reads
@@ -128,4 +173,110 @@ export async function invokeToolThroughHooks<T>(
     // side effect as a failure, so the real result wins.
     return realResult as T
   }
+}
+
+export interface PerformOperationOptions<T> {
+  /**
+   * Re-enter the interrupted computation with the amended payload a handler
+   * supplied. This is the resume arm: a handler decided the computation should
+   * continue rather than be undone (e.g. the failing test is re-run with a
+   * corrected command and the edit is kept).
+   */
+  reenter: (amend: Record<string, unknown>) => Promise<T> | T
+  /**
+   * ⊥ — no handler resumed. The fail-open arm: undo. Kept as a parameter rather
+   * than baked in so the caller owns what undoing means (roll a transaction
+   * back, drop a snapshot, discard a buffered write) instead of this module
+   * guessing.
+   */
+  default: () => Promise<T> | T
+}
+
+/**
+ * Perform an OPERATION (R7) and interpret its handlers' answers.
+ *
+ * The three outcomes, matching docs/control-structure-ladder.md §四 S4:
+ *
+ *   1. a handler returns `{ resume: amended }` → `reenter(amended)`: the
+ *      computation resumes from the interruption point (the edit is kept);
+ *   2. the operation reaches ⊥ with no handler → `default()` runs, the
+ *      fail-open arm (the edit is rolled back);
+ *   3. a handler returns an ordinary value → that value is the result.
+ *
+ * `default` is the chain's ⊥, so "nobody was listening" is a normal completion
+ * rather than a HookChainBottomError — an operation that must fail closed
+ * (refuse the computation) is a deliberate `{ deny }`, not silence.
+ *
+ * One-shot: the operation's own `next`/`capture` continuation is consumed by
+ * its first resume, so a handler cannot resume the same interruption twice.
+ */
+export async function performOperation<T>(
+  $: EngineInterface | null,
+  operation: FunctionHookOperation,
+  meta: Record<string, unknown>,
+  options: PerformOperationOptions<T>,
+): Promise<T> {
+  // No engine means no handler can be registered, which is the fail-open arm.
+  if (!$) return await options.default()
+
+  const defaultHook: HookFn = async () => options.default()
+  const result = await dispatchOperation($, operation, meta, defaultHook)
+
+  if (isResumeResult(result)) {
+    return await options.reenter(result.resume)
+  }
+
+  return result as T
+}
+
+/**
+ * Thrown when a tool declares an effect it may perform but no handler is
+ * registered to interpret it. R8: an unhandled effect is a type error, so the
+ * call is refused rather than letting the effect propagate silently.
+ */
+export class UnhandledEffectError extends Error {
+  readonly toolName: string
+  readonly effects: readonly FunctionHookOperation[]
+  constructor(toolName: string, effects: readonly FunctionHookOperation[]) {
+    super(
+      `Tool "${toolName}" declares effect(s) with no registered handler: ` +
+        `${effects.join(', ')}. Register a handler with ` +
+        `on.operation(<name>, …) before invoking it.`,
+    )
+    this.name = 'UnhandledEffectError'
+    this.toolName = toolName
+    this.effects = effects
+  }
+}
+
+/**
+ * The structural slice of `Tool` the effect check needs: a name and an
+ * optional `effects()`. Kept structural rather than importing `Tool` so this
+ * module stays free of the tool layer (Tool.ts pulls in half the app).
+ */
+export interface EffectDeclaringTool {
+  readonly name: string
+  effects?(): readonly FunctionHookOperation[]
+}
+
+/**
+ * Refuse to run a tool whose declared effects are not all handled (R8).
+ *
+ * "Handled" is exactly what S4 means by it: an effect is handled iff the
+ * registry resolves at least one registration for it via `getForOperation` —
+ * the same `matchesKey` resolution `dispatchOperation` uses, so an
+ * operation-addressed hook, an event-name hook and a `'*'` wildcard all
+ * count. This deliberately does NOT route through `performOperation`'s
+ * fail-open `default`: silence about a declared effect is a refusal here, not
+ * a fallback.
+ *
+ * @throws UnhandledEffectError listing every declared effect with no handler.
+ */
+export function assertEffectsHandled(
+  tool: EffectDeclaringTool,
+  reg: HookRegistry = registry,
+): void {
+  const effects = tool.effects?.() ?? []
+  const unhandled = effects.filter(op => reg.getForOperation(op).length === 0)
+  if (unhandled.length > 0) throw new UnhandledEffectError(tool.name, unhandled)
 }
