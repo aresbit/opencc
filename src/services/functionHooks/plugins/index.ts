@@ -102,6 +102,7 @@ import { register as registerUiGitStatus } from './uiGitStatusHook.js'
 import { register as registerUiFold } from './uiFoldHook.js'
 import { register as registerUiRsiHeartbeat } from './uiRsiHeartbeatHook.js'
 import { register as registerImageView } from './imageViewHook.js'
+import { register as registerVoiceInput } from './voiceInputHook.js'
 
 let registered = false
 
@@ -240,6 +241,10 @@ function pluginTable(): PluginEntry[] {
     { name: 'uiFold', id: 'builtin:uiFold', register: registerUiFold },
     { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat, optIn: true },
     { name: 'imageView', id: 'builtin:imageView', register: registerImageView },
+    // Local speech-to-text and the spoken-English practice loop. Default-on:
+    // its keybinding is gated on an empty prompt AND an available engine, so
+    // it is inert unless a recogniser is actually installed.
+    { name: 'voiceInput', id: 'builtin:voiceInput', register: registerVoiceInput },
   ]
 }
 
@@ -333,6 +338,7 @@ export function resetBuiltinPlugins(): void {
     // registerBuiltinPlugins() appends a duplicate and every event is counted
     // twice. Keep in sync with pluginTable().
     'builtin:imageView',
+    'builtin:voiceInput',
   ]) {
     registry.removePlugin(id)
   }

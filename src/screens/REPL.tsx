@@ -224,6 +224,7 @@ import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
 import { useSessionBackgrounding } from '../hooks/useSessionBackgrounding.js';
 import { diagnosticTracker } from '../services/diagnosticTracking.js';
+import { registerPromptInserter, registerPromptReader } from '../services/promptInputSink.js';
 import { handleSpeculationAccept, type ActiveSpeculationState } from '../services/PromptSuggestion/speculation.js';
 import { IdeOnboardingDialog } from '../components/IdeOnboardingDialog.js';
 import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCallout.js';
@@ -4117,6 +4118,21 @@ export function REPL({
     void onQuery([userMessage], newAbortController, true, [], mainLoopModel);
     return true;
   }, [onQuery, mainLoopModel, store]);
+
+  // Publish a live prompt inserter for non-React callers — the local STT hook
+  // plugin splices transcripts here at the cursor. Not gated on VOICE_MODE:
+  // it resolves insertTextRef.current at call time because PromptInput
+  // re-assigns it every render (PromptInput.tsx:269-288).
+  useEffect(() => {
+    const disposeInserter = registerPromptInserter(
+      () => insertTextRef.current?.insert,
+    );
+    const disposeReader = registerPromptReader(() => inputValueRef.current ?? '');
+    return () => {
+      disposeInserter();
+      disposeReader();
+    };
+  }, []);
 
   // Voice input integration (VOICE_MODE builds only)
   const voice = feature('VOICE_MODE') ?

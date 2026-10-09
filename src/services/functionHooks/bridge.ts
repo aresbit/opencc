@@ -82,9 +82,11 @@ export function resetEngine(): void {
  * PascalCase hook event.
  */
 export function hasAlgebraicHooksForEvent(hookEvent: HookEvent): boolean {
-  const dotEvent = REVERSE_ALIASES[hookEvent]
-  if (!dotEvent) return false
-
+  // Not every bridged HookEvent has a dot-notation alias — `Stop` carries the
+  // last assistant message and nothing maps it. Falling back to the raw name
+  // lets a plugin hook such an event (`on('Stop', …)`) instead of the alias
+  // gate silently dropping it before dispatch.
+  const dotEvent = REVERSE_ALIASES[hookEvent] ?? hookEvent
   const hooks = registry.getForEvent(dotEvent)
   return hooks.length > 0
 }
@@ -103,7 +105,9 @@ export async function* dispatchAlgebraicHooks(
   hookInput: HookInput,
   tools?: Tools,
 ): AsyncGenerator<AggregatedHookResult> {
-  const dotEvent = REVERSE_ALIASES[hookEvent] as FunctionHookEvent | undefined
+  // Same fallback as hasAlgebraicHooksForEvent: an event with no dot-notation
+  // alias is dispatched under its own name, so `on('Stop', …)` fires.
+  const dotEvent = (REVERSE_ALIASES[hookEvent] ?? hookEvent) as FunctionHookEvent
   if (!dotEvent) return
 
   const hooks = registry.getForEvent(dotEvent)
