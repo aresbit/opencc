@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { isLocalSttAvailable } from '../services/localVoiceSTT.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   getClaudeAIOAuthTokens,
@@ -44,11 +45,25 @@ export function hasVoiceAuth(): boolean {
 }
 
 /**
- * Full runtime check: auth + GrowthBook kill-switch. Callers: `/voice`
- * (voice.ts, voice/index.ts), ConfigTool, VoiceModeNotice — command-time
- * paths where a fresh keychain read is acceptable. For React render
- * paths use useVoiceEnabled() instead (memoizes the auth half).
+ * True when a local speech engine is registered, so voice can run without any
+ * Anthropic auth. Synchronous and offline (see localVoiceSTT).
+ */
+export function hasLocalVoiceEngine(): boolean {
+  return isLocalSttAvailable()
+}
+
+/**
+ * Full runtime check: a usable transport (hosted auth + GrowthBook kill-switch,
+ * or a local engine) . Callers: `/voice` (voice.ts, voice/index.ts), ConfigTool,
+ * VoiceModeNotice — command-time paths where a fresh keychain read is
+ * acceptable. For React render paths use useVoiceEnabled() instead (memoizes
+ * the auth half).
+ *
+ * The hosted path needs Claude.ai OAuth; the local path needs only a registered
+ * engine (speechToText/bootstrap.ts registers one at startup). Either is enough
+ * for the session to have a transport, which is what "voice mode enabled" means
+ * here.
  */
 export function isVoiceModeEnabled(): boolean {
-  return hasVoiceAuth() && isVoiceGrowthBookEnabled()
+  return (hasVoiceAuth() && isVoiceGrowthBookEnabled()) || hasLocalVoiceEngine()
 }

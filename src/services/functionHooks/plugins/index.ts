@@ -242,8 +242,8 @@ function pluginTable(): PluginEntry[] {
     { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat, optIn: true },
     { name: 'imageView', id: 'builtin:imageView', register: registerImageView },
     // Local speech-to-text and the spoken-English practice loop. Default-on:
-    // its keybinding is gated on an empty prompt AND an available engine, so
-    // it is inert unless a recogniser is actually installed.
+    // its keybinding is Alt+Space (never a typed space) and it requires a
+    // mounted prompt sink, so it is inert until a person actually presses it.
     { name: 'voiceInput', id: 'builtin:voiceInput', register: registerVoiceInput },
   ]
 }

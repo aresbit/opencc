@@ -36,10 +36,7 @@ import type { OnRegistrar } from '../types.js'
 import { bumpUIEpoch } from '../uiDispatcher.js'
 import {
   record,
-  list as listProviders,
-  selected,
-  type ProviderAvailability,
-  type SpeechProvider,
+  resolveActiveProvider,
   type WordConfidence,
 } from '../../speechToText/index.js'
 import {
@@ -73,55 +70,15 @@ let activeAbort: AbortController | null = null
 let lastError: string | null = null
 let lastTranscript = ''
 let lastScore: number | null = null
+/**
+ * What the panel shows between a key press and its transcript. Without this the
+ * dictation path is silent — a press that is still provisioning, one that is
+ * listening, and one that silently failed all look identical (i.e. like
+ * nothing happened), which is exactly the bug this exists to end.
+ */
+let dictationPhase: 'idle' | 'preparing' | 'listening' = 'idle'
 
 // ── Dictation ────────────────────────────────────────────────────
-
-/**
- * Choose a recogniser and make sure it can actually run.
- *
- * The registry can hold more than one engine, and the selected one is not
- * guaranteed to be usable: Whistle — the default — ships its engine and model
- * over the network, so on a bare machine it is *describable but not yet
- * runnable*. Availability therefore decides, not selection order: the selected
- * provider is tried first, the rest follow, and the first one that can run wins.
- *
- * When none can run but one advertises itself downloadable, that one is
- * provisioned here and now — this press is the "chosen" moment the substrate's
- * contract waits for before fetching anything. Progress is surfaced through the
- * panel via `onStatus`, and the download shares the recording's AbortController,
- * so a second press cancels the fetch instead of racing it.
- *
- * @returns the chosen provider and its (re-checked) availability, or null when
- *          no provider is registered at all.
- */
-async function resolveProvider(
-  ac: AbortController,
-  onStatus: (message: string | null) => void,
-): Promise<{ provider: SpeechProvider; availability: ProviderAvailability } | null> {
-  const preferred = selected()
-  const all = listProviders()
-  const ordered = preferred ? [preferred, ...all.filter(p => p !== preferred)] : all
-  if (ordered.length === 0) return null
-
-  // Availability is a cheap, offline probe (a stat / a PATH scan), so trying
-  // each provider is fine; the first usable one is the answer.
-  let firstUsable: { provider: SpeechProvider; availability: ProviderAvailability } | null = null
-  for (const provider of ordered) {
-    const availability = await provider.availability()
-    if (availability.available) return { provider, availability }
-    firstUsable ??= { provider, availability }
-  }
-
-  const candidate = firstUsable!
-  const provision = candidate.provider.provision
-  if (candidate.provider.info.downloadable && provision) {
-    onStatus(`downloading ${candidate.provider.info.name}…`)
-    await provision({ signal: ac.signal })
-    ac.signal.throwIfAborted()
-    return { provider: candidate.provider, availability: await candidate.provider.availability() }
-  }
-  return candidate
-}
 
 /**
  * One press: start recording, or cancel a recording already in flight.
@@ -142,13 +99,15 @@ export async function dictateOnce(): Promise<
 
   const ac = new AbortController()
   activeAbort = ac
+  dictationPhase = 'preparing'
+  lastError = null
   bumpUIEpoch()
   const setStatus = (message: string | null): void => {
     lastError = message
     bumpUIEpoch()
   }
   try {
-    const resolved = await resolveProvider(ac, setStatus)
+    const resolved = await resolveActiveProvider({ signal: ac.signal, onStatus: setStatus })
     if (!resolved) {
       setStatus('no speech engine available')
       return 'unavailable'
@@ -159,6 +118,8 @@ export async function dictateOnce(): Promise<
     }
 
     setStatus(null)
+    dictationPhase = 'listening'
+    bumpUIEpoch()
     const rec = await record({ signal: ac.signal })
     if (rec.stopReason === 'aborted') return 'cancelled'
 
@@ -174,6 +135,7 @@ export async function dictateOnce(): Promise<
     return 'unavailable'
   } finally {
     if (activeAbort === ac) activeAbort = null
+    dictationPhase = 'idle'
     bumpUIEpoch()
   }
 }
@@ -284,6 +246,22 @@ function renderPanel(child: unknown): unknown {
   const recording = isRecording()
 
   if (!state.active) {
+    // Dictation feedback. A press that is preparing an engine, one that is
+    // listening, and one that failed must not all look like silence.
+    if (dictationPhase === 'preparing') {
+      return h(
+        Box,
+        { paddingX: 1 },
+        h(Text, { color: 'suggestion' }, `🎤 ${lastError ?? 'preparing speech engine…'}`),
+      )
+    }
+    if (dictationPhase === 'listening') {
+      return h(
+        Box,
+        { paddingX: 1 },
+        h(Text, { color: 'suggestion' }, '🎤 listening… (alt+space to stop)'),
+      )
+    }
     if (lastError) {
       return h(
         Box,
@@ -397,6 +375,7 @@ export function resetVoiceInputForTests(): void {
   lastError = null
   lastTranscript = ''
   lastScore = null
+  dictationPhase = 'idle'
 }
 
 export function getLastTranscript(): string {

@@ -9,13 +9,21 @@ import {
   getInitialSettings,
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
-import { isVoiceModeEnabled } from '../../voice/voiceModeEnabled.js'
+import {
+  hasLocalVoiceEngine,
+  isVoiceModeEnabled,
+} from '../../voice/voiceModeEnabled.js'
 
 const LANG_HINT_MAX_SHOWS = 2
 
 export const call: LocalCommandCall = async () => {
+  // A registered local engine is a transport in its own right, and is the
+  // whole point of this path on a build without Claude.ai OAuth — so voice is
+  // allowed when either the hosted mode is enabled or a local engine exists.
+  const localEngine = hasLocalVoiceEngine()
+
   // Check auth and kill-switch before allowing voice mode
-  if (!isVoiceModeEnabled()) {
+  if (!isVoiceModeEnabled() && !localEngine) {
     // Differentiate: OAuth-less users get an auth hint, everyone else
     // gets nothing (command shouldn't be reachable when the kill-switch is on).
     if (!isAnthropicAuthEnabled()) {
@@ -70,8 +78,9 @@ export const call: LocalCommandCall = async () => {
     }
   }
 
-  // Check for API key
-  if (!isVoiceStreamAvailable()) {
+  // Check for a transport: the hosted endpoint needs a Claude.ai OAuth token,
+  // but a local engine serves the session without one.
+  if (!isVoiceStreamAvailable() && !localEngine) {
     return {
       type: 'text' as const,
       value:

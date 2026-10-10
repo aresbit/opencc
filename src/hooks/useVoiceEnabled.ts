@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useAppState } from '../state/AppState.js'
 import {
+  hasLocalVoiceEngine,
   hasVoiceAuth,
   isVoiceGrowthBookEnabled,
 } from '../voice/voiceModeEnabled.js'
@@ -21,5 +22,11 @@ export function useVoiceEnabled(): boolean {
   const authVersion = useAppState(s => s.authVersion)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const authed = useMemo(hasVoiceAuth, [authVersion])
-  return userIntent && authed && isVoiceGrowthBookEnabled()
+  // A local engine is a transport in its own right, so it does not need auth.
+  // hasLocalVoiceEngine() is a registry lookup (no disk, no keychain), cheap
+  // enough to leave outside the memo and outside the authVersion dependency.
+  return (
+    userIntent &&
+    ((authed && isVoiceGrowthBookEnabled()) || hasLocalVoiceEngine())
+  )
 }

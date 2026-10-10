@@ -25,6 +25,9 @@ export {
   resetDefaultProvidersForTests,
 } from './bootstrap.js'
 
+export { resolveActiveProvider, hasLocalSttProvider } from './select.js'
+export type { ActiveProvider, ResolveOptions } from './select.js'
+
 export { SilenceGate, DEFAULT_GATE } from './silenceGate.js'
 export type { SilenceGateOptions } from './silenceGate.js'
 

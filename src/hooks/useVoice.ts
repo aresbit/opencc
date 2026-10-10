@@ -15,11 +15,11 @@ import {
 } from '../services/analytics/index.js'
 import { getVoiceKeyterms } from '../services/voiceKeyterms.js'
 import {
-  connectVoiceStream,
+  connectSttStream as connectVoiceStream,
   type FinalizeSource,
-  isVoiceStreamAvailable,
+  isSttAvailable,
   type VoiceStreamConnection,
-} from '../services/voiceStreamSTT.js'
+} from '../services/voiceSttBackend.js'
 import { logForDebugging } from '../utils/debug.js'
 import { toError } from '../utils/errors.js'
 import { getSystemLocaleLanguage } from '../utils/intl.js'
@@ -1021,7 +1021,7 @@ export function useVoice({
   // delay of ~500ms on macOS).
   const handleKeyEvent = useCallback(
     (fallbackMs = REPEAT_FALLBACK_MS): void => {
-      if (!enabled || !isVoiceStreamAvailable()) {
+      if (!enabled || !isSttAvailable()) {
         return
       }
 
