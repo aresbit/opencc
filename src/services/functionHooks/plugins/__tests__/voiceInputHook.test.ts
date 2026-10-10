@@ -8,7 +8,7 @@
  * plugin at all. Those two are the tests that would fail if the return
  * convention (`{ additionalContext }`, not a mutated event) regresses.
  */
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { dispatch } from '../../dispatcher.js'
 import { dispatchUISync } from '../../uiDispatcher.js'
 import { hasAlgebraicHooksForEvent } from '../../bridge.js'
@@ -20,11 +20,18 @@ import {
   startPractice as beginSession,
 } from '../../../speechToText/practice/session.js'
 import {
+  register as registerProvider,
+  reset as resetProviders,
+  select as selectProvider,
+} from '../../../speechToText/registry.js'
+import type { SpeechProvider } from '../../../speechToText/types.js'
+import {
   registerPromptInserter,
   registerPromptReader,
   resetPromptInserterForTests,
 } from '../../../promptInputSink.js'
 import {
+  dictateOnce,
   extractTarget,
   getLastScore,
   getLastTranscript,
@@ -230,32 +237,93 @@ describe('ui.press', () => {
     registerPromptReader(() => text)
   }
 
-  test('space is left alone while the prompt has text', () => {
-    mountPrompt('typing')
-    const out = dispatchUISync($, 'ui.press', {
-      slotId: 'global',
-      props: { input: ' ', key: { ctrl: false, shift: false, meta: false } },
-      node: null,
-    })
-    expect((out as { handled?: boolean } | null)?.handled).not.toBe(true)
-  })
-
-  test('space on an empty prompt is consumed to start dictation', () => {
+  test('a bare space is left alone so typing is never eaten', () => {
     mountPrompt('')
     const out = dispatchUISync($, 'ui.press', {
       slotId: 'global',
       props: { input: ' ', key: { ctrl: false, shift: false, meta: false } },
       node: null,
     })
+    expect((out as { handled?: boolean } | null)?.handled).not.toBe(true)
+  })
+
+  test('alt+space is consumed to start dictation', () => {
+    mountPrompt('')
+    const out = dispatchUISync($, 'ui.press', {
+      slotId: 'global',
+      props: { input: ' ', key: { ctrl: false, shift: false, meta: true } },
+      node: null,
+    })
     expect((out as { handled?: boolean } | null)?.handled).toBe(true)
   })
 
-  test('space passes through when no prompt is mounted', () => {
+  test('alt+space starts dictation even with text already in the prompt', () => {
+    // The old plain-space binding had to bail out when the prompt was
+    // non-empty; Alt+Space is unambiguous, so dictating into written text works.
+    mountPrompt('typing')
     const out = dispatchUISync($, 'ui.press', {
       slotId: 'global',
-      props: { input: ' ', key: { ctrl: false, shift: false, meta: false } },
+      props: { input: ' ', key: { ctrl: false, shift: false, meta: true } },
+      node: null,
+    })
+    expect((out as { handled?: boolean } | null)?.handled).toBe(true)
+  })
+
+  test('alt+space passes through when no prompt is mounted', () => {
+    const out = dispatchUISync($, 'ui.press', {
+      slotId: 'global',
+      props: { input: ' ', key: { ctrl: false, shift: false, meta: true } },
       node: null,
     })
     expect((out as { handled?: boolean } | null)?.handled).not.toBe(true)
+  })
+})
+
+describe('dictation engine selection', () => {
+  /** A provider whose availability is fixed, so no disk or net is touched. */
+  function fakeProvider(
+    id: string,
+    available: boolean,
+    downloadable = true,
+  ): { provider: SpeechProvider; provisions: () => number } {
+    let provisions = 0
+    const provider: SpeechProvider = {
+      info: { id, name: id, location: 'host-local', languages: [], downloadable },
+      availability: async () => ({ available, reason: `${id} not provisioned` }),
+      provision: async () => {
+        provisions += 1
+      },
+      transcribe: async () => ({ text: '' }),
+    }
+    return { provider, provisions: () => provisions }
+  }
+
+  afterEach(() => {
+    resetProviders()
+  })
+
+  test('provisions a downloadable engine when nothing is available, then reports unavailable', async () => {
+    const { provider, provisions } = fakeProvider('fake-downloadable', false)
+    registerProvider(provider)
+    selectProvider('fake-downloadable')
+
+    expect(await dictateOnce()).toBe('unavailable')
+    expect(provisions()).toBe(1)
+  })
+
+  test('does not provision an engine that advertises no download', async () => {
+    // whisper.cpp is exactly this shape: unavailable on a bare box, but it can
+    // never fetch itself, so a press must not try — it reports the reason.
+    const { provider, provisions } = fakeProvider('fake-local-only', false, false)
+    registerProvider(provider)
+    selectProvider('fake-local-only')
+
+    expect(await dictateOnce()).toBe('unavailable')
+    expect(provisions()).toBe(0)
+  })
+
+  test('with no provider registered, dictation reports unavailable and does not throw', async () => {
+    resetProviders()
+    expect(await dictateOnce()).toBe('unavailable')
   })
 })

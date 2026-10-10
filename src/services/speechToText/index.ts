@@ -20,6 +20,11 @@ export type {
 
 export { register, list, get, select, selected, reset } from './registry.js'
 
+export {
+  registerDefaultProviders,
+  resetDefaultProvidersForTests,
+} from './bootstrap.js'
+
 export { SilenceGate, DEFAULT_GATE } from './silenceGate.js'
 export type { SilenceGateOptions } from './silenceGate.js'
 

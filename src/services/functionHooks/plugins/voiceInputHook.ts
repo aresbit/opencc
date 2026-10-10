@@ -12,10 +12,10 @@
  *
  * Three jobs:
  *
- *   DICTATION — with the prompt empty, space starts a recording; the silence
- *   gate ends it and the transcript is spliced in at the cursor. Nothing is
- *   ever sent on your behalf: you edit, then press Enter. This mirrors
- *   dsh-stt's "insert, not send".
+ *   DICTATION — Alt+Space starts a recording; the silence gate ends it and the
+ *   transcript is spliced in at the cursor. Nothing is ever sent on your
+ *   behalf: you edit, then press Enter. This mirrors dsh-stt's "insert, not
+ *   send".
  *
  *   PRACTICE — `/practice` runs the loop: the agent writes a sentence, you
  *   say it, the transcript is scored against the target by word-level diff
@@ -38,6 +38,7 @@ import {
   record,
   list as listProviders,
   selected,
+  type ProviderAvailability,
   type SpeechProvider,
   type WordConfidence,
 } from '../../speechToText/index.js'
@@ -55,7 +56,6 @@ import {
 import {
   hasPromptInserter,
   insertPromptText,
-  readPromptText,
 } from '../../promptInputSink.js'
 
 const h = React.createElement
@@ -77,6 +77,53 @@ let lastScore: number | null = null
 // ── Dictation ────────────────────────────────────────────────────
 
 /**
+ * Choose a recogniser and make sure it can actually run.
+ *
+ * The registry can hold more than one engine, and the selected one is not
+ * guaranteed to be usable: Whistle — the default — ships its engine and model
+ * over the network, so on a bare machine it is *describable but not yet
+ * runnable*. Availability therefore decides, not selection order: the selected
+ * provider is tried first, the rest follow, and the first one that can run wins.
+ *
+ * When none can run but one advertises itself downloadable, that one is
+ * provisioned here and now — this press is the "chosen" moment the substrate's
+ * contract waits for before fetching anything. Progress is surfaced through the
+ * panel via `onStatus`, and the download shares the recording's AbortController,
+ * so a second press cancels the fetch instead of racing it.
+ *
+ * @returns the chosen provider and its (re-checked) availability, or null when
+ *          no provider is registered at all.
+ */
+async function resolveProvider(
+  ac: AbortController,
+  onStatus: (message: string | null) => void,
+): Promise<{ provider: SpeechProvider; availability: ProviderAvailability } | null> {
+  const preferred = selected()
+  const all = listProviders()
+  const ordered = preferred ? [preferred, ...all.filter(p => p !== preferred)] : all
+  if (ordered.length === 0) return null
+
+  // Availability is a cheap, offline probe (a stat / a PATH scan), so trying
+  // each provider is fine; the first usable one is the answer.
+  let firstUsable: { provider: SpeechProvider; availability: ProviderAvailability } | null = null
+  for (const provider of ordered) {
+    const availability = await provider.availability()
+    if (availability.available) return { provider, availability }
+    firstUsable ??= { provider, availability }
+  }
+
+  const candidate = firstUsable!
+  const provision = candidate.provider.provision
+  if (candidate.provider.info.downloadable && provision) {
+    onStatus(`downloading ${candidate.provider.info.name}…`)
+    await provision({ signal: ac.signal })
+    ac.signal.throwIfAborted()
+    return { provider: candidate.provider, availability: await candidate.provider.availability() }
+  }
+  return candidate
+}
+
+/**
  * One press: start recording, or cancel a recording already in flight.
  *
  * Async by nature but never awaited by its caller — `ui.press` is dispatched
@@ -93,33 +140,37 @@ export async function dictateOnce(): Promise<
     return 'cancelled'
   }
 
-  const provider: SpeechProvider | undefined = selected() ?? listProviders()[0]
-  if (!provider) {
-    lastError = 'no speech engine available'
-    bumpUIEpoch()
-    return 'unavailable'
-  }
-
   const ac = new AbortController()
   activeAbort = ac
   bumpUIEpoch()
+  const setStatus = (message: string | null): void => {
+    lastError = message
+    bumpUIEpoch()
+  }
   try {
-    const availability = await provider.availability()
-    if (!availability.available) {
-      lastError = availability.reason ?? 'speech engine unavailable'
+    const resolved = await resolveProvider(ac, setStatus)
+    if (!resolved) {
+      setStatus('no speech engine available')
+      return 'unavailable'
+    }
+    if (!resolved.availability.available) {
+      setStatus(resolved.availability.reason ?? 'speech engine unavailable')
       return 'unavailable'
     }
 
+    setStatus(null)
     const rec = await record({ signal: ac.signal })
     if (rec.stopReason === 'aborted') return 'cancelled'
 
-    const result = await provider.transcribe({ audio: rec.wav }, ac.signal)
+    const result = await resolved.provider.transcribe({ audio: rec.wav }, ac.signal)
     lastTranscript = result.text.trim()
     lastError = null
     if (lastTranscript) insertPromptText(lastTranscript)
     return 'started'
   } catch (err) {
-    lastError = err instanceof Error ? err.message : String(err)
+    // A cancel (second press, or Ctrl+C) surfaces as an abort, not a failure.
+    if (ac.signal.aborted) return 'cancelled'
+    setStatus(err instanceof Error ? err.message : String(err))
     return 'unavailable'
   } finally {
     if (activeAbort === ac) activeAbort = null
@@ -263,16 +314,18 @@ function renderPanel(child: unknown): unknown {
 // ── Registration ─────────────────────────────────────────────────
 
 export function register(on: OnRegistrar): void {
-  // Dictation: space, but only where it cannot be a typed space. `ui.press`
-  // carries no prompt state, so the emptiness test comes from the sink — that
-  // is what lets space-to-talk coexist with typing.
+  // Dictation: Alt+Space. The meta (Alt/Option) modifier is what keeps this off
+  // the bare space key, so it never competes with typing — the old binding
+  // watched plain space and had to bail out whenever the prompt was non-empty,
+  // which also made dictating into text you had already written impossible. The
+  // sink check stays: a transcript needs somewhere to be inserted, so with no
+  // prompt mounted the key is left alone.
   on(
     'ui.press',
-    { props: { input: ' ', key: { ctrl: false, shift: false, meta: false } } },
+    { props: { input: ' ', key: { meta: true } } },
     ($, e: any, next) => {
       if (!dictationEnabled) return next(e)
       if (!hasPromptInserter()) return next(e)
-      if (readPromptText().length > 0) return next(e)
       void dictateOnce()
       return { handled: true }
     },

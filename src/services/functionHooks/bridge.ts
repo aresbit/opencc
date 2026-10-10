@@ -18,6 +18,10 @@ import { buildEngineInterface, buildCoreNouns } from './engine.js'
 import { registry } from './registry.js'
 import { REVERSE_ALIASES, isDenyResult, type EngineInterface, type FunctionHookEvent, type HookFn } from './types.js'
 import { registerBuiltinPlugins, resetBuiltinPlugins } from './plugins/index.js'
+import {
+  registerDefaultProviders,
+  resetDefaultProvidersForTests,
+} from 'src/services/speechToText/index.js'
 import { loadMods, resetMods } from './mods/index.js'
 import { logError } from 'src/utils/log.js'
 
@@ -37,6 +41,12 @@ export async function initEngine(): Promise<EngineInterface> {
   if (engineInitPromise) return engineInitPromise
 
   registerBuiltinPlugins()
+
+  // The speech substrate registers nothing on import; without this the
+  // voiceInput plugin would find an empty provider registry and report every
+  // dictation as unavailable. Offline and idempotent — no engine is fetched
+  // here, only described (see speechToText/bootstrap.ts).
+  registerDefaultProviders()
 
   // Mods load between the built-ins and $ on purpose. After the built-ins,
   // so an ordinary mod appends below them and only sees what the guards let
@@ -73,6 +83,7 @@ export function resetEngine(): void {
   engineInterface = null
   engineInitPromise = null
   resetBuiltinPlugins()
+  resetDefaultProvidersForTests()
   resetMods()
   registry.clear()
 }
