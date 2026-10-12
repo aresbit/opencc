@@ -1,6 +1,9 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
+import { flattenUnionSchema } from '../MemoryTool/flattenSchema.js'
+import { isFirstPartyAnthropicBaseUrl } from '../../utils/model/providers.js'
 import { CONTENT_ANALYST_TOOL_NAME, DESCRIPTION } from './prompt.js'
 
 // ─── Input Schemas ───────────────────────────────────────────────────────────
@@ -799,6 +802,16 @@ export const ContentAnalystTool = buildTool({
 
   get inputSchema(): InputSchema {
     return inputSchema()
+  },
+  get inputJSONSchema() {
+    // io: 'input' — otherwise zod marks every `.default()` field (platform) as
+    // `required`, telling the model it must pass it on every call.
+    const schema = zodToJsonSchema(inputSchema(), { io: 'input' })
+    if (!isFirstPartyAnthropicBaseUrl()) {
+      return flattenUnionSchema(schema, 'action')
+    }
+    schema.type = 'object'
+    return schema
   },
   get outputSchema(): OutputSchema {
     return outputSchema()

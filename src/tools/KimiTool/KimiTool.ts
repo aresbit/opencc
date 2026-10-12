@@ -7,6 +7,8 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { findCDPScriptPath } from '../../utils/cdpScript.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
+import { flattenUnionSchema } from '../MemoryTool/flattenSchema.js'
+import { isFirstPartyAnthropicBaseUrl } from '../../utils/model/providers.js'
 
 const KIMI_TOOL_NAME = 'kimitool'
 const MODEL_NAME = 'kimi'
@@ -1555,7 +1557,13 @@ export const KimiTool = buildTool({
     return inputSchema()
   },
   get inputJSONSchema() {
-    const schema = zodToJsonSchema(inputSchema())
+    // io: 'input' — otherwise zod marks every `.default()` field (model,
+    // use_search, cleanup_conversation, timeoutMs, localStorageKey) as
+    // `required`, telling the model it must pass them on every call.
+    const schema = zodToJsonSchema(inputSchema(), { io: 'input' })
+    if (!isFirstPartyAnthropicBaseUrl()) {
+      return flattenUnionSchema(schema, 'action')
+    }
     schema.type = 'object'
     return schema
   },
