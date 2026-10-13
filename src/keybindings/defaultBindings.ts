@@ -88,14 +88,15 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       ...(feature('MESSAGE_ACTIONS')
         ? { 'shift+up': 'chat:messageActions' as const }
         : {}),
-      // Voice push-to-talk (hold-to-talk). Bound to alt+space, NOT bare
-      // space: a bare Space collides with CJK IMEs — Space commits the
-      // IME candidate and may arrive as a full-width U+3000 — so bare
-      // Space must stay pure typing. /voice remains the on/off switch.
-      // Registered so getShortcutDisplay finds it without hitting the
-      // fallback analytics log; to rebind, add a voice:pushToTalk entry
-      // (last wins).
-      ...(feature('VOICE_MODE') ? { 'alt+space': 'voice:pushToTalk' } : {}),
+      // Voice push-to-talk (hold-to-talk). Bound to bare space. A CJK IME
+      // also uses Space to commit a candidate, so the handler refuses to arm
+      // while the prompt already holds non-ASCII text (see handleKeyDown in
+      // useVoiceIntegration.tsx) — Space then stays a Space. alt+space was
+      // tried first and abandoned: window managers swallow it before the
+      // terminal sees it. /voice remains the on/off switch. Registered so
+      // getShortcutDisplay finds it without hitting the fallback analytics
+      // log; to rebind, add a voice:pushToTalk entry (last wins).
+      ...(feature('VOICE_MODE') ? { space: 'voice:pushToTalk' } : {}),
     },
   },
   {

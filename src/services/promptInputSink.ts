@@ -51,6 +51,15 @@ export function registerPromptReader(resolver: () => string): () => void {
   }
 }
 
+/**
+ * The current prompt text, or '' when no prompt is mounted. Used by the voice
+ * handler to answer "does the box already hold non-ASCII text?" — the proxy for
+ * "a CJK IME is composing, so Space is the IME's, not push-to-talk".
+ */
+export function readPromptText(): string {
+  return resolveReader?.() ?? ''
+}
+
 /** Test seam: drop the current registration. */
 export function resetPromptInserterForTests(): void {
   resolveInserter = null
