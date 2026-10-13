@@ -116,6 +116,12 @@ export default class App extends PureComponent<Props, State> {
   keyParseState = INITIAL_STATE;
   // Timer for flushing incomplete escape sequences
   incompleteEscapeTimer: NodeJS.Timeout | null = null;
+  // How many times flushIncomplete has deferred the flush because stdin still
+  // had pending bytes. Bounded so an unterminated sequence (or a spurious
+  // introducer the tokenizer latched on) cannot swallow typing indefinitely —
+  // recovered-and-reset after MAX_INCOMPLETE_REARMS deferrals.
+  incompleteRearms = 0;
+  readonly MAX_INCOMPLETE_REARMS = 4;
   // Timeout durations for incomplete sequences (ms)
   readonly NORMAL_TIMEOUT = 50; // Short timeout for regular esc sequences
   readonly PASTE_TIMEOUT = 500; // Longer timeout for paste operations
@@ -295,10 +301,20 @@ export default class App extends PureComponent<Props, State> {
     // already buffered. Re-arm instead of flushing: handleReadable will
     // drain stdin next and clear this timer. Prevents both the spurious
     // Escape key and the lost scroll event.
-    if (this.props.stdin.readableLength > 0) {
+    //
+    // Bounded: while the user keeps typing, every chunk re-arms this timer,
+    // so an unterminated sequence would otherwise swallow keystrokes for as
+    // long as the burst lasts. After MAX_INCOMPLETE_REARMS deferrals the flush
+    // runs regardless, so a latched parser always recovers within ~200ms.
+    if (
+      this.props.stdin.readableLength > 0 &&
+      this.incompleteRearms < this.MAX_INCOMPLETE_REARMS
+    ) {
+      this.incompleteRearms++;
       this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.NORMAL_TIMEOUT);
       return;
     }
+    this.incompleteRearms = 0;
 
     // Process incomplete as a flush operation (input=null)
     // This reuses all existing parsing logic
@@ -322,11 +338,23 @@ export default class App extends PureComponent<Props, State> {
 
     // If we have incomplete escape sequences, set a timer to flush them
     if (this.keyParseState.incomplete) {
+      // Diagnostic: a partial escape sequence means the tokenizer is buffering
+      // stdin instead of emitting keys, so every keystroke is being swallowed
+      // until the flush. Log the raw bytes so a wedge can be traced to the
+      // sequence the terminal actually sent (hex). Cheap and rare — only fires
+      // while a sequence is incomplete.
+      logForDebugging(
+        `[input] buffering incomplete sequence (${this.keyParseState.mode}): ${Buffer.from(this.keyParseState.incomplete, 'utf8').toString('hex')}`,
+      );
       // Cancel any existing timer first
       if (this.incompleteEscapeTimer) {
         clearTimeout(this.incompleteEscapeTimer);
       }
       this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT);
+    } else if (!this.incompleteEscapeTimer) {
+      // No buffered sequence and no pending flush — a sequence completed
+      // cleanly, so give the next one a fresh deferral budget.
+      this.incompleteRearms = 0;
     }
   };
   handleReadable = (): void => {

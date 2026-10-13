@@ -9,6 +9,31 @@
 import { C0, ESC_TYPE, isEscFinal } from './ansi.js'
 import { isCSIFinal, isCSIIntermediate, isCSIParam } from './csi.js'
 
+/**
+ * Upper bound on the bytes an OSC/DCS/APC sequence may absorb before the
+ * tokenizer abandons it and re-reads the remainder as text. Real terminal
+ * replies are far shorter; a longer run means the introducer was spurious.
+ */
+const MAX_CONTROL_SEQUENCE_BYTES = 1024
+
+/**
+ * Whether a byte is implausible as the first content byte of an OSC/DCS/APC
+ * reply. Genuine replies start with a command byte (a digit, `?`, `>`, `!`,
+ * `;`, …; e.g. `OSC 11;rgb:…`, `DCS >|…`). A space, an ASCII letter, a
+ * non-ASCII byte, or a stray control byte means the introducer was really a
+ * lone ESC followed by the user's keystroke, not a control sequence.
+ */
+function isImplausibleControlStart(code: number): boolean {
+  if (code > 0x7f) return true // non-ASCII (CJK, emoji, …)
+  if (code === 0x20) return true // space
+  if (code === 0x7f) return true // DEL
+  if (code < 0x20 && code !== C0.ESC && code !== C0.BEL) return true // stray C0
+  if ((code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a)) {
+    return true // A-Z a-z
+  }
+  return false
+}
+
 export type Token =
   | { type: 'text'; value: string }
   | { type: 'sequence'; value: string }
@@ -268,23 +293,27 @@ function tokenize(
         break
 
       case 'osc':
-        if (code === C0.BEL) {
-          i++
-          emitSequence(data.slice(seqStart, i))
-        } else if (
-          code === C0.ESC &&
-          i + 1 < data.length &&
-          data.charCodeAt(i + 1) === ESC_TYPE.ST
-        ) {
-          i += 2
-          emitSequence(data.slice(seqStart, i))
-        } else {
-          i++
-        }
-        break
-
       case 'dcs':
-      case 'apc':
+      case 'apc': {
+        // These three states have no length or content limit: every byte
+        // between the introducer and the BEL/ST terminator is absorbed into
+        // the sequence. A *spurious* introducer — a stray ESC followed by
+        // `]`, `P`, or `_`, e.g. from an IME or a mis-split chunk — therefore
+        // latches the tokenizer: no token is emitted, so no useInput listener
+        // (including the prompt's text input) sees a single keystroke, and the
+        // App keeps re-arming its flush timer while typing continues. Typing
+        // stops working until the user pauses long enough for the flush.
+        //
+        // A genuine terminal reply never opens an OSC/DCS/APC with a space, an
+        // ASCII letter, or a non-ASCII byte — those begin with a command
+        // (a digit, `?`, `>`, `!`, …; e.g. OSC 11;rgb:…, DCS >|…). So on the
+        // first content byte, bail out if it is implausible, and drop the
+        // 2-byte introducer while keeping the rest: what follows is the user's
+        // typing, not sequence payload. The length cap is a backstop for a
+        // genuinely unterminated sequence.
+        const contentStart = seqStart + 2 // ESC + introducer byte
+        const isFirstContentByte = i === contentStart
+        const contentLength = i - contentStart
         if (code === C0.BEL) {
           i++
           emitSequence(data.slice(seqStart, i))
@@ -295,10 +324,20 @@ function tokenize(
         ) {
           i += 2
           emitSequence(data.slice(seqStart, i))
+        } else if (
+          (isFirstContentByte && isImplausibleControlStart(code)) ||
+          contentLength >= MAX_CONTROL_SEQUENCE_BYTES
+        ) {
+          // Spurious introducer (or an over-long one): resume as ground text.
+          // textStart skips only the 2-byte introducer, so everything after it
+          // — the user's typing — is re-tokenized as text rather than dropped.
+          result.state = 'ground'
+          textStart = contentStart
         } else {
           i++
         }
         break
+      }
     }
   }
 
