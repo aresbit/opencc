@@ -88,12 +88,14 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       ...(feature('MESSAGE_ACTIONS')
         ? { 'shift+up': 'chat:messageActions' as const }
         : {}),
-      // Voice activation (hold-to-talk). Registered so getShortcutDisplay
-      // finds it without hitting the fallback analytics log. To rebind,
-      // add a voice:pushToTalk entry (last wins); to disable, use /voice
-      // — null-unbinding space hits a pre-existing useKeybinding.ts trap
-      // where 'unbound' swallows the event (space dead for typing).
-      ...(feature('VOICE_MODE') ? { space: 'voice:pushToTalk' } : {}),
+      // Voice push-to-talk (hold-to-talk). Bound to alt+space, NOT bare
+      // space: a bare Space collides with CJK IMEs — Space commits the
+      // IME candidate and may arrive as a full-width U+3000 — so bare
+      // Space must stay pure typing. /voice remains the on/off switch.
+      // Registered so getShortcutDisplay finds it without hitting the
+      // fallback analytics log; to rebind, add a voice:pushToTalk entry
+      // (last wins).
+      ...(feature('VOICE_MODE') ? { 'alt+space': 'voice:pushToTalk' } : {}),
     },
   },
   {

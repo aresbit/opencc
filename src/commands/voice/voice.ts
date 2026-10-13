@@ -131,7 +131,7 @@ export const call: LocalCommandCall = async () => {
   }
   settingsChangeDetector.notifyChange('userSettings')
   logEvent('tengu_voice_toggled', { enabled: true })
-  const key = getShortcutDisplay('voice:pushToTalk', 'Chat', 'Space')
+  const key = getShortcutDisplay('voice:pushToTalk', 'Chat', 'alt+space')
   const stt = normalizeLanguageForSTT(currentSettings.language)
   const cfg = getGlobalConfig()
   // Reset the hint counter whenever the resolved STT language changes

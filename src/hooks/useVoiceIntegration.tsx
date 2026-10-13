@@ -73,13 +73,14 @@ function matchesKeyboardEvent(e: KeyboardEvent, target: ParsedKeystroke): boolea
 }
 
 // Hardcoded default for when there's no KeybindingProvider at all (e.g.
-// headless/test contexts). NOT used when the provider exists and the
-// lookup returns null — that means the user null-unbound or reassigned
-// space, and falling back to space would pick a dead or conflicting key.
+// headless/test contexts). Mirrors the Chat default in defaultBindings.ts
+// (alt+space). NOT used when the provider exists and the lookup returns null —
+// that means the user null-unbound or reassigned the chord, and falling back
+// would pick a dead or conflicting key.
 const DEFAULT_VOICE_KEYSTROKE: ParsedKeystroke = {
   key: ' ',
   ctrl: false,
-  alt: false,
+  alt: true,
   shift: false,
   meta: false,
   super: false
@@ -367,8 +368,10 @@ export function useVoiceIntegration({
  * untypable — normal typing (>120ms between keystrokes) flows through;
  * only rapid auto-repeat from a held key triggers activation.
  *
- * Known broken: modifier+space (NUL → parsed as ctrl+backtick), chords
- * (discrete sequences, no hold). Validation warns on these.
+ * Known broken: ctrl+space (the terminal sends NUL → parsed as ctrl+backtick),
+ * and chords (discrete sequences, no hold). alt+space is NOT broken — it
+ * arrives as ESC+space, which is exactly why it is the default push-to-talk
+ * chord. Validation warns on the broken ones.
  */
 export function useVoiceKeybindingHandler({
   voiceHandleKeyEvent,

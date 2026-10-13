@@ -1,20 +1,22 @@
 /**
- * promptInputSink — a module-level bridge for splicing text into the prompt.
+ * promptInputSink — a module-level bridge for the prompt insert/read surface.
  *
  * Why this exists: the editable prompt buffer is owned by React. `PromptInput`
  * publishes an `insert()` onto `insertTextRef.current` every render
- * (src/components/PromptInput/PromptInput.tsx:269-288), and its own comment
- * names STT as the intended caller. But a built-in function-hook plugin runs
- * outside that tree and imports nothing React-shaped, so it cannot hold the
- * ref — and it must not, because `insertTextRef.current` is re-assigned on
- * every render.
+ * (src/components/PromptInput/PromptInput.tsx:269-288). A built-in function-hook
+ * plugin runs outside that tree and imports nothing React-shaped, so it cannot
+ * hold the ref — and it must not, because `insertTextRef.current` is
+ * re-assigned on every render.
  *
- * So REPL publishes a *resolver* once, and callers resolve the live inserter at
- * call time. Registering a resolver rather than the inserter itself is the
- * whole point: a captured `insert` would go stale on the next render.
+ * So REPL publishes *resolvers* once (registerPromptInserter /
+ * registerPromptReader), and callers resolve the live surface at call time.
+ * Registering a resolver rather than the value itself is the whole point: a
+ * captured `insert` would go stale on the next render.
  *
  * Not gated on `VOICE_MODE`. The feature-flagged voice path is a different,
- * cloud-bound route; this bridge is what the local STT hook plugin uses.
+ * cloud-bound route. /voice's push-to-talk now splices through the prompt ref
+ * directly, so the resolve-and-splice helpers the old dictation hook used here
+ * are gone; only the publishers remain.
  */
 
 /** Splices `text` into the prompt at the cursor. */
@@ -38,39 +40,15 @@ export function registerPromptInserter(
 }
 
 /**
- * Publish a reader for the current prompt text.
- *
- * The `ui.press` bridge carries no prompt state (UIPressBridge.tsx:30-33),
- * so a keybinding hook cannot otherwise answer "is the box empty?" — which is
- * what lets space-to-talk coexist with typing a space.
+ * Publish a reader for the current prompt text. Retained as the reader half of
+ * the bridge; the dictation hook that used to ask "is the box empty?" now rides
+ * /voice's push-to-talk path instead.
  */
 export function registerPromptReader(resolver: () => string): () => void {
   resolveReader = resolver
   return () => {
     if (resolveReader === resolver) resolveReader = null
   }
-}
-
-/** The current prompt text, or '' when no prompt is mounted. */
-export function readPromptText(): string {
-  return resolveReader?.() ?? ''
-}
-
-/** True when a prompt input is mounted and can accept inserted text. */
-export function hasPromptInserter(): boolean {
-  return typeof resolveInserter?.() === 'function'
-}
-
-/**
- * Splice `text` into the prompt at the cursor. Returns false (and does
- * nothing) when no prompt input is mounted — the caller decides whether that
- * is an error; for a plugin it usually just means "not in the REPL".
- */
-export function insertPromptText(text: string): boolean {
-  const inserter = resolveInserter?.()
-  if (!inserter) return false
-  inserter(text)
-  return true
 }
 
 /** Test seam: drop the current registration. */

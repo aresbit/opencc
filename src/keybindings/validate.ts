@@ -234,7 +234,7 @@ function validateBlock(
         warnings.push({
           type: 'invalid_action',
           severity: 'warning',
-          message: `Binding "${key}" to voice:pushToTalk prints into the input during warmup; use space or a modifier combo like meta+k`,
+          message: `Binding "${key}" to voice:pushToTalk prints into the input during warmup; use a modifier combo like alt+space or meta+k`,
           key,
           context: contextName,
           action,

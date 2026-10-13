@@ -10,12 +10,7 @@
  * src/services/speechToText/; this file is the hook layer that gives them
  * behaviour.
  *
- * Three jobs:
- *
- *   DICTATION — Alt+Space starts a recording; the silence gate ends it and the
- *   transcript is spliced in at the cursor. Nothing is ever sent on your
- *   behalf: you edit, then press Enter. This mirrors dsh-stt's "insert, not
- *   send".
+ * Two jobs (plus the dictation seam it borrows):
  *
  *   PRACTICE — `/practice` runs the loop: the agent writes a sentence, you
  *   say it, the transcript is scored against the target by word-level diff
@@ -24,6 +19,10 @@
  *   `conversation` (reply to a line; judged on language, then continued).
  *
  *   PANEL — the overlay slot shows the target, the last score and the level.
+ *
+ *   DICTATION is no longer registered here. Push-to-talk is /voice's
+ *   `voice:pushToTalk` keybinding (alt+space), so /practice and /voice share
+ *   one recording path instead of racing two hooks on the same chord.
  *
  * Registration matters as much as the code: the write path is a *hook*, so it
  * runs whether the model or the user drives the turn, and it cannot be
@@ -34,11 +33,7 @@ import * as React from 'react'
 import { Box, Text } from '../../../ink.js'
 import type { OnRegistrar } from '../types.js'
 import { bumpUIEpoch } from '../uiDispatcher.js'
-import {
-  record,
-  resolveActiveProvider,
-  type WordConfidence,
-} from '../../speechToText/index.js'
+import { type WordConfidence } from '../../speechToText/index.js'
 import {
   startPractice as beginSession,
   stopPractice as endSession,
@@ -50,10 +45,6 @@ import {
   type PracticeMode,
   type PracticeState,
 } from '../../speechToText/practice/session.js'
-import {
-  hasPromptInserter,
-  insertPromptText,
-} from '../../promptInputSink.js'
 
 const h = React.createElement
 
@@ -65,92 +56,8 @@ const PANEL_SLOT = 'overlay'
 
 // ── Module state ─────────────────────────────────────────────────
 
-let dictationEnabled = true
-let activeAbort: AbortController | null = null
-let lastError: string | null = null
 let lastTranscript = ''
 let lastScore: number | null = null
-/**
- * What the panel shows between a key press and its transcript. Without this the
- * dictation path is silent — a press that is still provisioning, one that is
- * listening, and one that silently failed all look identical (i.e. like
- * nothing happened), which is exactly the bug this exists to end.
- */
-let dictationPhase: 'idle' | 'preparing' | 'listening' = 'idle'
-
-// ── Dictation ────────────────────────────────────────────────────
-
-/**
- * One press: start recording, or cancel a recording already in flight.
- *
- * Async by nature but never awaited by its caller — `ui.press` is dispatched
- * inside a render pass and must return synchronously, so the hook starts this
- * and returns `{ handled: true }` immediately.
- */
-export async function dictateOnce(): Promise<
-  'started' | 'cancelled' | 'unavailable'
-> {
-  if (activeAbort) {
-    activeAbort.abort()
-    activeAbort = null
-    bumpUIEpoch()
-    return 'cancelled'
-  }
-
-  const ac = new AbortController()
-  activeAbort = ac
-  dictationPhase = 'preparing'
-  lastError = null
-  bumpUIEpoch()
-  const setStatus = (message: string | null): void => {
-    lastError = message
-    bumpUIEpoch()
-  }
-  try {
-    const resolved = await resolveActiveProvider({ signal: ac.signal, onStatus: setStatus })
-    if (!resolved) {
-      setStatus('no speech engine available')
-      return 'unavailable'
-    }
-    if (!resolved.availability.available) {
-      setStatus(resolved.availability.reason ?? 'speech engine unavailable')
-      return 'unavailable'
-    }
-
-    setStatus(null)
-    dictationPhase = 'listening'
-    bumpUIEpoch()
-    const rec = await record({ signal: ac.signal })
-    if (rec.stopReason === 'aborted') return 'cancelled'
-
-    const result = await resolved.provider.transcribe({ audio: rec.wav }, ac.signal)
-    lastTranscript = result.text.trim()
-    lastError = null
-    if (lastTranscript) insertPromptText(lastTranscript)
-    return 'started'
-  } catch (err) {
-    // A cancel (second press, or Ctrl+C) surfaces as an abort, not a failure.
-    if (ac.signal.aborted) return 'cancelled'
-    setStatus(err instanceof Error ? err.message : String(err))
-    return 'unavailable'
-  } finally {
-    if (activeAbort === ac) activeAbort = null
-    dictationPhase = 'idle'
-    bumpUIEpoch()
-  }
-}
-
-export function isRecording(): boolean {
-  return activeAbort !== null
-}
-
-export function isDictationEnabled(): boolean {
-  return dictationEnabled
-}
-
-export function setDictationEnabled(value: boolean): void {
-  dictationEnabled = value
-}
 
 // ── Practice ─────────────────────────────────────────────────────
 
@@ -168,7 +75,6 @@ export function startPractice(mode: PracticeMode): StartPracticeResult {
   beginSession(mode)
   lastScore = null
   lastTranscript = ''
-  lastError = null
   bumpUIEpoch()
   return { message: buildOpeningDirective(mode), shouldQuery: true }
 }
@@ -243,71 +149,35 @@ export function lengthProxyScore(transcript: string, level: number): number {
 
 function renderPanel(child: unknown): unknown {
   const state = getState()
-  const recording = isRecording()
 
   if (!state.active) {
-    // Dictation feedback. A press that is preparing an engine, one that is
-    // listening, and one that failed must not all look like silence.
-    if (dictationPhase === 'preparing') {
-      return h(
-        Box,
-        { paddingX: 1 },
-        h(Text, { color: 'suggestion' }, `🎤 ${lastError ?? 'preparing speech engine…'}`),
-      )
-    }
-    if (dictationPhase === 'listening') {
-      return h(
-        Box,
-        { paddingX: 1 },
-        h(Text, { color: 'suggestion' }, '🎤 listening… (alt+space to stop)'),
-      )
-    }
-    if (lastError) {
-      return h(
-        Box,
-        { paddingX: 1 },
-        h(Text, { color: 'error' }, `voice: ${lastError}`),
-      )
-    }
+    // Nothing to show outside practice; dictation feedback is owned by
+    // /voice's push-to-talk path now, not this hook.
     return child
   }
 
   const score = lastScore === null ? '—' : lastScore.toFixed(2)
-  const dot = recording ? ' ● recording' : ''
   return h(
     Box,
     { flexDirection: 'column', paddingX: 1 },
     h(
       Text,
       { color: 'suggestion' },
-      `🎤 practice/${state.mode} · level ${state.level}/8 · score ${score}${dot}`,
+      `🎤 practice/${state.mode} · level ${state.level}/8 · score ${score}`,
     ),
     state.target
       ? h(Text, { color: 'text' }, `say: ${state.target}`)
       : null,
-    lastError ? h(Text, { color: 'error' }, `voice: ${lastError}`) : null,
   )
 }
 
 // ── Registration ─────────────────────────────────────────────────
 
 export function register(on: OnRegistrar): void {
-  // Dictation: Alt+Space. The meta (Alt/Option) modifier is what keeps this off
-  // the bare space key, so it never competes with typing — the old binding
-  // watched plain space and had to bail out whenever the prompt was non-empty,
-  // which also made dictating into text you had already written impossible. The
-  // sink check stays: a transcript needs somewhere to be inserted, so with no
-  // prompt mounted the key is left alone.
-  on(
-    'ui.press',
-    { props: { input: ' ', key: { meta: true } } },
-    ($, e: any, next) => {
-      if (!dictationEnabled) return next(e)
-      if (!hasPromptInserter()) return next(e)
-      void dictateOnce()
-      return { handled: true }
-    },
-  )
+  // Dictation is no longer handled here. Push-to-talk now rides /voice's
+  // `voice:pushToTalk` keybinding (default alt+space), so /practice and /voice
+  // share one recording path; registering a ui.press hook here for the same
+  // chord would start two recordings per press.
 
   // Capture the line the agent just wrote. `Stop` carries
   // `last_assistant_message` (utils/hooks.ts:4064-4093), which is the only
@@ -355,27 +225,22 @@ export function register(on: OnRegistrar): void {
     return { additionalContext: directive }
   })
 
-  // The panel: target + last score + level while practising; a one-line error
-  // when an engine failed. Otherwise stay invisible.
+  // The panel: target + last score + level while practising. Otherwise
+  // stay invisible.
   on('ui.slot.render', { slotId: PANEL_SLOT }, ($, e: any, _next) => {
     return renderPanel(e.node)
   })
 
-  on('session.start', ($, e: any, next) => {
-    lastError = null
-    return next(e)
-  })
+  // Session boundary. Kept registered even though there is no per-session
+  // state left to reset (dictation moved to /voice).
+  on('session.start', ($, e: any, next) => next(e))
 }
 
 // ── Test seams ───────────────────────────────────────────────────
 
 export function resetVoiceInputForTests(): void {
-  dictationEnabled = true
-  activeAbort = null
-  lastError = null
   lastTranscript = ''
   lastScore = null
-  dictationPhase = 'idle'
 }
 
 export function getLastTranscript(): string {
