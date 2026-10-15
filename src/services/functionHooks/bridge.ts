@@ -17,7 +17,8 @@ import { dispatch, HookChainBottomError } from './dispatcher.js'
 import { buildEngineInterface, buildCoreNouns } from './engine.js'
 import { registry } from './registry.js'
 import { REVERSE_ALIASES, isDenyResult, type EngineInterface, type FunctionHookEvent, type HookFn } from './types.js'
-import { registerBuiltinPlugins, resetBuiltinPlugins } from './plugins/index.js'
+import { registerBuiltinPlugins, resetBuiltinPlugins, enableOptInPlugins } from './plugins/index.js'
+import { initGenomePersistence } from './plugins/rsiGenome.js'
 import {
   registerDefaultProviders,
   resetDefaultProvidersForTests,
@@ -27,6 +28,34 @@ import { logError } from 'src/utils/log.js'
 
 let engineInterface: EngineInterface | null = null
 let engineInitPromise: Promise<EngineInterface> | null = null
+
+/**
+ * The RSI ring, on by default.
+ *
+ * These are the plugins whose output is the genome — antibodies, crystallized
+ * sequences, curriculum profiles, critic rules — plus the consolidation pass
+ * that promotes a session's raw events into it. They are deliberately *not*
+ * in the opt-in set: see initEngine() for why leaving them off made the whole
+ * subsystem inert in production.
+ *
+ * jitSynthesis belongs here for the same reason, and was the same bug: it is
+ * the *producer* half of tool self-synthesis. Its `tool.call` hook is the only
+ * thing that fills the recipe table, and `src/tools.ts` already spreads
+ * getSyntheticTools() into the tool list — so with the hook off the consumer
+ * ran every turn against a permanently empty table and no synthesized tool
+ * could ever appear. Producer and consumer were both shipped; only the wire
+ * between them was missing.
+ */
+export const RSI_RING_PLUGINS = [
+  'rsiConstitution',
+  'rsiAntibody',
+  'rsiCrystallize',
+  'rsiExperiment',
+  'rsiCurriculum',
+  'rsiSleep',
+  'jitSynthesis',
+  'dream',
+] as const
 
 /**
  * Initialize the engine interface ($). Safe to call multiple times —
@@ -39,6 +68,17 @@ let engineInitPromise: Promise<EngineInterface> | null = null
 export async function initEngine(): Promise<EngineInterface> {
   if (engineInterface) return engineInterface
   if (engineInitPromise) return engineInitPromise
+
+  // Recursive self-improvement is this build's reason to exist, so the RSI
+  // ring is registered by default rather than left opt-in. The reason is
+  // narrow and load-bearing: opting in is a per-process decision made before
+  // the first registerBuiltinPlugins(), and nothing in the production boot did
+  // it — so the ring compiled nothing, consolidated nothing and the
+  // "experience" it accumulated died with the process. The genome is loaded
+  // first, because the hooks that mutate it resolve getGenome() at event time
+  // and must not race a load that would replace what they just wrote.
+  enableOptInPlugins(...RSI_RING_PLUGINS)
+  await initGenomePersistence()
 
   registerBuiltinPlugins()
 
