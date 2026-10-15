@@ -31,6 +31,7 @@ import {
   type StrategyRecord,
   type StrategyVariant,
   type CriticRule,
+  markGenomeDirty,
 } from './rsiGenome.js'
 
 // ── Experiment State ───────────────────────────────────────────
@@ -82,6 +83,7 @@ function recordOutcome(
   if (success) variant.successes++
   else variant.failures++
   variant.totalTime += elapsed
+  markGenomeDirty()
 
   strategy.sampleSize = strategy.variants.reduce((s, v) => s + v.samples, 0)
 
@@ -218,6 +220,7 @@ function checkCriticRules(tool: string, input: unknown): { decision: 'approve' |
   for (const rule of getCriticRules()) {
     if (rule.condition === condition) {
       rule.hitCount++
+      markGenomeDirty()
       return { decision: rule.decision, rule }
     }
   }

@@ -35,6 +35,7 @@ import {
   addRatchetTest,
   incrementGeneration,
   type RsiGenome,
+  markGenomeDirty,
 } from './rsiGenome.js'
 
 // ── Session Event Log ──────────────────────────────────────────
@@ -332,6 +333,7 @@ export function register(on: OnRegistrar): void {
     genome.meta.lastSleep = Date.now()
     genome.meta.totalImprovements += report.improvements.length
     genome.meta.secondOrderAdjustments += report.secondOrder.recommendations.length
+    markGenomeDirty()
 
     // Clear session log for next session
     sessionLog.length = 0
@@ -352,6 +354,7 @@ export function triggerSleep(): SleepReport {
   const genome = getGenome()
   genome.meta.lastSleep = Date.now()
   genome.meta.totalImprovements += report.improvements.length
+  markGenomeDirty()
 
   sessionLog.length = 0
   return report

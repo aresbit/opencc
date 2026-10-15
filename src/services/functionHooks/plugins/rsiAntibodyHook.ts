@@ -25,6 +25,7 @@ import {
   type Antibody,
   type AntibodyGuard,
   type FailurePattern,
+  markGenomeDirty,
 } from './rsiGenome.js'
 
 // ── Failure Tracking ───────────────────────────────────────────
@@ -177,6 +178,7 @@ function matchAntibody(
     }
 
     ab.hitCount++
+    markGenomeDirty()
     return ab
   }
   return null
@@ -197,6 +199,7 @@ export function register(on: OnRegistrar): void {
     if (ab) {
       if (ab.guard.type === 'block') {
         ab.blockCount++
+        markGenomeDirty()
         await dispatchBestEffort($, 'rsi.antibody.block', {
           antibodyId: ab.id,
           tool: toolName,

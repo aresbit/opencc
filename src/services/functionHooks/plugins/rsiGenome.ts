@@ -13,6 +13,25 @@
  *     (structurally refuses mutation from the evolvable layer)
  */
 
+import { mkdir, readFile, rename, writeFile } from 'fs/promises'
+import { homedir } from 'os'
+import { join } from 'path'
+
+/**
+ * The config home, resolved from the environment at call time.
+ *
+ * Deliberately not utils/envUtils.js's getClaudeConfigHomeDir. Four unrelated
+ * test files replace that module process-wide with mock.module, and a mock
+ * outlives the file that installed it — so importing it here pinned the
+ * genome's location (and every test that isolates itself by setting
+ * CLAUDE_CONFIG_DIR) to a stranger's temporary directory, which that file
+ * deletes when it finishes. The rule below is exactly envUtils's; keeping it
+ * local means the genome's location is answerable from the environment alone.
+ */
+function configHomeDir(): string {
+  return (process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')).normalize('NFC')
+}
+
 // ── Types ───────────────────────────────────────────────────────
 
 export interface Antibody {
@@ -151,6 +170,19 @@ export interface RsiGenome {
 let genome: RsiGenome = createEmptyGenome()
 let idCounter = 0
 
+// Persistence bookkeeping. `genomeSavedFingerprint` is the serialized form
+// last written to disk; `genomeDirty` is set by every mutator and cleared by a
+// successful flush. See the Persistence section at the bottom of this file.
+let genomeDirty = false
+let genomeFlushTimer: ReturnType<typeof setTimeout> | null = null
+let genomeFlushInFlight: Promise<void> | null = null
+let genomeLoadPromise: Promise<void> | null = null
+let genomeLoaded = false
+// Flushing is gated on this so a unit test that mutates the genome without
+// ever initialising persistence cannot write to the developer's real
+// ~/.claude/rsi/genome.json. initGenomePersistence() turns it on.
+let genomePersistenceEnabled = false
+
 const MAX_ANTIBODIES = 200
 const MAX_CRYSTALS = 100
 const MAX_STRATEGIES = 50
@@ -197,6 +229,7 @@ export function getGenomeMeta(): GenomeMeta {
 
 export function incrementGeneration(): void {
   genome.meta.generation++
+  markGenomeDirty()
 }
 
 // ── Antibody Operations ────────────────────────────────────────
@@ -222,6 +255,7 @@ export function addAntibody(pattern: FailurePattern, guard: AntibodyGuard): Anti
   }
   genome.antibodies.push(ab)
   genome.meta.antibodyCompilations++
+  markGenomeDirty()
   return ab
 }
 
@@ -239,6 +273,7 @@ export function removeAntibody(id: string): boolean {
   const idx = genome.antibodies.findIndex(a => a.id === id)
   if (idx === -1) return false
   genome.antibodies.splice(idx, 1)
+  markGenomeDirty()
   return true
 }
 
@@ -272,6 +307,7 @@ export function addCrystal(
   }
   genome.crystals.push(crystal)
   genome.meta.crystallizations++
+  markGenomeDirty()
   return crystal
 }
 
@@ -314,6 +350,7 @@ export function addStrategy(
   }
   genome.strategies.push(strategy)
   genome.meta.experimentsRun++
+  markGenomeDirty()
   return strategy
 }
 
@@ -353,6 +390,7 @@ export function addCriticRule(
     createdAt: Date.now(),
   }
   genome.criticRules.push(rule)
+  markGenomeDirty()
   return rule
 }
 
@@ -376,6 +414,7 @@ export function addConstitutionEntry(
     immutable: true,
   }
   genome.constitution.push(entry)
+  markGenomeDirty()
   return entry
 }
 
@@ -402,6 +441,7 @@ export function addRatchetTest(
     createdAt: Date.now(),
   }
   genome.ratchetTests.push(test)
+  markGenomeDirty()
   return test
 }
 
@@ -433,6 +473,7 @@ export function updateTaskProfile(
   if (profile.trend.length > 50) profile.trend.shift()
 
   genome.curriculum.taskTypes[taskType] = profile
+  markGenomeDirty()
 }
 
 export function getCurriculum(): CurriculumProfile {
@@ -458,6 +499,8 @@ export function importGenome(json: string): void {
     throw new Error('Invalid genome format')
   }
   genome = parsed
+  reindexIdCounter()
+  markGenomeDirty()
 }
 
 export function mergeAntibodies(foreign: Antibody[]): number {
@@ -472,6 +515,7 @@ export function mergeAntibodies(foreign: Antibody[]): number {
       imported++
     }
   }
+  if (imported > 0) markGenomeDirty()
   return imported
 }
 
@@ -504,4 +548,162 @@ export function getGenomeStats(): {
 export function resetGenome(): void {
   genome = createEmptyGenome()
   idCounter = 0
+  markGenomeDirty()
 }
+
+// ── Persistence ────────────────────────────────────────────────
+//
+// The genome is the agent's learned behaviour — antibodies that caught real
+// tool failures, crystallized tool sequences, curriculum profiles, critic
+// rules. In memory it is worthless across sessions: every process starts from
+// an empty genome, so a guard compiled on Monday does nothing on Tuesday and
+// the loop never compounds. Persisting it is what turns the hook layer from a
+// per-session experiment into experience that accumulates.
+//
+// It lives in the config home, not the repository (unlike lessons, see
+// lessonStore.ts). A lesson is knowledge *about a codebase* and belongs in
+// the diff; the genome is the agent's own behaviour and travels with the
+// agent, not with any one project — an antibody against a recurring tool
+// failure should apply in every checkout, not only the one it was learned in.
+//
+// Writes are debounced and atomic. Hook handlers mutate the genome in place
+// (e.g. `ab.hitCount++` on a live antibody), so mutation sites call
+// markGenomeDirty() rather than going through a setter; a short debounce
+// coalesces the burst of edits one turn produces into a single write.
+
+/** Where the genome is stored. Respects CLAUDE_CONFIG_DIR via the helper. */
+export function getGenomeFile(): string {
+  return join(configHomeDir(), 'rsi', 'genome.json')
+}
+
+/** Flag the genome as changed and schedule a coalesced flush. */
+export function markGenomeDirty(): void {
+  genomeDirty = true
+  if (!genomePersistenceEnabled) return
+  if (genomeFlushTimer) return
+  genomeFlushTimer = setTimeout(() => {
+    genomeFlushTimer = null
+    void flushGenome()
+  }, 250)
+  // Never hold the process open just to write state.
+  ;(genomeFlushTimer as { unref?: () => void }).unref?.()
+}
+
+/**
+ * Write the genome now. Safe to call at any time; concurrent calls collapse
+ * into a single writer and re-check the dirty flag on completion, so the last
+ * mutation is never lost to a race with an in-flight write.
+ */
+export async function flushGenome(): Promise<void> {
+  if (!genomePersistenceEnabled) return
+  if (genomeFlushInFlight) {
+    await genomeFlushInFlight
+    if (genomeDirty) return flushGenome()
+    return
+  }
+  if (!genomeDirty) return
+  genomeFlushInFlight = (async () => {
+    const path = getGenomeFile()
+    const body = exportGenome()
+    try {
+      await mkdir(join(configHomeDir(), 'rsi'), { recursive: true })
+      const tmp = `${path}.tmp`
+      await writeFile(tmp, `${body}\n`, 'utf-8')
+      await rename(tmp, path)
+      genomeDirty = false
+    } catch {
+      // A failed write must not crash a hook. The genome stays dirty; the
+      // next mutation (or the next boot) tries again.
+    }
+  })()
+  try {
+    await genomeFlushInFlight
+  } finally {
+    genomeFlushInFlight = null
+  }
+  if (genomeDirty) return flushGenome()
+}
+
+let genomeFileReadTried = false
+
+/**
+ * Load the genome from disk once per process. Called at boot before plugins
+ * register, so the hooks start from accumulated experience rather than empty.
+ * A missing or corrupt file is an empty genome, not an error — the same
+ * stance lessonStore takes, and for the same reason: a bad state file should
+ * cost you your accumulated guards, not the whole session.
+ */
+export function initGenomePersistence(): Promise<void> {
+  if (genomeLoadPromise) return genomeLoadPromise
+  genomeLoadPromise = (async () => {
+    genomeFileReadTried = true
+    try {
+      const raw = await readFile(getGenomeFile(), 'utf-8')
+      const parsed = JSON.parse(raw) as unknown
+      if (isValidGenome(parsed)) {
+        genome = parsed
+        reindexIdCounter()
+      }
+    } catch {
+      // No file yet, or unreadable: keep the empty genome.
+    } finally {
+      genomeLoaded = true
+      genomeDirty = false
+      genomePersistenceEnabled = true
+    }
+  })()
+  return genomeLoadPromise
+}
+
+/** For tests: forget that a load has happened, so a fresh one can run. */
+export function resetGenomePersistenceForTests(): void {
+  genomeLoadPromise = null
+  genomeLoaded = false
+  genomeFileReadTried = false
+  genomeDirty = false
+  genomePersistenceEnabled = false
+  if (genomeFlushTimer) {
+    clearTimeout(genomeFlushTimer)
+    genomeFlushTimer = null
+  }
+}
+
+function isValidGenome(value: unknown): value is RsiGenome {
+  if (!value || typeof value !== 'object') return false
+  const g = value as Partial<RsiGenome>
+  return (
+    typeof g.version === 'number' &&
+    Array.isArray(g.antibodies) &&
+    Array.isArray(g.crystals) &&
+    Array.isArray(g.strategies) &&
+    Array.isArray(g.criticRules) &&
+    Array.isArray(g.constitution) &&
+    Array.isArray(g.ratchetTests) &&
+    !!g.curriculum &&
+    typeof g.curriculum === 'object' &&
+    !!g.meta &&
+    typeof g.meta === 'object'
+  )
+}
+
+/**
+ * Recompute the id counter from the ids present, so a genome loaded from disk
+ * does not hand out an id that already exists (which would make two
+ * antibodies indistinguishable to removeAntibody).
+ */
+function reindexIdCounter(): void {
+  let max = 0
+  const consider = (id: unknown) => {
+    if (typeof id !== 'string') return
+    const m = /_([0-9a-f]+)$/.exec(id)
+    if (m) max = Math.max(max, parseInt(m[1], 16))
+  }
+  for (const ab of genome.antibodies) consider(ab.id)
+  for (const c of genome.crystals) consider(c.id)
+  for (const s of genome.strategies) consider(s.id)
+  for (const r of genome.criticRules) consider(r.id)
+  for (const c of genome.constitution) consider(c.id)
+  for (const r of genome.ratchetTests) consider(r.id)
+  idCounter = max
+}
+
