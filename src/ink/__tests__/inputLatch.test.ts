@@ -25,16 +25,22 @@ import { INITIAL_STATE, parseMultipleKeypresses } from '../parse-keypress.js'
  */
 function drive(chunks: string[]) {
   let state: any = { ...INITIAL_STATE, _tokenizer: undefined }
-  const emitted: Array<{ sequence?: string; name?: string; isPasted?: boolean }> = []
+  const emitted: Array<{
+    sequence?: string
+    name?: string
+    isPasted?: boolean
+  }> = []
   for (const c of chunks) {
     const [keys, next] = parseMultipleKeypresses(state, c)
-    for (const k of keys as any[]) emitted.push({ sequence: k.sequence, name: k.name, isPasted: k.isPasted })
+    for (const k of keys as any[])
+      emitted.push({ sequence: k.sequence, name: k.name, isPasted: k.isPasted })
     state = next
   }
   return { emitted, state }
 }
 
-const sequences = (emitted: Array<{ sequence?: string }>) => emitted.map(k => k.sequence)
+const sequences = (emitted: Array<{ sequence?: string }>) =>
+  emitted.map(k => k.sequence)
 
 describe('tokenizer spurious OSC/DCS/APC introducer recovers as text', () => {
   test('an OSC introducer does not swallow following ASCII keystrokes', () => {
@@ -74,5 +80,42 @@ describe('tokenizer spurious OSC/DCS/APC introducer recovers as text', () => {
   test('unchanged: a lone ESC still re-keys the next letter as meta', () => {
     // ESC + 'a' in one chunk is <Alt+a>; this is unchanged by the fix.
     expect(sequences(drive(['\x1ba']).emitted)).toEqual(['\x1ba'])
+  })
+})
+
+describe('X10 mouse introducer does not swallow following CJK', () => {
+  // `ESC [ M` opens a legacy X10 mouse event (3 payload bytes). When the bytes
+  // after it are not mouse payload — e.g. an IME's stray ESC, or a mis-split
+  // chunk, followed by the user's typing — the old check accepted them because
+  // it only rejected control bytes, and CJK code points are ≥ 0x20. With one
+  // or two CJK chars the tokenizer latched (no InputEvent until the flush
+  // timer); with exactly three it consumed them as a bogus wheel event. Both
+  // surfaced as "typing Chinese gets swallowed, then suddenly recovers".
+  test('one and two CJK chars after the introducer are delivered', () => {
+    expect(sequences(drive(['\x1b[M', '\u4f60']).emitted)).toEqual(['\u4f60'])
+    expect(sequences(drive(['\x1b[M', '\u4f60', '\u597d']).emitted)).toEqual([
+      '\u4f60',
+      '\u597d',
+    ])
+  })
+
+  test('three CJK chars are delivered, not consumed as a wheel event', () => {
+    const { emitted } = drive(['\x1b[M\u4f60\u597d\u4e16'])
+    expect(sequences(emitted)).toEqual(['\u4f60\u597d\u4e16'])
+    expect(
+      emitted.some(k => k.name === 'wheelup' || k.name === 'wheeldown'),
+    ).toBe(false)
+  })
+
+  test('the introducer does not stay latched across later keystrokes', () => {
+    const { emitted, state } = drive(['\x1b[M', '\u4f60', '\u597d', '\u4e16'])
+    expect(sequences(emitted)).toEqual(['\u4f60', '\u597d', '\u4e16'])
+    expect(state.incomplete).toBe('')
+  })
+
+  test('unchanged: a genuine X10 event still parses as one mouse key', () => {
+    // ESC [ M + Cb Cx Cy (all ≥ 0x20, ASCII) — legacy button press.
+    const { emitted } = drive(['\x1b[M\x20\x21\x22'])
+    expect(emitted.map(k => k.name)).toEqual(['mouse'])
   })
 })

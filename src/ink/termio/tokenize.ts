@@ -250,22 +250,37 @@ function tokenize(
         // fails and the event buffers until the next keypress absorbs it.
         // Fixing this requires latin1 stdin; X10's 223-coord cap is exactly
         // why SGR was invented, and no-SGR terminals at 162+ cols are rare.
-        if (
-          x10Mouse &&
-          code === 0x4d /* M */ &&
-          i - seqStart === 2 &&
-          (i + 1 >= data.length || data.charCodeAt(i + 1) >= 0x20) &&
-          (i + 2 >= data.length || data.charCodeAt(i + 2) >= 0x20) &&
-          (i + 3 >= data.length || data.charCodeAt(i + 3) >= 0x20)
-        ) {
-          if (i + 4 <= data.length) {
+        if (x10Mouse && code === 0x4d /* M */ && i - seqStart === 2) {
+          // The three payload slots must each look like a genuine X10 byte:
+          // Cb/Cx/Cy are single bytes ≥ 0x20 and, after utf8 decoding, ASCII.
+          // A slot that is already non-ASCII means the `ESC [ M` was spurious
+          // — a stray ESC from an IME, or a mis-split chunk — and the bytes
+          // after it are the user's typing, not mouse payload. Treating CJK as
+          // a payload slot swallowed it: `ESC [ M` + one or two CJK chars
+          // latched (no InputEvent until the flush timer), and exactly three
+          // CJK chars were consumed as a bogus wheel event (their code points
+          // pass the old `≥ 0x20` test). Drop the 3-byte introducer and resume
+          // as text instead. A real payload byte ≥ 0x80 collapses under utf8
+          // stdin anyway (see the note above), so nothing genuine is lost.
+          const slots = [i + 1, i + 2, i + 3].map(j =>
+            j < data.length ? data.charCodeAt(j) : null,
+          )
+          if (slots.some(c => c !== null && (c < 0x20 || c >= 0x80))) {
+            // Spurious introducer: skip `ESC [ M`, re-tokenize the rest as text.
+            result.state = 'ground'
+            i += 1
+            textStart = i
+            break
+          }
+          if (slots.every(c => c !== null)) {
             i += 4
             emitSequence(data.slice(seqStart, i))
-          } else {
-            // Incomplete — exit loop; end-of-input buffers from seqStart.
-            // Re-entry re-tokenizes from ground via the invalid-CSI fallthrough.
-            i = data.length
+            break
           }
+          // Payload incomplete — wait for the next chunk. If the trailing bytes
+          // are text, re-entry drops the introducer via the check above rather
+          // than buffering it forever.
+          i = data.length
           break
         }
         if (isCSIFinal(code)) {
