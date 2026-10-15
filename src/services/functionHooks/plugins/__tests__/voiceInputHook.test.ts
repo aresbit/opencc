@@ -52,7 +52,7 @@ describe('registration', () => {
     expect(events).toContain('ui.slot.render')
     expect(events).toContain('Stop')
     expect(events).toContain('session.start')
-    // Dictation now rides /voice's voice:pushToTalk keybinding (alt+space).
+    // Dictation now rides /voice's voice:pushToTalk keybinding (alt+k).
     // If this plugin also claimed the key here, one press would start two
     // recordings, so it must not register a ui.press hook at all.
     expect(events).not.toContain('ui.press')

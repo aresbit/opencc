@@ -282,7 +282,7 @@ function ModeIndicator({
   const killAgentsShortcut = useShortcutDisplay('chat:killAgents', 'Chat', 'ctrl+x ctrl+k');
   const voiceKeyShortcut = feature('VOICE_MODE') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-  useShortcutDisplay('voice:pushToTalk', 'Chat', 'Space') : '';
+  useShortcutDisplay('voice:pushToTalk', 'Chat', 'alt+k') : '';
   // Captured at mount so the hint doesn't flicker mid-session if another
   // CC instance increments the counter. Incremented once via useEffect the
   // first time voice is enabled in this session — approximates "hint was

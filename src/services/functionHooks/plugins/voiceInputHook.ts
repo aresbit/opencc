@@ -21,7 +21,7 @@
  *   PANEL — the overlay slot shows the target, the last score and the level.
  *
  *   DICTATION is no longer registered here. Push-to-talk is /voice's
- *   `voice:pushToTalk` keybinding (alt+space), so /practice and /voice share
+ *   `voice:pushToTalk` keybinding (alt+k), so /practice and /voice share
  *   one recording path instead of racing two hooks on the same chord.
  *
  * Registration matters as much as the code: the write path is a *hook*, so it
@@ -175,7 +175,7 @@ function renderPanel(child: unknown): unknown {
 
 export function register(on: OnRegistrar): void {
   // Dictation is no longer handled here. Push-to-talk now rides /voice's
-  // `voice:pushToTalk` keybinding (default alt+space), so /practice and /voice
+  // `voice:pushToTalk` keybinding (default alt+k), so /practice and /voice
   // share one recording path; registering a ui.press hook here for the same
   // chord would start two recordings per press.
 

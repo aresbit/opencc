@@ -74,13 +74,14 @@ function matchesKeyboardEvent(e: KeyboardEvent, target: ParsedKeystroke): boolea
 
 // Hardcoded default for when there's no KeybindingProvider at all (e.g.
 // headless/test contexts). Mirrors the Chat default in defaultBindings.ts
-// (bare space). NOT used when the provider exists and the lookup returns null —
-// that means the user null-unbound or reassigned the chord, and falling back
-// would pick a dead or conflicting key.
+// (alt+k — a modifier combo, never bare space, which a CJK IME commits with).
+// NOT used when the provider exists and the lookup returns null — that means
+// the user null-unbound or reassigned the chord, and falling back would pick a
+// dead or conflicting key.
 const DEFAULT_VOICE_KEYSTROKE: ParsedKeystroke = {
-  key: ' ',
+  key: 'k',
   ctrl: false,
-  alt: false,
+  alt: true,
   shift: false,
   meta: false,
   super: false

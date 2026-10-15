@@ -220,7 +220,8 @@ function validateBlock(
     } else if (action === 'voice:pushToTalk') {
       // Hold detection needs OS auto-repeat. Bare letters print into the
       // input during warmup and the activation strip is best-effort —
-      // space (default) or a modifier combo like meta+k avoid that.
+      // the alt+k default or another modifier combo avoids that. Bare space
+      // is *not* recommended either: a CJK IME commits with it.
       const ks = parseChord(key)[0]
       if (
         ks &&
@@ -234,7 +235,7 @@ function validateBlock(
         warnings.push({
           type: 'invalid_action',
           severity: 'warning',
-          message: `Binding "${key}" to voice:pushToTalk prints into the input during warmup; use space (the default) or a modifier combo like meta+k`,
+          message: `Binding "${key}" to voice:pushToTalk prints into the input during warmup; use a modifier combo like alt+k (the default)`,
           key,
           context: contextName,
           action,
