@@ -1,8 +1,14 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { dispatch } from '../../dispatcher.js'
 import { registry } from '../../registry.js'
 import type { EngineInterface, HookFn } from '../../types.js'
-import { getStats, register, resetStats, setConfig } from '../plainLanguageHook.js'
+import {
+  getStats,
+  register,
+  resetConfig,
+  resetStats,
+  setConfig,
+} from '../plainLanguageHook.js'
 
 /**
  * The user's prompt arrives on `prompt`.
@@ -33,6 +39,16 @@ beforeEach(() => {
   // 'always' so the assertion does not depend on which prompt number this is.
   setConfig({ enabled: true, injectMode: 'always' })
   loadPlugin()
+})
+
+// The plugin's config is a module-level singleton and the registry is a
+// process-wide one, so leaving either live leaks this test's `enabled: true,
+// injectMode: 'always'` into every later file in the run — the next
+// `prompt.submit` dispatch in the suite inherits a Plain Language directive it
+// never registered. Clean up both so the suite is order-independent.
+afterEach(() => {
+  registry.removePlugin('test-prompt-field')
+  resetConfig()
 })
 
 describe('prompt.submit', () => {
