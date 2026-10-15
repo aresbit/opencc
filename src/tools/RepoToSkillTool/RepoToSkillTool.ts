@@ -286,6 +286,21 @@ async function runRegister(
         content
     }
 
+    // Admission gate. Registering writes into the permanent skill store that
+    // every future session loads, so what gets in has to earn its place. The
+    // one property we can check here without executing anything from the repo
+    // (this tool's contract: "Nothing in the repo is ever executed") is that
+    // there is an actual skill body — frontmatter alone is a name and a
+    // description with nothing behind them, and a loader that accepts it will
+    // surface a skill that can never do its job.
+    const body = content.replace(/^---[\s\S]*?---/, '').trim()
+    if (body.length === 0) {
+      return failure(
+        'register',
+        'refusing to register: the skill body is empty after frontmatter. A skill with only a name and description has no instructions to run, so it would sit in the permanent store looking valid while doing nothing. Write the instructions, then register.',
+      )
+    }
+
     const targetDir = registeredSkillDir(slug)
     const targetName = skillNameFor(slug)
     await ensureDir(targetDir)
@@ -318,6 +333,7 @@ async function runRegister(
         message: [
           `Registered skill "${targetName}" at ${targetDir}`,
           'It is available via the Skill tool this session and auto-discovered in future sessions.',
+          'Verification: NOT RUN. Registration checked only that the skill has a body — it did not execute the repo, so the instructions are unproven. Exercise the skill before relying on it.',
         ].join('\n'),
         slug,
         skillName: targetName,
