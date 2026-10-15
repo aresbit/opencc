@@ -55,7 +55,12 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     super: keypress.super,
   }
 
-  let input = keypress.ctrl ? keypress.name : keypress.sequence
+  // Extended encodings the app itself enables (Kitty CSI u /
+  // modifyOtherKeys) carry an escape as `sequence` and the printable
+  // character in `text`. Prefer `text` so the character reaches the prompt
+  // instead of being stripped to '' downstream. Focus/paste/mouse matching
+  // uses `sequence` directly and is unaffected.
+  let input = keypress.ctrl ? keypress.name : (keypress.text ?? keypress.sequence)
 
   // Handle undefined input case
   if (input === undefined) {

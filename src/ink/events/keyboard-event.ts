@@ -37,6 +37,11 @@ function keyFromParsed(parsed: ParsedKey): string {
   // letter. Browsers report e.key === 'c' with e.ctrlKey === true.
   if (parsed.ctrl) return name
 
+  // Extended encodings (Kitty CSI u / modifyOtherKeys): `sequence` is an
+  // escape, so the printable character lives in `text` — and may be
+  // non-ASCII, where `name` is empty. Browsers report e.key as the char.
+  if (parsed.text) return parsed.text
+
   // Single printable char (space through ~, plus anything above ASCII):
   // use the literal char. Browsers report e.key === '3', not 'Digit3'.
   if (seq.length === 1) {

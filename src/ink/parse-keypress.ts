@@ -13,14 +13,18 @@ const META_KEY_CODE_RE = /^(?:\x1b)([a-zA-Z0-9])$/
 
 // eslint-disable-next-line no-control-regex
 const FN_KEY_RE =
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
   /^(?:\x1b+)(O|N|\[|\[\[)(?:(\d+)(?:;(\d+))?([~^$])|(?:1;)?(\d+)?([a-zA-Z]))/
 
-// CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] u
+// CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] [; text] u
 // Example: ESC[13;2u = Shift+Enter, ESC[27u = Escape (no modifiers)
-// Modifier is optional - when absent, defaults to 1 (no modifiers)
+// Modifier is optional - when absent, defaults to 1 (no modifiers).
+// The optional third parameter is text-as-codepoints: a `:`-separated list
+// of code points to insert (e.g. ESC[122;1;122:104u = "zh"). The modifier
+// field may itself carry an `:event-type` suffix (press/repeat/release); we
+// only need the modifier before the colon.
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
-const CSI_U_RE = /^\x1b\[(\d+)(?:;(\d+))?u/
+const CSI_U_RE = /^\x1b\[(\d+)(?:;([\d:]+))?(?:;([\d:]+))?u/
 
 // xterm modifyOtherKeys: ESC [ 27 ; modifier ; keycode ~
 // Example: ESC[27;2;13~ = Shift+Enter. Emitted by Ghostty/tmux/xterm when
@@ -478,6 +482,56 @@ function decodeModifier(modifier: number): {
 }
 
 /**
+ * Decode the Kitty keyboard protocol's third CSI-u parameter: text as a
+ * `:`-separated list of Unicode code points to insert (e.g. `122:104` → "zh",
+ * `20013` → "中"). Returns undefined when the field is absent/empty or
+ * unparseable, so callers fall back to synthesizing from the key code.
+ */
+function decodeKittyText(field: string | undefined): string | undefined {
+  if (!field) return undefined
+  const codes: number[] = []
+  for (const part of field.split(':')) {
+    const n = parseInt(part, 10)
+    if (Number.isFinite(n) && n >= 0) codes.push(n)
+  }
+  if (codes.length === 0) return undefined
+  try {
+    return String.fromCodePoint(...codes)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Synthesize the printable text a CSI-u / modifyOtherKeys key code stands for
+ * when the terminal did not supply a text field. Kitty sends the *unshifted*
+ * code point plus a separate Shift modifier, so apply Shift to the case.
+ *
+ * Returns undefined — i.e. "this key is not text" — for ctrl/meta/super (those
+ * are commands, not characters) and for control/functional keys (Enter 13,
+ * Tab 9, Escape 27, Backspace 8/127, …) and the Kitty numpad private-use
+ * range, so those keep their existing name/flag behavior.
+ */
+function synthesizeText(
+  codepoint: number,
+  mods: { ctrl: boolean; meta: boolean; super: boolean; shift: boolean },
+): string | undefined {
+  if (mods.ctrl || mods.meta || mods.super) return undefined
+  // Control characters and DEL are keys, never text.
+  if (codepoint < 32 || codepoint === 127) return undefined
+  // Kitty functional keys (numpad 57399+) live in the private-use area;
+  // keycodeToName already names them and they are not text.
+  if (codepoint >= 0xe000 && codepoint <= 0xf8ff) return undefined
+  let ch: string
+  try {
+    ch = String.fromCodePoint(codepoint)
+  } catch {
+    return undefined
+  }
+  return mods.shift ? ch.toUpperCase() : ch
+}
+
+/**
  * Map keycode to key name for modifyOtherKeys/CSI u sequences.
  * Handles both ASCII keycodes and Kitty keyboard protocol functional keys.
  *
@@ -552,6 +606,15 @@ export type ParsedKey = {
   sequence: string | undefined
   raw: string | undefined
   code?: string
+  /**
+   * Printable text this key inserts, when it differs from (or is missing in)
+   * `sequence`. Set for extended encodings the app itself enables — Kitty CSI
+   * u and xterm modifyOtherKeys — whose `sequence` is an escape, not a
+   * character. Consumers that build the text-input string must prefer it over
+   * `sequence`, which is still needed verbatim for focus/paste/mouse matching.
+   * Absent (not '') for non-text keys (Enter, Tab, Escape, ctrl/meta chords).
+   */
+  text?: string
   isPasted: boolean
 }
 
@@ -632,10 +695,14 @@ function parseKeypress(s: string = ''): ParsedKey {
   let match: RegExpExecArray | null
   if ((match = CSI_U_RE.exec(s))) {
     const codepoint = parseInt(match[1]!, 10)
-    // Modifier defaults to 1 (no modifiers) when not present
-    const modifier = match[2] ? parseInt(match[2], 10) : 1
+    // Modifier defaults to 1 (no modifiers) when not present. The field may
+    // carry an `:event-type` suffix; keep only the modifier part.
+    const modifier = match[2] ? parseInt(match[2].split(':')[0]!, 10) : 1
     const mods = decodeModifier(modifier)
     const name = keycodeToName(codepoint)
+    // Prefer the terminal-supplied text field; otherwise synthesize it from
+    // the code point so a key the app itself asked to receive is not lost.
+    const text = decodeKittyText(match[3]) ?? synthesizeText(codepoint, mods)
     return {
       kind: 'key',
       name,
@@ -647,6 +714,7 @@ function parseKeypress(s: string = ''): ParsedKey {
       super: mods.super,
       sequence: s,
       raw: s,
+      text,
       isPasted: false,
     }
   }
@@ -656,7 +724,9 @@ function parseKeypress(s: string = ''): ParsedKey {
   // would leave the tail as garbage if it partially matched.
   if ((match = MODIFY_OTHER_KEYS_RE.exec(s))) {
     const mods = decodeModifier(parseInt(match[1]!, 10))
-    const name = keycodeToName(parseInt(match[2]!, 10))
+    const keycode = parseInt(match[2]!, 10)
+    const name = keycodeToName(keycode)
+    const text = synthesizeText(keycode, mods)
     return {
       kind: 'key',
       name,
@@ -668,6 +738,7 @@ function parseKeypress(s: string = ''): ParsedKey {
       super: mods.super,
       sequence: s,
       raw: s,
+      text,
       isPasted: false,
     }
   }

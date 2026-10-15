@@ -543,7 +543,10 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
       app.handleSuspend();
       continue;
     }
-    app.handleInput(sequence);
+    // Deliver the printable text when the encoding carried it (Kitty CSI u /
+    // modifyOtherKeys); `sequence` is the raw escape and is still used above
+    // for focus matching. Falls back to `sequence` for ordinary keys.
+    app.handleInput(item.text ?? sequence);
     const event = new InputEvent(item);
     app.internal_eventEmitter.emit('input', event);
 
