@@ -57,6 +57,11 @@ const outputSchema = lazySchema(() =>
           kind: z.enum(['skill', 'lesson']),
           name: z.string(),
           score: z.number(),
+          path: z
+            .string()
+            .describe(
+              'Directory holding the match; the SKILL.md is `<path>/SKILL.md`. Empty for a lesson. Read that file when the skill is not one of the skills listed in the conversation.',
+            ),
           excerpt: z.string().describe('The indexed text, truncated'),
         }),
       )
@@ -81,6 +86,7 @@ function toOutputHit(hit: SkillHit): Output['hits'][number] {
     kind: hit.doc.kind,
     name: hit.doc.name,
     score: Number(hit.score.toFixed(4)),
+    path: hit.doc.sourcePath,
     excerpt: excerpt(hit.doc.text),
   }
 }
@@ -141,7 +147,9 @@ export const DiscoverSkillsTool = buildTool({
   mapToolResultToToolResultBlockParam(output, toolUseID) {
     const result = output as Output
     const lines = result.hits.map(
-      h => `- ${h.name} [${h.kind}] (score ${h.score})\n  ${h.excerpt}`,
+      h =>
+        `- ${h.name} [${h.kind}] (score ${h.score})\n  ${h.excerpt}` +
+        (h.path ? `\n  path: ${h.path}/SKILL.md` : ''),
     )
     return {
       tool_use_id: toolUseID,

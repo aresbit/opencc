@@ -1,9 +1,15 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises'
+import { homedir, tmpdir } from 'os'
+import { join } from 'path'
 import type { Command } from '../../../types/command.js'
 import {
   buildSkillDocs,
   buildSkillIndex,
+  extraSkillRoots,
   isArchivedPath,
+  loadSkillDocsFromRoot,
+  mergeSkillDocs,
   searchDocs,
   type SkillDoc,
 } from '../localSearch.js'
@@ -246,5 +252,114 @@ describe('archived documents never surface', () => {
     expect(isArchivedPath('/a/b/archived/c')).toBe(false)
     expect(isArchivedPath('')).toBe(false)
     expect(isArchivedPath(undefined)).toBe(false)
+  })
+})
+
+/**
+ * The library walk. The loader only reads `<root>/<name>/SKILL.md`, so anything
+ * a repository keeps in a plain `skills/` directory — or one level deeper, as
+ * `ebook/book-architect/SKILL.md` is — is absent from the listing and must be
+ * reached by the index instead. These tests run against a real temporary tree
+ * rather than a mocked `readdir`, because the interesting behaviour is exactly
+ * the filesystem contract: which directories the walk descends into, and which
+ * it stops at.
+ */
+describe('skills under a plain skills/ root are indexed', () => {
+  let root: string
+
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true })
+  })
+
+  async function skill(
+    dir: string,
+    scope: string,
+    frontmatter: string,
+  ): Promise<void> {
+    await mkdir(join(dir, scope), { recursive: true })
+    await writeFile(
+      join(dir, scope, 'SKILL.md'),
+      `---\n${frontmatter}\n---\n\nBody.\n`,
+      'utf-8',
+    )
+  }
+
+  test('the two roots are <cwd>/skills and ~/.claude/skills', () => {
+    expect(extraSkillRoots('/work/repo')).toEqual([
+      '/work/repo/skills',
+      join(homedir(), '.claude', 'skills'),
+    ])
+  })
+
+  test('depth-1 and nested skills are found; hidden dirs and archive/ are not', async () => {
+    root = await mkdtemp(join(tmpdir(), 'skillwalk-'))
+    await skill(root, 'flat-skill', 'name: flat\nwhen_to_use: when flat applies')
+    // Nested one level down, through a directory that is not itself a skill —
+    // the `ebook/book-architect` shape.
+    await skill(root, 'group/nested-skill', 'name: nested')
+    // A skill directory must not be descended into: its own subdirectories are
+    // assets, and a stray SKILL.md under one is not a second skill.
+    await skill(root, 'flat-skill/assets', 'name: not-a-skill')
+    // Hidden directory holding a SKILL.md: not part of the library.
+    await skill(root, '.git/hidden-skill', 'name: hidden')
+    // Retired skill under a whole `archive` segment.
+    await skill(root, 'archive/retired-skill', 'name: retired')
+
+    const ids = (await loadSkillDocsFromRoot(root)).map(d => d.id).sort()
+    expect(ids).toEqual(['skill:flat-skill', 'skill:nested-skill'])
+  })
+
+  test('frontmatter name/description/when_to_use become the searchable text', async () => {
+    root = await mkdtemp(join(tmpdir(), 'skillwalk-'))
+    await skill(
+      root,
+      'thor-flash',
+      'name: thor-flash\ndescription: Flash firmware images onto the Thor board.\nwhen_to_use: When a board is bricked.',
+    )
+    const [doc] = await loadSkillDocsFromRoot(root)
+    expect(doc!.name).toBe('thor-flash')
+    expect(doc!.text).toContain('Flash firmware images onto the Thor board.')
+    expect(doc!.text).toContain('When a board is bricked.')
+    expect(doc!.sourcePath).toBe(join(root, 'thor-flash'))
+  })
+
+  test('a missing root is empty, not an error', async () => {
+    expect(await loadSkillDocsFromRoot('/nonexistent/root/xyz')).toEqual([])
+  })
+
+  test('mergeSkillDocs keeps the command copy and drops the duplicate', () => {
+    const fromCommand: SkillDoc[] = [
+      {
+        id: 'skill:pdf',
+        kind: 'skill',
+        name: 'pdf',
+        text: 'pdf\nlisted',
+        sourcePath: '/cfg/skills/pdf',
+      },
+    ]
+    const fromWalk: SkillDoc[] = [
+      { id: 'skill:pdf', kind: 'skill', name: 'pdf', text: 'pdf\nwalked', sourcePath: '/repo/skills/pdf' },
+      { id: 'skill:PDF', kind: 'skill', name: 'PDF', text: 'PDF\nother', sourcePath: '/repo/skills/PDF' },
+      { id: 'skill:newone', kind: 'skill', name: 'newone', text: 'newone\nbody', sourcePath: '/repo/skills/newone' },
+    ]
+    const merged = mergeSkillDocs(fromCommand, fromWalk)
+    expect(merged.map(d => d.id)).toEqual(['skill:pdf', 'skill:newone'])
+    // The surviving copy is the invocable one, not the walked one.
+    expect(merged[0]!.sourcePath).toBe('/cfg/skills/pdf')
+  })
+
+  test('a skill from a plain root is retrievable end to end', async () => {
+    root = await mkdtemp(join(tmpdir(), 'skillwalk-'))
+    await skill(
+      root,
+      'harmonyos-ui-automator',
+      'name: harmonyos-ui-automator\ndescription: Drive HarmonyOS app UI through automated taps and assertions.',
+    )
+    const docs = mergeSkillDocs(buildSkillDocs([], [] as Lesson[]), await loadSkillDocsFromRoot(root))
+    const index = buildSkillIndex(docs)
+    const top = searchDocs(index, docs, 'automate harmonyos app ui taps', 5).map(
+      h => h.doc.id,
+    )
+    expect(top).toContain('skill:harmonyos-ui-automator')
   })
 })
