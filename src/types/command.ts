@@ -186,6 +186,14 @@ export type CommandBase = {
   argumentHint?: string // Hint text for command arguments (displayed in gray after command)
   whenToUse?: string // From the "Skill" spec. Detailed usage scenarios for when to use this command
   version?: string // Version of the command/skill
+  /**
+   * A synthesized (repo-distilled) skill whose declared verifier has not reached
+   * a `verified` verdict. Set by the skill loader from frontmatter; surfaced in
+   * the skill listing so the model can tell an evidence-backed skill from an
+   * unproven one. Absence means "no claim either way", not "verified" — only an
+   * explicit `verified: true` in frontmatter is a claim of verification.
+   */
+  unverified?: boolean
   disableModelInvocation?: boolean // Whether to disable this command from being invoked by models
   userInvocable?: boolean // Whether users can invoke this skill by typing /skill-name
   loadedFrom?:

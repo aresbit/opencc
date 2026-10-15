@@ -95,11 +95,13 @@ const webCmd = feature('CCR_REMOTE_SETUP')
       require('./commands/remote-setup/index.js') as typeof import('./commands/remote-setup/index.js')
     ).default
   : null
-const clearSkillIndexCache = feature('EXPERIMENTAL_SKILL_SEARCH')
-  ? (
-      require('./services/skillSearch/localSearch.js') as typeof import('./services/skillSearch/localSearch.js')
-    ).clearSkillIndexCache
-  : null
+// Not gated on EXPERIMENTAL_SKILL_SEARCH: the local BM25 index backs the
+// discover_skills tool, which is registered unconditionally, so its cache must
+// be clearable regardless of the flag. It is a layer on top of
+// getSkillToolCommands, and clearing only the inner memo would leave it stale.
+const clearSkillIndexCache = (
+  require('./services/skillSearch/localSearch.js') as typeof import('./services/skillSearch/localSearch.js')
+).clearSkillIndexCache
 const subscribePr = feature('KAIROS_GITHUB_WEBHOOKS')
   ? require('./commands/subscribe-pr.js').default
   : null

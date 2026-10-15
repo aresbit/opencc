@@ -62,7 +62,13 @@ function formatCommandDescription(cmd: Command): string {
     )
   }
 
-  return `- ${cmd.name}: ${getCommandDescription(cmd)}`
+  // The listing is where the model decides which skill to reach for, so an
+  // unproven synthesized skill must not look like a proven one. The marker is
+  // appended (not prepended) so the budget-truncation path still keeps as much
+  // of the description as it can, and it counts toward the budget like any
+  // other text.
+  const unverified = cmd.unverified ? ' [unverified]' : ''
+  return `- ${cmd.name}: ${getCommandDescription(cmd)}${unverified}`
 }
 
 const MIN_DESC_LENGTH = 20

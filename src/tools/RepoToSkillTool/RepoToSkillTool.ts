@@ -6,6 +6,8 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { DESCRIPTION, getPrompt, REPO_TO_SKILL_TOOL_NAME } from './prompt.js'
 import { addSkillDirectories } from '../../skills/loadSkillsDir.js'
+import { DEFAULT_TRIALS, runTrials, type TrialRun } from '../../services/rsi/trials.js'
+import type { Verdict } from '../../services/rsi/estimators.js'
 import {
   CLONE_COMMAND_TIMEOUT_MS,
   detectRepoType,
@@ -56,6 +58,12 @@ const inputSchema = lazySchema(() =>
       .describe(
         'For "register": full SKILL.md markdown (YAML frontmatter with name+description, then body), supplied inline.',
       ),
+    verifyCommand: z
+      .string()
+      .optional()
+      .describe(
+        'For "register": a command that proves the skill works — run it, and the exit code decides. Run repeatedly (default 5 trials) so a flaky verifier is caught rather than guessed at. Only a `verified` verdict writes `verified: true` to the skill; anything else writes `unverified: true` and the skill listing shows [unverified]. Runs in the current directory with a shell; do NOT pass a command lifted verbatim from untrusted repo content without reading it first.',
+      ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -69,6 +77,12 @@ const outputSchema = lazySchema(() =>
     slug: z.string().optional().describe('Derived slug (owner-repo)'),
     skillName: z.string().optional().describe('Registered skill name'),
     skillPath: z.string().optional().describe('Registered skill directory'),
+    verified: z
+      .boolean()
+      .optional()
+      .describe(
+        'For "register": whether the declared verifier reached a `verified` verdict. Absent when no verifyCommand was supplied.',
+      ),
     workspace: z.string().optional().describe('Clone workspace for "distill"'),
     repoKind: z.string().optional().describe('Detected repo type for "distill"'),
     manifest: z.string().optional().describe('Manifest file detected for "distill"'),
@@ -86,6 +100,21 @@ export type Output = z.infer<OutputSchema>
 
 function failure(action: string, message: string): { data: Output } {
   return { data: { success: false, action, message } }
+}
+
+/**
+ * Read back the claim `withVerificationFlag` wrote. Kept to the frontmatter
+ * block so a skill whose body happens to contain the word cannot be mistaken
+ * for one that carries a claim.
+ */
+function readVerificationFlag(
+  content: string,
+): 'verified' | 'unverified' | 'none' {
+  const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  if (!fm) return 'none'
+  if (/^\s*unverified\s*:\s*true\s*$/m.test(fm[1]!)) return 'unverified'
+  if (/^\s*verified\s*:\s*true\s*$/m.test(fm[1]!)) return 'verified'
+  return 'none'
 }
 
 function renderToolUseMessage(input: Partial<Input>): string | null {
@@ -246,6 +275,66 @@ async function runDistill(
   }
 }
 
+/** What the verifier run established, flattened to what the message needs. */
+interface TrialSummary {
+  command: string
+  verdict: Verdict
+  passes: number
+  trials: number
+  aborted: boolean
+  topFailure?: string
+}
+
+function summarizeVerification(run: TrialRun): TrialSummary {
+  const first = run.distinctFailures[0]
+  return {
+    command: run.command,
+    verdict: run.reading.verdict,
+    passes: run.reading.passes,
+    trials: run.reading.attempts,
+    aborted: run.aborted,
+    ...(first ? { topFailure: first.excerpt } : {}),
+  }
+}
+
+/**
+ * Write the verification claim into the skill's own frontmatter.
+ *
+ * The claim has to travel with the artifact, not just with this response: the
+ * message is read once, but the frontmatter is re-read every session the skill
+ * is loaded, and it is what the listing renders. Any prior claim is replaced
+ * rather than appended, so re-registering a skill cannot leave it advertising
+ * both `verified` and `unverified` at once.
+ */
+function withVerificationFlag(
+  content: string,
+  flag: 'verified' | 'unverified',
+): string {
+  const match = content.match(/^(\s*---\r?\n)([\s\S]*?)(\r?\n---)/)
+  if (!match) return content
+  const body = match[2]!
+    .split(/\r?\n/)
+    .filter(line => !/^\s*(un)?verified\s*:/.test(line))
+    .join('\n')
+  const claim = flag === 'verified' ? 'verified: true' : 'unverified: true'
+  // Function replacement: the frontmatter body may contain `$`, which a string
+  // replacement would interpret as a capture-group reference.
+  return content.replace(match[0], () => `${match[1]!}${body}\n${claim}${match[3]!}`)
+}
+
+function verificationMessage(v: TrialSummary | null): string {
+  if (!v) {
+    return 'Verification: NOT RUN — no verifyCommand was supplied, so this skill is registered UNVERIFIED (frontmatter `unverified: true`) and the skill listing shows [unverified]. Supply a verifyCommand to have it checked.'
+  }
+  const counts = `${v.passes}/${v.trials} trials`
+  if (v.verdict === 'verified') {
+    return `Verification: VERIFIED — \`${v.command}\` passed ${counts}. The skill is marked \`verified: true\`.`
+  }
+  const aborted = v.aborted ? ' (run aborted early)' : ''
+  const why = v.topFailure ? `\n  first failure: ${v.topFailure}` : ''
+  return `Verification: ${v.verdict.toUpperCase()} — \`${v.command}\` passed ${counts}${aborted}. That is not proof the skill works, so it is registered UNVERIFIED (frontmatter \`unverified: true\`) and the skill listing shows [unverified].${why}`
+}
+
 async function runRegister(
   input: Input,
   signal: AbortSignal,
@@ -301,6 +390,36 @@ async function runRegister(
       )
     }
 
+    // Evidence gate. The body check above proves the skill *has* instructions;
+    // it says nothing about whether those instructions work. When the caller
+    // supplies a verifier, run it and let the exit codes decide — through the
+    // same repeated-trials engine RSI uses, because one green run of a
+    // stochastic verifier is a coin that landed heads. The verdict is written
+    // into the skill's own frontmatter so the claim travels with the artifact
+    // and renders in the listing, rather than living only in this response.
+    //
+    // The bar is deliberately 0.5, not runTrials' RSI default of 0.9. Those are
+    // two different questions. RSI asks "is this fix at least 90% reliable",
+    // which needs ~35 clean trials to certify at 95% confidence and is the right
+    // bar for promoting a patch. A register gate asks something weaker and
+    // narrower: "does this skill's own verifier pass more often than it fails,
+    // with confidence" — i.e. is the evidence better than a coin flip. At 0.9
+    // with 5 trials an all-pass run reads `insufficient` and *no* skill could
+    // ever be marked verified, which would make the flag permanent decoration.
+    // At 0.5, 5/5 clears the Wilson lower bound (≈0.57) and 4/5 does not
+    // (≈0.38 → flaky), so the gate discriminates without demanding 35 runs.
+    let verification: TrialSummary | null = null
+    if (input.verifyCommand) {
+      const run = await runTrials(input.verifyCommand, {
+        trials: DEFAULT_TRIALS,
+        requiredLowerBound: 0.5,
+        abortSignal: signal,
+      })
+      verification = summarizeVerification(run)
+    }
+    const isVerified = verification?.verdict === 'verified'
+    content = withVerificationFlag(content, isVerified ? 'verified' : 'unverified')
+
     const targetDir = registeredSkillDir(slug)
     const targetName = skillNameFor(slug)
     await ensureDir(targetDir)
@@ -333,11 +452,12 @@ async function runRegister(
         message: [
           `Registered skill "${targetName}" at ${targetDir}`,
           'It is available via the Skill tool this session and auto-discovered in future sessions.',
-          'Verification: NOT RUN. Registration checked only that the skill has a body — it did not execute the repo, so the instructions are unproven. Exercise the skill before relying on it.',
+          verificationMessage(verification),
         ].join('\n'),
         slug,
         skillName: targetName,
         skillPath: targetDir,
+        ...(verification ? { verified: isVerified } : {}),
       },
     }
   } catch (error) {
@@ -364,6 +484,7 @@ async function runList(signal: AbortSignal): Promise<{ data: Output }> {
               name: e,
               slug: e.replace(/^repo-to-skill-/, ''),
               description: readSkillDescription(content),
+              verification: readVerificationFlag(content),
             }
           }),
       )
@@ -377,7 +498,12 @@ async function runList(signal: AbortSignal): Promise<{ data: Output }> {
           skills.length === 0
             ? 'No repo-skills registered yet.'
             : `${skills.length} repo-skill(s) registered:\n` +
-              skills.map(s => `- ${s.name}: ${s.description}`).join('\n'),
+              skills
+                .map(
+                  s =>
+                    `- ${s.name}${s.verification === 'unverified' ? ' [unverified]' : ''}: ${s.description}`,
+                )
+                .join('\n'),
         skills,
       },
     }

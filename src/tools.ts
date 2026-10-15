@@ -16,6 +16,7 @@ import { AutoresearchTool } from './tools/AutoresearchTool/AutoresearchTool.js'
 import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
 import { RepoToSkillTool } from './tools/RepoToSkillTool/RepoToSkillTool.js'
+import { DiscoverSkillsTool } from './tools/DiscoverSkillsTool/DiscoverSkillsTool.js'
 import { ProbeTool } from './tools/ProbeTool/ProbeTool.js'
 import { RedTeamLoopTool } from './tools/RedTeamLoopTool/RedTeamLoopTool.js'
 import { SreTool } from './tools/SreTool/SreTool.js'
@@ -269,6 +270,7 @@ export function getAllBaseTools(): Tools {
     MemoryTool,
     Paper2CodeTool,
     RepoToSkillTool,
+    DiscoverSkillsTool,
     ProbeTool,
     RedTeamLoopTool,
     SreTool,
