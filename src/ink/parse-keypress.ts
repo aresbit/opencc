@@ -5,7 +5,7 @@
  * then interprets sequences as keypresses.
  */
 import { Buffer } from 'buffer'
-import { PASTE_END, PASTE_START } from './termio/csi.js'
+import { FOCUS_IN, FOCUS_OUT, PASTE_END, PASTE_START } from './termio/csi.js'
 import { createTokenizer, type Tokenizer } from './termio/tokenize.js'
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
@@ -197,6 +197,24 @@ export const INITIAL_STATE: KeyParseState = {
   pasteBuffer: '',
 }
 
+/**
+ * Whether the parse state is holding bytes that have not been emitted as keys
+ * yet. Two independent things can hold input:
+ *
+ * - `incomplete` — the tokenizer has a partially buffered escape sequence.
+ * - `mode === 'IN_PASTE'` — a bracketed paste is open, so every following
+ *   token is being appended to `pasteBuffer` instead of emitted. Note this is
+ *   invisible in `incomplete`: the tokenizer itself sits at ground state while
+ *   pasting (the content arrives as ordinary text tokens), so an orphan
+ *   `PASTE_START` with no matching `PASTE_END` leaves `incomplete` empty.
+ *
+ * App arms its flush timer off this predicate; a state that holds input but
+ * reports "nothing pending" is never flushed and swallows keystrokes forever.
+ */
+export function hasPendingInput(state: KeyParseState): boolean {
+  return state.incomplete !== '' || state.mode === 'IN_PASTE'
+}
+
 function inputToString(input: Buffer | string): string {
   if (Buffer.isBuffer(input)) {
     if (input[0]! > 127 && input[1] === undefined) {
@@ -287,9 +305,18 @@ export function parseMultipleKeypresses(
     }
   }
 
-  // If flushing and still in paste mode, emit what we have
-  if (isFlush && inPaste && pasteBuffer) {
-    keys.push(createPasteKey(pasteBuffer))
+  // If flushing and still in paste mode, the paste is unterminated: no
+  // PASTE_END is coming (the introducer was spurious, or the terminal never
+  // sent one). Emit whatever content accumulated and — crucially — close the
+  // paste, even when the buffer is empty. Leaving mode as IN_PASTE would keep
+  // hasPendingInput() true, so App would re-arm its flush timer forever; and
+  // an empty paste key is deliberately NOT emitted (downstream treats a
+  // zero-length paste as a clipboard-image paste prompt, which a spurious
+  // introducer must not trigger).
+  if (isFlush && inPaste) {
+    if (pasteBuffer) {
+      keys.push(createPasteKey(pasteBuffer))
+    }
     inPaste = false
     pasteBuffer = ''
   }
@@ -821,11 +848,39 @@ function parseKeypress(s: string = ''): ParsedKey {
     key.meta = !!(modifier & 2)
     key.super = !!(modifier & 8)
     key.shift = !!(modifier & 1)
-    key.code = code
 
     key.name = keyName[code]
     key.shift = isShiftKey(code) || key.shift
     key.ctrl = isCtrlKey(code) || key.ctrl
+
+    // An unmapped `ESC [ X` / `ESC O X` (a single trailing byte, no params) is
+    // not a keypress. Every real CSI/SS3 final for those two forms is one of a
+    // small fixed set — arrows, Home/End, `[Z` back-tab, the rxvt `[a`–`[e`
+    // family — all present in keyName above. A bare letter that maps to
+    // nothing means the two-byte introducer was spurious (a stray ESC from the
+    // IME, or a mis-split chunk) and the trailing byte is the user's own
+    // keystroke: `ESC [ z` is "z", not an escape. Re-key it as literal text.
+    // Setting the code without a name instead would make input-event.ts blank
+    // the input and delete the character (the F13-suppression guard).
+    //
+    // Only the tokenizer's ambiguity is resolved here, not its structure: at
+    // the byte level `ESC [ z` is a syntactically valid CSI (z ∈ 0x40–0x7e is
+    // a legal final byte) and is indistinguishable from `ESC [ A`, a genuine
+    // up-arrow. The distinction only exists against the key map, which lives
+    // at this layer — so the recovery belongs here, not in tokenize.ts.
+    //
+    // FOCUS_IN / FOCUS_OUT (`ESC [ I` / `ESC [ O`) are recognized control
+    // events consumed by sequence match, not keys; never re-key them.
+    if (
+      !key.name &&
+      /^(?:\[|O).$/.test(code) &&
+      s !== FOCUS_IN &&
+      s !== FOCUS_OUT
+    ) {
+      key.text = code.charAt(1)
+    } else {
+      key.code = code
+    }
   }
 
   // iTerm in natural text editing mode

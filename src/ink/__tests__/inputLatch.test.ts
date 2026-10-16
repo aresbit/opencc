@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { InputEvent } from '../events/input-event.js'
 import { INITIAL_STATE, parseMultipleKeypresses } from '../parse-keypress.js'
 
 /**
@@ -117,5 +118,81 @@ describe('X10 mouse introducer does not swallow following CJK', () => {
     // ESC [ M + Cb Cx Cy (all ≥ 0x20, ASCII) — legacy button press.
     const { emitted } = drive(['\x1b[M\x20\x21\x22'])
     expect(emitted.map(k => k.name)).toEqual(['mouse'])
+  })
+})
+
+describe('a spurious CSI/SS3 introducer does not delete the next letter', () => {
+  /**
+   * `ESC [` and `ESC O` open a CSI / SS3 sequence; a following byte in
+   * 0x40–0x7e is a syntactically legal *final* byte, so the tokenizer cannot
+   * tell `ESC [ z` (a stray introducer plus the user's "z") from `ESC [ A` (a
+   * genuine up-arrow). The two are only distinguishable against the key map,
+   * which lives in parse-keypress.
+   *
+   * There, an unmapped single-letter final matched FN_KEY_RE, set `code`
+   * without a `name`, and input-event.ts's F13-suppression guard blanked the
+   * input — silently deleting the character: `ESC [ zhong` inserted only
+   * "hong". Any stray ESC from the IME before a keystroke lost that keystroke.
+   *
+   * The fix re-keys an unmapped `ESC [ X` / `ESC O X` as the literal character
+   * X; the introducer was spurious, the letter is the user's. `inputOf` runs
+   * the key through InputEvent — the exact string the prompt receives.
+   */
+  const inputOf = (chunks: string[]): string => {
+    let state: any = { ...INITIAL_STATE, _tokenizer: undefined }
+    let out = ''
+    for (const c of chunks) {
+      const [keys, next] = parseMultipleKeypresses(state, c)
+      for (const k of keys as any[]) {
+        if (k.kind === 'key') out += new InputEvent(k).input
+      }
+      state = next
+    }
+    return out
+  }
+
+  test('ESC [ <letter> keeps the letter', () => {
+    expect(inputOf(['\x1b[zhong'])).toBe('zhong')
+  })
+
+  test('ESC O <letter> keeps the letter', () => {
+    expect(inputOf(['\x1bOzhong'])).toBe('zhong')
+  })
+
+  test('a stray introducer split across reads still recovers the letter', () => {
+    expect(inputOf(['\x1b[', 'zhong'])).toBe('zhong')
+    expect(inputOf(['\x1bO', 'zhong'])).toBe('zhong')
+  })
+
+  test('unchanged: real CSI/SS3 keys still parse as keys, not text', () => {
+    // ESC [ A = up-arrow (a genuine CSI final); ESC O A = up-arrow (SS3).
+    // These are mapped, so the recovery must not fire.
+    let state: any = { ...INITIAL_STATE, _tokenizer: undefined }
+    const up1 = parseMultipleKeypresses(state, '\x1b[A')[0] as any[]
+    const up2 = parseMultipleKeypresses(state, '\x1bOA')[0] as any[]
+    expect(up1.map(k => k.name)).toEqual(['up'])
+    expect(up2.map(k => k.name)).toEqual(['up'])
+    expect(new InputEvent(up1[0]!).input).toBe('')
+  })
+
+  test('unchanged: unmapped numeric forms are still swallowed, not leaked', () => {
+    // ESC [ 25 ~ (F13) has no name and would leak "[25~" as literal text, so
+    // the F13-suppression guard must keep blanking it — the recovery only
+    // covers the bare single-letter `[ X` / `O X` form.
+    let state: any = { ...INITIAL_STATE, _tokenizer: undefined }
+    const f13 = parseMultipleKeypresses(state, '\x1b[25~')[0] as any[]
+    expect(new InputEvent(f13[0]!).input).toBe('')
+  })
+
+  test('unchanged: focus events are not re-keyed as letters', () => {
+    // ESC [ I / ESC [ O are recognized control events (App matches them by
+    // sequence), never user text.
+    let state: any = { ...INITIAL_STATE, _tokenizer: undefined }
+    const fin = parseMultipleKeypresses(state, '\x1b[I')[0] as any[]
+    const fout = parseMultipleKeypresses(state, '\x1b[O')[0] as any[]
+    expect(fin.map(k => k.sequence)).toEqual(['\x1b[I'])
+    expect(fout.map(k => k.sequence)).toEqual(['\x1b[O'])
+    expect(new InputEvent(fin[0]!).input).toBe('')
+    expect(new InputEvent(fout[0]!).input).toBe('')
   })
 })

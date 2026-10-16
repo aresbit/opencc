@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { INITIAL_STATE, parseMultipleKeypresses } from '../parse-keypress.js'
+import {
+  hasPendingInput,
+  INITIAL_STATE,
+  parseMultipleKeypresses,
+} from '../parse-keypress.js'
 
 const PASTE_START = '\x1b[200~'
 const PASTE_END = '\x1b[201~'
@@ -65,5 +69,81 @@ describe('bracketed paste parsing', () => {
 
   test('ordinary typing is not marked as pasted', () => {
     expect(pastedFrom(['abc'])).toEqual([])
+  })
+})
+
+describe('an unterminated paste recovers on App\'s flush timer', () => {
+  // The parser half above never flushes: it feeds chunks and reads keys out.
+  // App additionally arms a flush timer whenever the parser is holding input
+  // (App.processInput) and processes a flush — parseMultipleKeypresses(state,
+  // null) — when that timer fires (App.flushIncomplete). An orphan
+  // PASTE_START (a stray ESC[200~ with no ESC[201~) is exactly the case where
+  // the two halves disagreed: the tokenizer sits at ground state while
+  // pasting, so `incomplete` was empty, the timer never armed, and typing was
+  // swallowed for good.
+  //
+  // This driver reproduces the two decisions that matter. The arming
+  // predicate is imported (hasPendingInput), so it cannot drift from App; the
+  // timeout values only set latency and are mirrored from App. In a test stdin
+  // is empty when the timer fires, so it fires once instead of re-arming.
+  const NORMAL_TIMEOUT = 50 // App.NORMAL_TIMEOUT
+  const PASTE_TIMEOUT = 500 // App.PASTE_TIMEOUT
+
+  function driveWithFlushTimer(chunks: string[]) {
+    let state: any = { ...INITIAL_STATE, _tokenizer: undefined }
+    const inserted: string[] = []
+    const timers: number[] = []
+    const collect = (keys: any[]) => {
+      for (const k of keys) {
+        if (k.kind === 'key') inserted.push(k.text ?? k.sequence ?? '')
+      }
+    }
+    for (const chunk of chunks) {
+      const [keys, next] = parseMultipleKeypresses(state, chunk)
+      state = next
+      collect(keys as never)
+    }
+    if (hasPendingInput(state)) {
+      timers.push(state.mode === 'IN_PASTE' ? PASTE_TIMEOUT : NORMAL_TIMEOUT)
+      const [keys, next] = parseMultipleKeypresses(state, null)
+      state = next
+      collect(keys as never)
+    }
+    return { inserted: inserted.join(''), timers, state }
+  }
+
+  test('an orphan PASTE_START does not swallow the rest of the typing', () => {
+    const { inserted, timers, state } = driveWithFlushTimer([
+      PASTE_START,
+      'zhong',
+      'shurufa',
+      'ni',
+      'hao',
+    ])
+    // Everything typed after the stray introducer reaches the prompt, on the
+    // paste timeout, and the paste is closed rather than left latched.
+    expect(inserted).toBe('zhongshurufanihao')
+    expect(timers).toEqual([PASTE_TIMEOUT])
+    expect(state.mode).toBe('NORMAL')
+    expect(hasPendingInput(state)).toBe(false)
+  })
+
+  test('an empty orphan PASTE_START closes instead of arming forever', () => {
+    // A flush with an empty pasteBuffer must still leave paste mode. If it did
+    // not, hasPendingInput would stay true and App would re-arm its timer on
+    // every tick — an unbounded timer loop in place of the old silent latch.
+    const { inserted, timers, state } = driveWithFlushTimer([PASTE_START])
+    expect(inserted).toBe('')
+    expect(timers).toEqual([PASTE_TIMEOUT])
+    expect(state.mode).toBe('NORMAL')
+    expect(hasPendingInput(state)).toBe(false)
+  })
+
+  test('a real START…END paste is one paste and never arms the timer', () => {
+    const { inserted, timers } = driveWithFlushTimer([
+      `${PASTE_START}hello world${PASTE_END}`,
+    ])
+    expect(inserted).toBe('hello world')
+    expect(timers).toEqual([])
   })
 })

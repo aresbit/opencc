@@ -8,7 +8,7 @@ import { logError } from '../../utils/log.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
-import { INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses } from '../parse-keypress.js';
+import { hasPendingInput, INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses } from '../parse-keypress.js';
 import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js';
@@ -290,8 +290,9 @@ export default class App extends PureComponent<Props, State> {
     // Clear the timer reference
     this.incompleteEscapeTimer = null;
 
-    // Only proceed if we have incomplete sequences
-    if (!this.keyParseState.incomplete) return;
+    // Only proceed if the parser is holding input (a partial escape sequence,
+    // or an open bracketed paste accumulating in pasteBuffer).
+    if (!hasPendingInput(this.keyParseState)) return;
 
     // Fullscreen: if stdin has data waiting, it's almost certainly the
     // continuation of the buffered sequence (e.g. `[<64;74;16M` after a
@@ -336,15 +337,21 @@ export default class App extends PureComponent<Props, State> {
       reconciler.discreteUpdates(processKeysInBatch, this, keys, undefined, undefined);
     }
 
-    // If we have incomplete escape sequences, set a timer to flush them
-    if (this.keyParseState.incomplete) {
-      // Diagnostic: a partial escape sequence means the tokenizer is buffering
-      // stdin instead of emitting keys, so every keystroke is being swallowed
-      // until the flush. Log the raw bytes so a wedge can be traced to the
-      // sequence the terminal actually sent (hex). Cheap and rare — only fires
-      // while a sequence is incomplete.
+    // If the parser is holding input, set a timer to flush it. This covers
+    // both a partially buffered escape sequence and an open bracketed paste
+    // (IN_PASTE). The paste case is the one that is invisible in `incomplete`:
+    // the tokenizer sits at ground state while pasting — the content arrives
+    // as text tokens and accumulates in pasteBuffer — so an orphan PASTE_START
+    // (no matching PASTE_END) left `incomplete` empty, the timer never armed,
+    // and every later keystroke was swallowed indefinitely. PASTE_TIMEOUT below
+    // already existed for this mode; it was simply unreachable.
+    if (hasPendingInput(this.keyParseState)) {
+      // Diagnostic: the parser is buffering stdin instead of emitting keys, so
+      // every keystroke is being swallowed until the flush. Log the raw bytes
+      // so a wedge can be traced to the sequence the terminal actually sent
+      // (hex). Cheap and rare — only fires while input is held.
       logForDebugging(
-        `[input] buffering incomplete sequence (${this.keyParseState.mode}): ${Buffer.from(this.keyParseState.incomplete, 'utf8').toString('hex')}`,
+        `[input] buffering incomplete sequence (${this.keyParseState.mode}): ${Buffer.from(this.keyParseState.incomplete || this.keyParseState.pasteBuffer, 'utf8').toString('hex')}`,
       );
       // Cancel any existing timer first
       if (this.incompleteEscapeTimer) {
