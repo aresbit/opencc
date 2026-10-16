@@ -187,6 +187,14 @@ export type KeyParseState = {
   mode: 'NORMAL' | 'IN_PASTE'
   incomplete: string
   pasteBuffer: string
+  /**
+   * Whether the open paste has already delivered content. Only decides what a
+   * closing `PASTE_END` means: with nothing delivered yet, an empty buffer is a
+   * genuine empty paste (downstream reads that as "an image was pasted"); after
+   * a partial delivery it is just the tail of a paste we already handed over, so
+   * it must emit nothing.
+   */
+  pasteDelivered: boolean
   // Internal tokenizer instance
   _tokenizer?: Tokenizer
 }
@@ -195,6 +203,7 @@ export const INITIAL_STATE: KeyParseState = {
   mode: 'NORMAL',
   incomplete: '',
   pasteBuffer: '',
+  pasteDelivered: false,
 }
 
 /**
@@ -202,36 +211,54 @@ export const INITIAL_STATE: KeyParseState = {
  * yet. Two independent things can hold input:
  *
  * - `incomplete` — the tokenizer has a partially buffered escape sequence.
- * - `mode === 'IN_PASTE'` — a bracketed paste is open, so every following
- *   token is being appended to `pasteBuffer` instead of emitted. Note this is
- *   invisible in `incomplete`: the tokenizer itself sits at ground state while
- *   pasting (the content arrives as ordinary text tokens), so an orphan
+ * - a non-empty `pasteBuffer` — an open bracketed paste with content waiting.
+ *   Note this is invisible in `incomplete`: the tokenizer sits at ground state
+ *   while pasting (the content arrives as ordinary text tokens), so an orphan
  *   `PASTE_START` with no matching `PASTE_END` leaves `incomplete` empty.
  *
- * App arms its flush timer off this predicate; a state that holds input but
+ * An open paste with an *empty* buffer is deliberately not pending: there is
+ * nothing owed to the consumer, and treating it as pending would make App re-arm
+ * the flush timer forever while the paste waits for content or its terminator.
+ * Content makes it pending again the moment it arrives.
+ *
+ * App arms its flush timer off this predicate; a state that holds content but
  * reports "nothing pending" is never flushed and swallows keystrokes forever.
  */
 export function hasPendingInput(state: KeyParseState): boolean {
-  return state.incomplete !== '' || state.mode === 'IN_PASTE'
+  return (
+    state.incomplete !== '' ||
+    (state.mode === 'IN_PASTE' && state.pasteBuffer !== '')
+  )
 }
 
 /**
  * Timing policy for flushing input the parser is holding. `phase` is how long
  * with no new bytes we wait before flushing a lone sequence; `budget` is the
- * hard ceiling on how long a hold may defer recovery *in total*, no matter how
+ * hard ceiling on how long a hold may defer delivery *in total*, no matter how
  * often new bytes arrive.
  *
- * The budget is what makes recovery bounded. Re-arming on every chunk is
+ * The budget is what makes delivery bounded. Re-arming on every chunk is
  * correct while a real sequence is still streaming in, but a latch (a stray
  * introducer, or an IME's ESC) under a steady stream of keystrokes would
  * otherwise push the deadline out forever: with a 50 ms phase and a byte every
  * 20 ms the timer is reset before it can fire, so it never runs at all.
+ *
+ * What the budget does *not* do is end a bracketed paste — see
+ * `parseMultipleKeypresses`: for IN_PASTE it delivers the buffered content as
+ * paste and keeps the paste open, because closing it mid-stream would silently
+ * reinterpret the remainder (newlines become submits) and turn the real
+ * terminator into an empty paste, which downstream reads as a pasted image.
+ *
+ * `pasteQuiet` is how the paste does end, and it is the one thing a timer can
+ * decide that the bytes cannot: after a delivery, silence. See
+ * `closeQuietPaste`.
  */
 export const FLUSH_TIMEOUTS = {
   normal: 50,
   paste: 500,
   normalBudget: 200,
   pasteBudget: 2000,
+  pasteQuiet: 4000,
 } as const
 
 export type FlushPlan =
@@ -268,6 +295,46 @@ export function planFlush(
   return { kind: 'wait', delayMs: Math.min(phase, remaining) }
 }
 
+/**
+ * Whether App should keep a quiet-close timer armed for this state. Only a
+ * *delivered* paste is ever closed on silence: one that has delivered nothing
+ * is a paste in progress whose terminator we have not seen, and closing it
+ * early would reinterpret the content still on its way — exactly the failure
+ * the flush refuses to risk.
+ */
+export function shouldArmQuietClose(state: KeyParseState): boolean {
+  return state.mode === 'IN_PASTE' && state.pasteDelivered
+}
+
+/**
+ * Close an open paste that has gone quiet, or leave it alone.
+ *
+ * The flush never closes a paste (see `parseMultipleKeypresses`): at that
+ * moment a slow paste and a stray introducer are byte-for-byte identical, and
+ * closing is irreversible. Silence is what separates them, and only App can
+ * observe it — so after a delivery, when nothing else has arrived for
+ * `pasteQuiet`, the paste is over and is closed here.
+ *
+ * It matters because an introducer that never gets a terminator — a stray
+ * `CSI 200~` — would otherwise stay open for the rest of the session, and every
+ * later keystroke is delivered as paste content while it is open: Enter arrives
+ * as a newline instead of submitting, Ctrl+C as text. Closing does not drop
+ * anything, because everything the paste held was already delivered.
+ *
+ * The state is returned unchanged unless the paste is open with an empty
+ * buffer: content still accumulating is a paste in progress, not a quiet one.
+ */
+export function closeQuietPaste(state: KeyParseState): KeyParseState {
+  if (
+    state.mode !== 'IN_PASTE' ||
+    state.pasteBuffer !== '' ||
+    !state.pasteDelivered
+  ) {
+    return state
+  }
+  return { ...state, mode: 'NORMAL', pasteDelivered: false }
+}
+
 function inputToString(input: Buffer | string): string {
   if (Buffer.isBuffer(input)) {
     if (input[0]! > 127 && input[1] === undefined) {
@@ -302,19 +369,32 @@ export function parseMultipleKeypresses(
   const keys: ParsedInput[] = []
   let inPaste = prevState.mode === 'IN_PASTE'
   let pasteBuffer = prevState.pasteBuffer
+  let pasteDelivered = prevState.pasteDelivered
 
   for (const token of tokens) {
     if (token.type === 'sequence') {
       if (token.value === PASTE_START) {
         inPaste = true
         pasteBuffer = ''
+        pasteDelivered = false
       } else if (token.value === PASTE_END) {
-        // Always emit a paste key, even for empty pastes. This allows
-        // downstream handlers to detect empty pastes (e.g., for clipboard
-        // image handling on macOS). The paste content may be empty string.
-        keys.push(createPasteKey(pasteBuffer))
-        inPaste = false
-        pasteBuffer = ''
+        // Only a terminator that closes a paste we are actually in means
+        // anything. A standalone `ESC[201~` (no START) is a stray — typically
+        // the tail of a paste whose START was consumed by a flush — and must be
+        // ignored: emitting an empty paste for it would read downstream as "the
+        // user pasted an image".
+        if (inPaste) {
+          // An empty buffer here is a genuine empty paste (the user pasted an
+          // image; downstream prompts for a clipboard image) only if nothing
+          // was delivered for this paste yet. After an interim delivery it is
+          // just the tail of a paste already handed over.
+          if (pasteBuffer !== '' || !pasteDelivered) {
+            keys.push(createPasteKey(pasteBuffer))
+          }
+          inPaste = false
+          pasteBuffer = ''
+          pasteDelivered = false
+        }
       } else if (inPaste) {
         // Sequences inside paste are treated as literal text
         pasteBuffer += token.value
@@ -358,20 +438,21 @@ export function parseMultipleKeypresses(
     }
   }
 
-  // If flushing and still in paste mode, the paste is unterminated: no
-  // PASTE_END is coming (the introducer was spurious, or the terminal never
-  // sent one). Emit whatever content accumulated and — crucially — close the
-  // paste, even when the buffer is empty. Leaving mode as IN_PASTE would keep
-  // hasPendingInput() true, so App would re-arm its flush timer forever; and
-  // an empty paste key is deliberately NOT emitted (downstream treats a
-  // zero-length paste as a clipboard-image paste prompt, which a spurious
-  // introducer must not trigger).
-  if (isFlush && inPaste) {
-    if (pasteBuffer) {
-      keys.push(createPasteKey(pasteBuffer))
-    }
-    inPaste = false
+  // If flushing while a paste is open, deliver what accumulated — but do NOT
+  // close the paste. The flush fires on a budget that cannot know whether the
+  // real PASTE_END is still coming (a paste over a slow link looks exactly like
+  // a stray introducer followed by typing), and closing it is irreversible:
+  // everything after this point would be delivered as ordinary keys, so a
+  // newline in the paste would submit the prompt, and the real terminator would
+  // arrive with an empty buffer and read downstream as a pasted image.
+  // Delivering as paste and staying open keeps both properties: content reaches
+  // the prompt within the budget, and a genuine long paste is still one paste
+  // in effect — the consumer already stitches paste pieces together, because
+  // the OS splits large pastes across reads anyway.
+  if (isFlush && inPaste && pasteBuffer !== '') {
+    keys.push(createPasteKey(pasteBuffer))
     pasteBuffer = ''
+    pasteDelivered = true
   }
 
   // Build new state
@@ -379,6 +460,7 @@ export function parseMultipleKeypresses(
     mode: inPaste ? 'IN_PASTE' : 'NORMAL',
     incomplete: tokenizer.buffer(),
     pasteBuffer,
+    pasteDelivered,
     _tokenizer: tokenizer,
   }
 

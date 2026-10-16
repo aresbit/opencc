@@ -8,7 +8,7 @@ import { logError } from '../../utils/log.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
-import { FLUSH_TIMEOUTS, hasPendingInput, INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses, planFlush } from '../parse-keypress.js';
+import { closeQuietPaste, FLUSH_TIMEOUTS, hasPendingInput, INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses, planFlush, shouldArmQuietClose } from '../parse-keypress.js';
 import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js';
@@ -120,6 +120,13 @@ export default class App extends PureComponent<Props, State> {
   // is held. Recovery is bounded by a budget measured from here, so continuous
   // keystrokes cannot defer the flush forever — see planFlush in parse-keypress.
   holdStartedAt: number | null = null;
+  // Closes a paste that has gone quiet after an interim delivery. The flush
+  // deliberately never closes a paste (a slow one is indistinguishable from a
+  // stray introducer at that moment), so an introducer whose terminator never
+  // comes would keep every later keystroke in paste semantics — Enter as a
+  // newline, not a submit. Silence is the one signal that separates the two;
+  // see closeQuietPaste in parse-keypress.
+  quietPasteTimer: NodeJS.Timeout | null = null;
   // Flush timing (phase + per-hold budget), shared with the tests so the
   // harness replays the real policy rather than a paraphrase of it.
   readonly FLUSH_TIMEOUTS = FLUSH_TIMEOUTS;
@@ -197,6 +204,10 @@ export default class App extends PureComponent<Props, State> {
     if (this.incompleteEscapeTimer) {
       clearTimeout(this.incompleteEscapeTimer);
       this.incompleteEscapeTimer = null;
+    }
+    if (this.quietPasteTimer) {
+      clearTimeout(this.quietPasteTimer);
+      this.quietPasteTimer = null;
     }
     if (this.pendingHyperlinkTimer) {
       clearTimeout(this.pendingHyperlinkTimer);
@@ -381,6 +392,27 @@ export default class App extends PureComponent<Props, State> {
       // Nothing held: end the episode so the next one gets a fresh budget.
       this.holdStartedAt = null;
     }
+
+    // A delivered paste that then goes quiet is over. Re-armed on every chunk,
+    // so only real silence closes it: an introducer whose terminator never
+    // comes would otherwise stay open for the rest of the session, and every
+    // later keystroke would be delivered as paste content. See closeQuietPaste.
+    if (this.quietPasteTimer) {
+      clearTimeout(this.quietPasteTimer);
+      this.quietPasteTimer = null;
+    }
+    if (shouldArmQuietClose(this.keyParseState)) {
+      this.quietPasteTimer = setTimeout(this.handlePasteQuiet, this.FLUSH_TIMEOUTS.pasteQuiet);
+    }
+  };
+
+  // Close a paste that has gone quiet. Nothing is emitted: everything it held
+  // was already delivered by an earlier flush, which is the only way it became
+  // eligible — so this hands over no content and no key.
+  handlePasteQuiet = (): void => {
+    this.quietPasteTimer = null;
+    this.keyParseState = closeQuietPaste(this.keyParseState);
+    this.holdStartedAt = null;
   };
   handleReadable = (): void => {
     // Detect long stdin gaps (tmux attach, ssh reconnect, laptop wake).
