@@ -13,6 +13,7 @@
  *
  *   bun scripts/ime-capture.ts              # mirrors the app: pushes both
  *   bun scripts/ime-capture.ts --no-kitty   # control arm: pushes neither
+ *   bun scripts/ime-capture.ts --timeout=15000   # stop after 15 s (default 60000)
  *
  * Then type, in this order: an English word, a pinyin word, commit the CJK
  * candidate (space/enter), then a mix. Press ctrl+c to finish.
@@ -58,7 +59,8 @@ function banner(): void {
       'Type, slowly, one line:  test zhong 中文 test',
       '  - the pinyin letters, then commit the candidate',
       '  - then an English word after the commit',
-      'Press ctrl+c (or wait for the timeout) to finish.',
+      'Press ctrl+c to finish (it is recognised in both encodings above).',
+      `Or wait ${timeoutMs} ms for the timeout (--timeout=<ms> to change it).`,
       'Nothing you type is interpreted — it is only hex-dumped.',
       '',
     ].join('\r\n'),
