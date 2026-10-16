@@ -25,6 +25,7 @@ import {
 } from 'src/services/speechToText/index.js'
 import { loadMods, resetMods } from './mods/index.js'
 import { logError } from 'src/utils/log.js'
+import { isEnvTruthy } from 'src/utils/envUtils.js'
 
 let engineInterface: EngineInterface | null = null
 let engineInitPromise: Promise<EngineInterface> | null = null
@@ -78,6 +79,10 @@ export async function initEngine(): Promise<EngineInterface> {
   // first, because the hooks that mutate it resolve getGenome() at event time
   // and must not race a load that would replace what they just wrote.
   enableOptInPlugins(...RSI_RING_PLUGINS)
+  // Voice is opt-in: without OPENCC_VOICE=1 neither the voiceInput plugin nor
+  // the speech providers are registered, so no voice code runs in the session.
+  const voiceOptedIn = isEnvTruthy(process.env.OPENCC_VOICE)
+  if (voiceOptedIn) enableOptInPlugins('voiceInput')
   await initGenomePersistence()
 
   registerBuiltinPlugins()
@@ -86,7 +91,7 @@ export async function initEngine(): Promise<EngineInterface> {
   // voiceInput plugin would find an empty provider registry and report every
   // dictation as unavailable. Offline and idempotent — no engine is fetched
   // here, only described (see speechToText/bootstrap.ts).
-  registerDefaultProviders()
+  if (voiceOptedIn) registerDefaultProviders()
 
   // Mods load between the built-ins and $ on purpose. After the built-ins,
   // so an ordinary mod appends below them and only sees what the guards let
