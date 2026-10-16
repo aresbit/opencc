@@ -1,8 +1,6 @@
 import { isInputModeCharacter } from 'src/components/PromptInput/inputModes.js'
-import { useNotifications } from 'src/context/notifications.js'
 import stripAnsi from 'strip-ansi'
 import { markBackslashReturnUsed } from '../commands/terminalSetup/terminalSetup.js'
-import { addToHistory } from '../history.js'
 import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
@@ -79,7 +77,6 @@ export function useTextInput({
   onHistoryUp,
   onHistoryDown,
   onHistoryReset,
-  onClearInput,
   mask = '',
   multiline = false,
   cursorChar,
@@ -87,7 +84,6 @@ export function useTextInput({
   columns,
   onImagePaste: _onImagePaste,
   disableCursorMovementForUpDownKeys = false,
-  disableEscapeDoublePress = false,
   maxVisibleLines,
   externalOffset,
   onOffsetChange,
@@ -103,7 +99,6 @@ export function useTextInput({
   const offset = externalOffset
   const setOffset = onOffsetChange
   const cursor = Cursor.fromText(originalValue, columns, offset)
-  const { addNotification, removeNotification } = useNotifications()
 
   const handleCtrlC = useDoublePress(
     show => {
@@ -119,38 +114,23 @@ export function useTextInput({
     },
   )
 
-  // NOTE(keybindings): This escape handler is intentionally NOT migrated to the keybindings system.
-  // It's a text-level double-press escape for clearing input, not an action-level keybinding.
-  // Double-press Esc clears the input and saves to history - this is text editing behavior,
-  // not dialog dismissal, and needs the double-press safety mechanism.
-  const handleEscape = useDoublePress(
-    (show: boolean) => {
-      if (!originalValue || !show) {
-        return
-      }
-      addNotification({
-        key: 'escape-again-to-clear',
-        text: 'Esc again to clear',
-        priority: 'immediate',
-        timeoutMs: 1000,
-      })
-    },
-    () => {
-      // Remove the "Esc again to clear" notification immediately
-      removeNotification('escape-again-to-clear')
-      onClearInput?.()
-      if (originalValue) {
-        // Track double-escape usage for feature discovery
-        // Save to history before clearing
-        if (originalValue.trim() !== '') {
-          addToHistory(originalValue)
-        }
-        onChange('')
-        setOffset(0)
-        onHistoryReset?.()
-      }
-    },
-  )
+  // Escape does NOT clear the prompt. It used to: a second press within
+  // DOUBLE_PRESS_TIMEOUT_MS wiped the input and pushed it to history, warned
+  // only by an "Esc again to clear" notification — which never reached the
+  // screen in this build, so the second Escape destroyed typed content with no
+  // feedback whatsoever (verified byte-for-byte in a pty: the pair produces a
+  // redraw and no `again`/`clear`, and the text is gone).
+  //
+  // The deeper hazard is the key itself. A lone 0x1b is byte-for-byte
+  // identical whether it is a real Escape key, a byte the app's own flush
+  // synthesized from a split chunk (App.flushIncomplete), or a stray ESC from
+  // an IME. There is no way to tell them apart here, so no destructive text
+  // action may be bound to it — invariant 1 of docs/terminal-input-swallow.md
+  // ("do not bind any action to a bare character"; at the byte layer Escape is
+  // exactly that). Escape keeps its non-destructive roles: chat:cancel while a
+  // turn is running, autocomplete:dismiss. Clearing the line has explicit keys
+  // an IME or a split chunk cannot synthesize — ctrl+c on a non-empty prompt
+  // (above) and ctrl+u (kill to line start, in handleCtrl).
 
   const handleEmptyCtrlD = useDoublePress(
     show => {
@@ -319,14 +299,11 @@ export function useTextInput({
     switch (true) {
       case key.escape:
         return () => {
-          // Skip when a keybinding context (e.g. Autocomplete) owns escape.
-          // useKeybindings can't shield us via stopImmediatePropagation —
-          // BaseTextInput's useInput registers first (child effects fire
-          // before parent effects), so this handler has already run by the
-          // time the keybinding's handler stops propagation.
-          if (disableEscapeDoublePress) return cursor
-          handleEscape()
-          // Return the current cursor unchanged - handleEscape manages state internally
+          // Intentionally inert: Escape must not edit or destroy text. See the
+          // note above handleCtrlC — a lone ESC is ambiguous at the byte layer,
+          // so chat:cancel / autocomplete:dismiss own it instead. Returning the
+          // cursor here also keeps it from falling through to the key.meta case
+          // below (input-event sets meta for Escape).
           return cursor
         }
       case key.leftArrow && (key.ctrl || key.meta || key.fn):
