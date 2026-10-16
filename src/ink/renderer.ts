@@ -28,6 +28,36 @@ export type RenderOptions = {
 
 export type Renderer = (options: RenderOptions) => Frame
 
+/**
+ * Main-screen height floor: once a frame has reached the viewport, never let
+ * the next one drop back into it — pad it with blank rows at the bottom.
+ *
+ * log-update can only shrink a frame incrementally while it still overflows.
+ * A shrink that lands at or below the viewport (`shrink->below`) has rows in
+ * scrollback it cannot bring back, so it falls to
+ * fullResetSequence_CAUSES_FLICKER: ERASE_SCREEN + ERASE_SCROLLBACK + a full
+ * repaint. A frame hovering at the viewport height (a 24-row terminal with the
+ * --debug banner is enough) toggles across that line on ordinary input —
+ * typing `/`, a backspace, a paste flipping the footer by one row — so every
+ * such keystroke wiped the screen and the user's scrollback. On VTE it is
+ * worse than a flash: ED2 appends a whole blank screen to the ring, and the
+ * multi-KB repaint is painted mid-flight, so the view jumps and the IME
+ * preedit (drawn at the live cursor) jumps with it.
+ *
+ * Holding the frame at viewport+1 keeps every later shrink on the incremental
+ * path; the cost is blank rows under the footer, the same thing an ordinary
+ * in-viewport shrink already leaves behind. The floor lapses on its own when
+ * the previous frame is reset (resize, clear), since prev height becomes 0.
+ */
+export function overflowFloor(
+  isTTY: boolean,
+  prevHeight: number,
+  terminalRows: number,
+): number {
+  if (!isTTY || terminalRows <= 0 || prevHeight < terminalRows) return 0
+  return Math.min(prevHeight, terminalRows + 1)
+}
+
 export default function createRenderer(
   node: DOMElement,
   stylePool: StylePool,
@@ -94,7 +124,12 @@ export default function createRenderer(
     // overflow writes land at y >= screen.height and setCellAt drops
     // them. The sibling is invisible (obvious, easy to find) instead of
     // corrupting the whole terminal.
-    const height = options.altScreen ? terminalRows : yogaHeight
+    const height = options.altScreen
+      ? terminalRows
+      : Math.max(
+          yogaHeight,
+          overflowFloor(isTTY, prevScreen.height, terminalRows),
+        )
     if (options.altScreen && yogaHeight > terminalRows) {
       logForDebugging(
         `alt-screen: yoga height ${yogaHeight} > terminalRows ${terminalRows} — ` +

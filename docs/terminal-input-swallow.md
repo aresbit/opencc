@@ -241,7 +241,7 @@ issue 上把其中几条各走了一遍：
 | **ghostty 1.3.1 的 #12679 就是本因** | 症状吻合（"闪一下就不见"），但**记载根因不匹配**：它是 `GTK_IM_MODULE=fcitx` + release 事件未转发；本机 `GTK_IM_MODULE` 为空、引擎是 ibus，恰在该报告推荐的绕法里。且上游**未修**（`NOT_PLANNED`，策略机器人关的） |
 | **"光标隐藏 ⇒ ghostty 的 preedit 保护失效"** | `generic.zig` 的 `state.cursor.viewport orelse break :preedit null`，其 null 条件是**光标滚出可见视口**，不是 `?25l` 隐藏（`:2387` 与 `:2454-2457` 互证） |
 | **应用重绘会把 preedit 抹掉** | 源码证否：preedit 写进同一 cell 网格，但**落在 preedit 区间内的应用 cell 被主动跳过**（`generic.zig:2684-2690`）；preedit 状态**只由 `preeditCallback` 改写**（`Surface.zig:2476`），任何输出路径都不重置它；tracker 里也没有对应 issue |
-| **整屏重绘是日常抖动源** | 缩到 8 行并**真投递 SIGWINCH** 后再打键：每键仍是 57–60B 小 diff，`2J=0 3J=0`；整屏 clear 只在 resize 那一次（`log-update.ts:142`）；`:221-248` 的 scrollback 分支要求改动落在**视口上方**，打字只改底部输入行 |
+| ~~**整屏重绘是日常抖动源**~~ **（已推翻，见第十节）** | 原证据只测了"帧远高于视口"。帧高**恰好在视口线附近**时（24 行 + `--debug` 横幅），`/`、退格、粘贴让 footer 缩 1 行就落进 `shrink->below`，每键一次 `2J+3J` 全量重绘 |
 | **应用空闲时在持续重绘** | 空闲 9 秒 **0 字节**；唯一的条件性持续重绘是流式 spinner（~8Hz，真改 cell）与 1s 计时文本；标题动画 960ms 只写 OSC、不动 cell |
 | **alt-screen 的 (0,0) 光标锚定参与其中** | 主屏模式下绝对 CUP 不参与（只在 alt-screen 分支） |
 | **复用器（herdr）自己有定时重绘** | 它**不记录渲染事件**；日志里唯一 `changes_ui=true` 的是侧栏 `pane.rename`，而它由**内层应用的状态变化**驱动 |
@@ -356,3 +356,30 @@ socket"，后"光标隐藏 ⇒ preedit 保护失效" —— 后者已由 `generi
 | 通知的**消失**路径 / overage / `apiKeyHelper`-slow / env-hook / `TokenWarning` / 更矮或更高的视口 | **未覆盖** | 见 `166c321` 那条的残余清单。 |
 
 **`166c321` 修好作用域错误后，点亮了一族从未渲染过的 UI**（提示框下方最多多出 2 行）。这一态已用 pty 原始字节判过：**80 列与 60 列下该行仍是 1 行**、不挤掉左侧提示（50 列优雅换行成 2 行）；全部捕获 `ED2/ED3/ED1/ED0 = 0`、无 `ESC[J`、无备用屏、**全程没有任何绝对定位 `CSI n H`**；实测 4 条兄弟通知上屏（`context-gauge`、`Debug mode`、`N tokens`、`Not logged in · Run /login`）。
+
+## 十、`--debug` 下终端跳 + 输入法光标跳（VTE，已修）
+
+**现象**：gnome-terminal（VTE 0.76，`XTVERSION=VTE(7600)`）24 行，`opencc --debug`：
+终端整屏跳，中文输入法的前编辑/候选框位置跟着跳，拼音字母"消失"。
+
+**证据**：debug 日志里 `Full reset (shrink->below): prevHeight=25, nextHeight=24, viewport=24`
+（及 24→23、27→24）。`--debug` 横幅（2 行）+ footer 的 `Debug mode` 行把 80×24 下的帧
+推到 24–27 行，正好骑在视口线上。pty 复现（80×26）：`/`→退格、`?`→退格、一次粘贴，
+各自产生一次 `ESC[2J ESC[3J` + ~3KB 全量重绘。
+
+**为什么在 VTE 上是"跳"而不只是闪**：VTE 的 ED2（`vteseq.cc` `clear_screen`）不是原地擦，
+而是**往 ring 里追加一整屏空行**，ED3 再丢 scrollback；VTE 不支持 2026 同步输出，
+多 KB 的重绘会被分块处理、中途上屏。前编辑串在**绘制时的光标处**画
+（`vte.cc` `paint_im_preedit_string`，光标行不在显示区就**不画**），且每处理一块
+输出就 `im_update_cursor()` —— 所以前编辑和候选框跟着重绘中途的光标跳。
+
+**修复**：`src/ink/renderer.ts` 的 `overflowFloor` —— 主屏帧一旦到达视口高度，下一帧
+高度不低于 `min(prevHeight, rows+1)`（底部补空行），所有后续收缩都走 log-update 的
+增量路径。代价是 footer 下方可能留空行（与视口内收缩的现状一致）。resize/clear 时
+prev 高度归 0，地板自然解除。回归：`src/ink/__tests__/overflowFloor.test.ts`（含
+"不加地板这些转移就是 full reset"的对照）。
+
+**未覆盖**：帧远高于视口时，**改动落在 scrollback 行**的那条 full reset 分支
+（`log-update.ts` 的 `scrollbackChangeY`）仍在，且**不打 debug 日志**——要看它用
+`CLAUDE_CODE_DEBUG_REPAINTS`。焦点上报 `ESC[O` 会让声明光标失效、物理光标跳到帧底
+（`(16,4)→(23,0)`），若某输入法弹窗会抢焦点，这是另一条"候选框跳"的路径，尚未实测到。
