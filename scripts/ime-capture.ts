@@ -115,10 +115,39 @@ const printable = (b: Buffer): string => {
   return JSON.stringify(s.replace(/\x1b/g, '\\e'))
 }
 
+// Ctrl+C, in the encodings this probe itself asks the terminal for. It pushes
+// both Kitty (CSI >1u) and xterm modifyOtherKeys (CSI >4;2m), and a terminal
+// that speaks either stops sending a bare 0x03 for Ctrl+C — so testing for the
+// raw byte alone (the original condition) meant the capture kept running after
+// Ctrl+C, and the only way out was the timeout.
+//
+//   kitty:            CSI 99 ; modifier u        (modifier 5 = ctrl)
+//   modifyOtherKeys:  CSI 27 ; modifier ; 99 ~
+//
+// The modifier is 1 + bitmask (shift 1, alt 2, ctrl 4, …), so the ctrl bit is
+// (modifier - 1) & 4 — that also ends the capture on ctrl+shift+c and similar,
+// which is what a user pressing "stop" means by it. The bytes are matched as
+// latin1 so the 0x1b is intact; unanchored, because a read can carry other
+// keystrokes alongside the Ctrl+C.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the byte this probe exists to read
+const KITTY_CTRL_C_RE = /\x1b\[99;(\d+)(?::\d+)?u/
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the byte this probe exists to read
+const MODIFY_OTHER_KEYS_CTRL_C_RE = /\x1b\[27;(\d+);99~/
+
+function isCtrlC(chunk: Buffer): boolean {
+  if (chunk.includes(0x03)) return true
+  const s = chunk.toString('latin1')
+  const kitty = KITTY_CTRL_C_RE.exec(s)
+  if (kitty && (Number(kitty[1]) - 1) & 4) return true
+  const mok = MODIFY_OTHER_KEYS_CTRL_C_RE.exec(s)
+  if (mok && (Number(mok[1]) - 1) & 4) return true
+  return false
+}
+
 process.stdin.on('data', (chunk: Buffer) => {
   const ms = String(Date.now() - started).padStart(6, ' ')
   record(`+${ms}ms  len=${String(chunk.length).padStart(2)}  hex=${hex(chunk)}  utf8=${printable(chunk)}`)
-  if (chunk.includes(0x03)) {
+  if (isCtrlC(chunk)) {
     clearTimeout(timer)
     restore()
     process.exit(0)
