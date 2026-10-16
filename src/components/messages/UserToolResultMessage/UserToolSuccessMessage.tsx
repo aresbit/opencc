@@ -107,7 +107,7 @@ export function UserToolSuccessMessage({
                 <Text dimColor>Allowed by auto mode classifier</Text>
               </MessageResponse> : null}
       </Box>
-      <SentryErrorBoundary>
+      <SentryErrorBoundary resetKey={toolUseID}>
         <HookProgressMessage hookEvent="PostToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
       </SentryErrorBoundary>
     </Box>;
