@@ -190,6 +190,28 @@ describe('a spurious CSI/SS3 introducer does not delete the next letter', () => 
     }
   })
 
+  /**
+   * The sibling of the case above, and the one an IME actually produces. A
+   * non-ASCII byte can be neither a final (0x40–0x7e), a parameter (0x30–0x3f)
+   * nor an intermediate (0x20–0x2f), so unlike `ESC [ z` there is nothing to
+   * disambiguate — the introducer is definitely spurious and the character is
+   * the user's. The abort path nevertheless handed the buffer back as text
+   * starting at the introducer, gluing a literal introducer to the typing:
+   * `ESC [ 中` reached the prompt as `[中` and `ESC [ 1;5 中` as `[1;5中`, while
+   * the same shape with an ASCII letter was clean. X10 and OSC/DCS/APC already
+   * resumed text *after* their introducer; CSI/SS3 now do too.
+   */
+  test('a stray CSI/SS3 introducer before CJK does not leak into the prompt', () => {
+    expect(inputOf(['\x1b[中'])).toBe('中')
+    expect(inputOf(['\x1bO中'])).toBe('中')
+    expect(inputOf(['\x1b[1;5中'])).toBe('中')
+    expect(inputOf(['\x1b[200中'])).toBe('中')
+    // The realistic shape: the introducer arrives in one read, the typing in
+    // the next (the terminal emits the stray ESC before the character).
+    expect(inputOf(['\x1b[', '中文'])).toBe('中文')
+    expect(inputOf(['\x1bO', '中文'])).toBe('中文')
+  })
+
   test('unchanged: real CSI/SS3 keys still parse as keys, not text', () => {
     // ESC [ A = up-arrow (a genuine CSI final); ESC O A = up-arrow (SS3).
     // These are mapped, so the recovery must not fire.

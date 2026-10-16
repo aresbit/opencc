@@ -289,9 +289,20 @@ function tokenize(
         } else if (isCSIParam(code) || isCSIIntermediate(code)) {
           i++
         } else {
-          // Invalid CSI - abort, treat as text
+          // Invalid CSI — abort. A byte that is neither a final (0x40-0x7E), a
+          // parameter (0x30-0x3F) nor an intermediate (0x20-0x2F) cannot belong
+          // to any CSI, so the introducer in front of it was spurious: a lone
+          // ESC from an IME, or a mis-split chunk. That is exactly the case the
+          // X10 branch above and the OSC/DCS/APC latch already handle, and they
+          // resume text *after* the introducer for the same reason.
+          //
+          // Only this branch needed the fix: an ASCII letter is a valid final
+          // byte, so `ESC [ z` completes as a sequence and the letter is
+          // recovered downstream — while `ESC [ 中` aborted here and leaked the
+          // introducer, arriving in the prompt as `[中`. CJK typed after a
+          // stray introducer therefore came in with a literal `[` glued to it.
           result.state = 'ground'
-          textStart = seqStart
+          textStart = code >= 0x80 || code < 0x20 ? i : seqStart
         }
         break
 
@@ -301,9 +312,10 @@ function tokenize(
           i++
           emitSequence(data.slice(seqStart, i))
         } else {
-          // Invalid - treat as text
+          // Invalid — treat as text. Same rule as the CSI abort above: the
+          // introducer was spurious, so it must not be delivered as text.
           result.state = 'ground'
-          textStart = seqStart
+          textStart = code >= 0x80 || code < 0x20 ? i : seqStart
         }
         break
 
