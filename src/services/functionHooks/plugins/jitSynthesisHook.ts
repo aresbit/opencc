@@ -15,6 +15,7 @@
 
 import { z } from 'zod/v4'
 import { buildTool, findToolByName, type Tool, type ToolUseContext, type CanUseToolFn } from '../../../Tool.js'
+import { clampToolName } from '../../../utils/toolName.js'
 import type { AssistantMessage } from '../../../types/message.js'
 import type { OnRegistrar } from '../types.js'
 
@@ -147,7 +148,12 @@ function createSyntheticTool(recipe: Recipe): Tool {
   }
 
   return buildTool({
-    name: `jit_${recipe.name}`,
+    // recipe.name is the lowercased tool names joined with '_', so a sequence
+    // containing MCP tools (each up to 64 chars) produces a name far past the
+    // provider's tool-name cap — which fails the whole request with a hard 400
+    // before the model ever sees it. Clamp here, at the only place a runtime
+    // name is minted. The full sequence stays visible in the description.
+    name: clampToolName(`jit_${recipe.name}`),
     searchHint: `synthesized ${recipe.tools.join(' ')} composite`,
     shouldDefer: true,
     maxResultSizeChars: 100_000,

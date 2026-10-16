@@ -12,6 +12,11 @@ import {
   getRecipeCount,
   getSyntheticTools,
 } from '../jitSynthesisHook.js'
+import {
+  API_TOOL_NAME_LIMIT,
+  MAX_TOOL_NAME_LENGTH,
+  clampToolName,
+} from '../../../../utils/toolName.js'
 import type { EngineInterface, HookFn } from '../../types.js'
 
 /**
@@ -93,5 +98,63 @@ describe('jitSynthesis is wired into the default ring', () => {
 
     expect(getRecipeCount()).toBe(0)
     expect(getSyntheticTools()).toHaveLength(0)
+  })
+})
+
+/**
+ * A recipe's name is the lowercased tool names joined with '_', so any
+ * sequence that includes MCP tools (each up to 64 chars, see
+ * buildMcpToolName) mints a name far past the provider cap. A 153-char
+ * `tools[N].name` is rejected with a hard 400 that never reaches the model —
+ * "Invalid 'tools[69].name': string too long. Expected a string with maximum
+ * length 128, but got a string with length 153 instead." The request is the
+ * whole turn, so one synthesized tool name could dead the session.
+ */
+describe('synthesized tool names respect the provider name cap', () => {
+  const MCP_SEQ = [
+    'mcp__rea__build_reconstruction_obligation_ledger',
+    'mcp__rea__inspect_managed_native_boundaries',
+    'mcp__rea__compare_javascript_export_shapes',
+  ]
+
+  test('the unclamped name would have exceeded the API limit', () => {
+    const raw = `jit_${MCP_SEQ.map(t => t.toLowerCase()).join('_')}`
+    // Guards the premise of this suite: if this ever stops holding, the
+    // clamping test below is no longer testing anything.
+    expect(raw.length).toBeGreaterThan(API_TOOL_NAME_LIMIT)
+  })
+
+  test('a synthesized name is clamped, stays unique, and keeps its prefix', () => {
+    const raw = `jit_${MCP_SEQ.map(t => t.toLowerCase()).join('_')}`
+    const clamped = clampToolName(raw)
+
+    expect(clamped.length).toBeLessThanOrEqual(MAX_TOOL_NAME_LENGTH)
+    expect(clamped.startsWith('jit_')).toBe(true)
+    // Truncation must not collapse two different recipes onto one name —
+    // the tool pool dedupes by name and would silently drop one.
+    expect(clampToolName(raw)).not.toBe(clampToolName(raw + '_edit'))
+    // Names within budget pass through untouched.
+    expect(clampToolName('jit_bash_bash_bash')).toBe('jit_bash_bash_bash')
+  })
+
+  test('end to end: no synthesized tool can breach the API limit', async () => {
+    enableOptInPlugins(...RSI_RING_PLUGINS)
+    registerBuiltinPlugins()
+
+    for (let i = 0; i < 15; i++) {
+      await dispatch(
+        $,
+        'tool.call',
+        toolCall(MCP_SEQ[i % MCP_SEQ.length]!),
+        identity,
+      )
+    }
+
+    const tools = getSyntheticTools()
+    expect(tools.length).toBeGreaterThan(0)
+    for (const tool of tools) {
+      expect(tool.name.length).toBeLessThanOrEqual(API_TOOL_NAME_LIMIT)
+      expect(tool.name.startsWith('jit_')).toBe(true)
+    }
   })
 })

@@ -170,6 +170,7 @@ import { CLAUDE_IN_CHROME_MCP_SERVER_NAME } from 'src/utils/claudeInChrome/commo
 import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt.js'
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { API_TOOL_NAME_LIMIT } from 'src/utils/toolName.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
 import { type EffortValue, modelSupportsEffort } from 'src/utils/effort.js'
 import {
@@ -1432,7 +1433,27 @@ async function* queryModel(
       model: advisorModel,
     } as unknown as BetaToolUnion)
   }
-  const allTools = [...toolSchemas, ...extraToolSchemas]
+  // Safety net for the tool-name cap. An over-long name does not degrade — the
+  // provider rejects the entire request with a 400 the model never sees
+  // ("Invalid 'tools[N].name': string too long"), which reads as a dead
+  // session. Runtime-generated names go through clampToolName() at their
+  // source; this catches any that reach the request another way. Dropping only
+  // removes the tool from the model's view — local name lookup still uses the
+  // unfiltered list, so an existing tool_use still resolves.
+  const allToolSchemas = [...toolSchemas, ...extraToolSchemas]
+  const overlongTools = allToolSchemas.filter(
+    t => t.name.length > API_TOOL_NAME_LIMIT,
+  )
+  if (overlongTools.length > 0) {
+    logForDebugging(
+      `Dropped ${overlongTools.length} tool(s) over the ${API_TOOL_NAME_LIMIT}-char API tool-name limit: ` +
+        overlongTools.map(t => `${t.name} (${t.name.length})`).join(', '),
+    )
+  }
+  const allTools =
+    overlongTools.length === 0
+      ? allToolSchemas
+      : allToolSchemas.filter(t => t.name.length <= API_TOOL_NAME_LIMIT)
 
   // DeepSeek: sync tool schemas into optimizer for byte-level prefix tracking.
   // Synchronous — must complete before paramsFromContext runs analyze() below.
