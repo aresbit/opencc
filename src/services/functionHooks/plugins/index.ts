@@ -241,10 +241,10 @@ function pluginTable(): PluginEntry[] {
     { name: 'uiFold', id: 'builtin:uiFold', register: registerUiFold },
     { name: 'uiRsiHeartbeat', id: 'builtin:uiRsiHeartbeat', register: registerUiRsiHeartbeat, optIn: true },
     { name: 'imageView', id: 'builtin:imageView', register: registerImageView },
-    // Local speech-to-text and the spoken-English practice loop. Opt-in
-    // (OPENCC_VOICE=1, see bridge.ts): voice is off unless explicitly asked
-    // for, so a session that never speaks runs none of its code.
-    { name: 'voiceInput', id: 'builtin:voiceInput', register: registerVoiceInput, optIn: true },
+    // Local speech-to-text and the spoken-English practice loop. Default-on:
+    // its keybinding is Alt+Space (never a typed space) and it requires a
+    // mounted prompt sink, so it is inert until a person actually presses it.
+    { name: 'voiceInput', id: 'builtin:voiceInput', register: registerVoiceInput },
   ]
 }
 
@@ -252,16 +252,7 @@ export function registerBuiltinPlugins(): void {
   if (registered) return
   registered = true
 
-  // Bisection switch: OPENCC_DISABLE_PLUGINS=all skips every built-in,
-  // OPENCC_DISABLE_PLUGINS=a,b skips the named ones (by `name`).
-  const disabled = new Set(
-    (process.env.OPENCC_DISABLE_PLUGINS ?? '')
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean),
-  )
   for (const plugin of pluginTable()) {
-    if (disabled.has('all') || disabled.has(plugin.name)) continue
     if (plugin.optIn && !OPT_IN_PLUGINS.has(plugin.name)) continue
     const on = registry.createRegistrar(plugin.name, plugin.id)
     plugin.register(on)
