@@ -22,6 +22,7 @@ const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS')
 
 export { TOOL_SEARCH_TOOL_NAME } from './constants.js'
 
+import { isEnvDefinedFalsy } from '../../utils/envUtils.js'
 import { TOOL_SEARCH_TOOL_NAME } from './constants.js'
 
 const PROMPT_HEAD = `Fetches full schema definitions for deferred tools so they can be called.
@@ -104,7 +105,51 @@ export function isDeferredTool(tool: Tool): boolean {
     return false
   }
 
-  return tool.shouldDefer === true
+  if (tool.shouldDefer === true) return true
+
+  // Lean pool: built-ins outside the core set wait behind ToolSearch too. This
+  // build carries ~80 built-ins (~290k chars of schema); sending all of them made
+  // a one-word prompt cost ~80k tokens before any MCP server was counted.
+  return isLeanToolPoolEnabled() && !getCoreToolNames().has(tool.name)
+}
+
+/**
+ * Built-ins always sent in full: the file/shell basics, delegation, and the
+ * tools this build's system prompt tells the model to reach for first (its
+ * `# CodeAct` and `# Actions` sections). Everything else stays callable via
+ * ToolSearch. Extend with OPENCC_ALWAYS_LOAD_TOOLS=a,b; OPENCC_LEAN_TOOLS=0
+ * restores the full pool.
+ */
+const CORE_TOOL_NAMES = [
+  'Bash',
+  'Read',
+  'Edit',
+  'Write',
+  'Glob',
+  'Grep',
+  'Agent',
+  'Skill',
+  'AskUserQuestion',
+  'CodeAct',
+  'Action',
+  'TaskCreate',
+  'TaskUpdate',
+  'TaskList',
+  'TaskGet',
+  'EnterPlanMode',
+  'ExitPlanMode',
+]
+
+export function isLeanToolPoolEnabled(): boolean {
+  return !isEnvDefinedFalsy(process.env.OPENCC_LEAN_TOOLS)
+}
+
+export function getCoreToolNames(): Set<string> {
+  const pinned = (process.env.OPENCC_ALWAYS_LOAD_TOOLS ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  return new Set([...CORE_TOOL_NAMES, ...pinned])
 }
 
 /**

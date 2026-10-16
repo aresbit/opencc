@@ -1716,6 +1716,50 @@ function appendMessageTagToUserMessage(message: UserMessage): UserMessage {
 }
 
 /**
+ * Client-side tool search: rewrite tool_reference blocks as text.
+ *
+ * The stored history keeps the tool_reference blocks — extractDiscoveredToolNames
+ * reads them to decide which deferred schemas to send. Only the copy sent to an
+ * endpoint that can't expand them is rewritten, so the model still learns which
+ * tools just became callable.
+ */
+export function toolReferencesToText(message: UserMessage): UserMessage {
+  const content = message.message.content
+  if (!Array.isArray(content)) return message
+
+  const loaded = (names: string[]) => ({
+    type: 'text' as const,
+    text: `Loaded tools (their full definitions are now in your tool list; call them directly): ${names.join(', ')}`,
+  })
+  const nameOf = (c: unknown) => (c as { tool_name?: string }).tool_name ?? '?'
+
+  let changed = false
+  const nextContent = content.map(block => {
+    if (block.type === 'tool_reference') {
+      changed = true
+      return loaded([nameOf(block)])
+    }
+    if (
+      block.type !== 'tool_result' ||
+      !Array.isArray(block.content) ||
+      !block.content.some(isToolReferenceBlock)
+    ) {
+      return block
+    }
+    changed = true
+    const names = block.content.filter(isToolReferenceBlock).map(nameOf)
+    const rest = block.content.filter(c => !isToolReferenceBlock(c))
+    return { ...block, content: [...rest, loaded(names)] }
+  })
+
+  if (!changed) return message
+  return {
+    ...message,
+    message: { ...message.message, content: nextContent as typeof content },
+  }
+}
+
+/**
  * Strips tool_reference blocks from tool_result content in a user message.
  * tool_reference blocks are only valid when the tool search beta is enabled.
  * When tool search is disabled, we need to remove these blocks to avoid API errors.

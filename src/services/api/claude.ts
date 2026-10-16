@@ -86,6 +86,7 @@ import {
   stripAdvisorBlocks,
   stripCallerFieldFromAssistantMessage,
   stripToolReferenceBlocksFromUserMessage,
+  toolReferencesToText,
 } from '../../utils/messages.js'
 import {
   getDefaultOpusModel,
@@ -191,6 +192,7 @@ import {
 } from 'src/utils/thinking.js'
 import {
   extractDiscoveredToolNames,
+  isClientSideToolSearch,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
 } from 'src/utils/toolSearch.js'
@@ -1187,6 +1189,10 @@ async function* queryModel(
     useToolSearch = false
   }
 
+  // Client-side tool search (non-Anthropic endpoint): same filtering, but no
+  // defer_loading, no beta header, and tool_reference reaches the API as text.
+  const clientToolSearch = useToolSearch && isClientSideToolSearch()
+
   // Filter out ToolSearchTool if tool search is not enabled for this model
   // ToolSearchTool returns tool_reference blocks which unsupported models can't handle
   let filteredTools: Tools
@@ -1214,7 +1220,8 @@ async function* queryModel(
   // Add tool search beta header if enabled - required for defer_loading to be accepted
   // Header differs by provider: 1P/Foundry use advanced-tool-use, Vertex/Bedrock use tool-search-tool
   // For Bedrock, this header must go in extraBodyParams, not the betas array
-  const toolSearchHeader = useToolSearch ? getToolSearchBetaHeader() : null
+  const toolSearchHeader =
+    useToolSearch && !clientToolSearch ? getToolSearchBetaHeader() : null
   if (toolSearchHeader && getAPIProvider() !== 'bedrock') {
     if (!betas.includes(toolSearchHeader)) {
       betas.push(toolSearchHeader)
@@ -1246,7 +1253,9 @@ async function* queryModel(
 
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
-    useToolSearch && (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
+    useToolSearch &&
+    !clientToolSearch &&
+    (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
   // MCP tools are per-user → dynamic tool section → can't globally cache.
   // Only gate when an MCP tool will actually render (not defer_loading).
   const needsToolBasedCacheMarker =
@@ -1320,12 +1329,15 @@ async function* queryModel(
   // Note: For assistant messages, normalizeMessagesForAPI already normalized the
   // tool inputs, so stripCallerFieldFromAssistantMessage only needs to remove the
   // 'caller' field (not re-normalize inputs).
-  if (!useToolSearch) {
+  if (!useToolSearch || clientToolSearch) {
     messagesForAPI = messagesForAPI.map(msg => {
       switch (msg.type) {
         case 'user':
-          // Strip tool_reference blocks from tool_result content
-          return stripToolReferenceBlocksFromUserMessage(msg)
+          // Client-side: keep the discovery visible as text. Otherwise strip
+          // tool_reference blocks from tool_result content.
+          return clientToolSearch
+            ? toolReferencesToText(msg)
+            : stripToolReferenceBlocksFromUserMessage(msg)
         case 'assistant':
           // Strip 'caller' field from tool_use blocks
           return stripCallerFieldFromAssistantMessage(msg)

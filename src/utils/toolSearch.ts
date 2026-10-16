@@ -432,8 +432,11 @@ export async function isToolSearchEnabled(
     })
   }
 
-  // Check if model supports tool_reference
-  if (!modelSupportsToolReference(model)) {
+  // Check if model supports tool_reference. Client-side tool search never
+  // shows the model a tool_reference (they reach it as text), so the check
+  // only gates the server-side path — DeepSeek, GLM, Kimi, Qwen and the like
+  // behind ANTHROPIC_BASE_URL get client-side tool search instead of none.
+  if (!isClientSideToolSearch() && !modelSupportsToolReference(model)) {
     logForDebugging(
       `Tool search disabled for model '${model}': model does not support tool_reference blocks. ` +
         `This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.`,
@@ -443,11 +446,16 @@ export async function isToolSearchEnabled(
   }
 
   // Keep definitive check aligned with isToolSearchEnabledOptimistic():
-  // default (unset ENABLE_TOOL_SEARCH) should disable tool_reference on
-  // first-party provider routed through non-first-party base URLs (proxies),
-  // because many gateways reject tool_reference blocks with 400 deserialization
-  // errors. Users can explicitly opt in by setting ENABLE_TOOL_SEARCH.
-  if (getAPIProvider() === 'firstParty' && !isFirstPartyAnthropicBaseUrl()) {
+  // default (unset ENABLE_TOOL_SEARCH) disables tool search on a first-party
+  // provider routed through a non-first-party base URL. When it is requested
+  // (cli.tsx defaults it on), a proxy gets client-side tool search instead —
+  // see isClientSideToolSearch(). This check used to ignore the opt-in, so
+  // every proxied request shipped every MCP and built-in schema in full.
+  if (
+    !process.env.ENABLE_TOOL_SEARCH &&
+    getAPIProvider() === 'firstParty' &&
+    !isFirstPartyAnthropicBaseUrl()
+  ) {
     logForDebugging(
       `Tool search disabled: ANTHROPIC_BASE_URL=${process.env.ANTHROPIC_BASE_URL} is not a first-party Anthropic host. ` +
         `This deployment does not support tool_reference blocks.`,
@@ -657,6 +665,23 @@ export type DeferredToolsDeltaScanContext = {
  * False → claude.ts keeps its per-call <available-deferred-tools>
  * header prepend (the attachment does not fire).
  */
+/**
+ * Whether tool search must run without server support.
+ *
+ * `defer_loading` and `tool_reference` are expanded by the Anthropic API. A
+ * third-party endpoint behind ANTHROPIC_BASE_URL (DeepSeek's Anthropic-compatible
+ * API, a corp gateway) can't be assumed to understand either. Client-side, the
+ * request carries no `defer_loading` and no beta header; a deferred tool is
+ * simply absent from `tools` until ToolSearch discovers it, after which its full
+ * schema is sent like any other tool, and the discovery itself reaches the model
+ * as plain text (toolReferencesToText). Set OPENCC_TOOL_SEARCH_SERVER=1 for a
+ * proxy that does forward the beta.
+ */
+export function isClientSideToolSearch(): boolean {
+  if (isEnvTruthy(process.env.OPENCC_TOOL_SEARCH_SERVER)) return false
+  return getAPIProvider() === 'firstParty' && !isFirstPartyAnthropicBaseUrl()
+}
+
 export function isDeferredToolsDeltaEnabled(): boolean {
   return (
     process.env.USER_TYPE === 'ant' ||
