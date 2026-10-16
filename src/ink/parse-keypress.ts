@@ -5,7 +5,7 @@
  * then interprets sequences as keypresses.
  */
 import { Buffer } from 'buffer'
-import { FOCUS_IN, FOCUS_OUT, PASTE_END, PASTE_START } from './termio/csi.js'
+import { PASTE_END, PASTE_START } from './termio/csi.js'
 import { createTokenizer, type Tokenizer } from './termio/tokenize.js'
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
@@ -213,6 +213,59 @@ export const INITIAL_STATE: KeyParseState = {
  */
 export function hasPendingInput(state: KeyParseState): boolean {
   return state.incomplete !== '' || state.mode === 'IN_PASTE'
+}
+
+/**
+ * Timing policy for flushing input the parser is holding. `phase` is how long
+ * with no new bytes we wait before flushing a lone sequence; `budget` is the
+ * hard ceiling on how long a hold may defer recovery *in total*, no matter how
+ * often new bytes arrive.
+ *
+ * The budget is what makes recovery bounded. Re-arming on every chunk is
+ * correct while a real sequence is still streaming in, but a latch (a stray
+ * introducer, or an IME's ESC) under a steady stream of keystrokes would
+ * otherwise push the deadline out forever: with a 50 ms phase and a byte every
+ * 20 ms the timer is reset before it can fire, so it never runs at all.
+ */
+export const FLUSH_TIMEOUTS = {
+  normal: 50,
+  paste: 500,
+  normalBudget: 200,
+  pasteBudget: 2000,
+} as const
+
+export type FlushPlan =
+  | { kind: 'idle' }
+  | { kind: 'flush' }
+  | { kind: 'wait'; delayMs: number }
+
+/**
+ * Decide what to do about held input, given when the current hold began.
+ * Pure, so App and the tests drive identical policy: App calls this on every
+ * chunk and on every timer fire, and the test harness replays it against a
+ * virtual clock.
+ *
+ * - `idle`  — nothing held; clear the hold and stop.
+ * - `flush` — the budget is spent; flush now even if bytes are still arriving.
+ * - `wait`  — arm a timer for `delayMs` (never past the budget).
+ */
+export function planFlush(
+  state: KeyParseState,
+  holdStartedAt: number | null,
+  now: number,
+  t: typeof FLUSH_TIMEOUTS = FLUSH_TIMEOUTS,
+): FlushPlan {
+  if (!hasPendingInput(state)) return { kind: 'idle' }
+  const paste = state.mode === 'IN_PASTE'
+  const phase = paste ? t.paste : t.normal
+  const budget = paste ? t.pasteBudget : t.normalBudget
+  // First observation of this hold: the budget cannot be spent yet.
+  if (holdStartedAt === null) {
+    return { kind: 'wait', delayMs: Math.min(phase, budget) }
+  }
+  const remaining = holdStartedAt + budget - now
+  if (remaining <= 0) return { kind: 'flush' }
+  return { kind: 'wait', delayMs: Math.min(phase, remaining) }
 }
 
 function inputToString(input: Buffer | string): string {
@@ -853,30 +906,33 @@ function parseKeypress(s: string = ''): ParsedKey {
     key.shift = isShiftKey(code) || key.shift
     key.ctrl = isCtrlKey(code) || key.ctrl
 
-    // An unmapped `ESC [ X` / `ESC O X` (a single trailing byte, no params) is
-    // not a keypress. Every real CSI/SS3 final for those two forms is one of a
-    // small fixed set — arrows, Home/End, `[Z` back-tab, the rxvt `[a`–`[e`
-    // family — all present in keyName above. A bare letter that maps to
-    // nothing means the two-byte introducer was spurious (a stray ESC from the
-    // IME, or a mis-split chunk) and the trailing byte is the user's own
-    // keystroke: `ESC [ z` is "z", not an escape. Re-key it as literal text.
-    // Setting the code without a name instead would make input-event.ts blank
+    // A param-free `ESC [ x` / `ESC O x` whose trailing byte is an unmapped
+    // *lowercase* letter is not a keypress: it is a spurious introducer (a
+    // stray ESC from the IME, or a mis-split chunk) followed by the user's own
+    // keystroke. `ESC [ z` is "z", not an escape. Re-key it as literal text;
+    // setting the code without a name instead would make input-event.ts blank
     // the input and delete the character (the F13-suppression guard).
     //
-    // Only the tokenizer's ambiguity is resolved here, not its structure: at
-    // the byte level `ESC [ z` is a syntactically valid CSI (z ∈ 0x40–0x7e is
-    // a legal final byte) and is indistinguishable from `ESC [ A`, a genuine
-    // up-arrow. The distinction only exists against the key map, which lives
-    // at this layer — so the recovery belongs here, not in tokenize.ts.
+    // Why only lowercase, and only without parameters:
     //
-    // FOCUS_IN / FOCUS_OUT (`ESC [ I` / `ESC [ O`) are recognized control
-    // events consumed by sequence match, not keys; never re-key them.
-    if (
-      !key.name &&
-      /^(?:\[|O).$/.test(code) &&
-      s !== FOCUS_IN &&
-      s !== FOCUS_OUT
-    ) {
+    // - Uppercase finals are ECMA-48 control functions (`ESC[J` erase display,
+    //   `ESC[K` erase line, `ESC[G` cursor-absolute, `ESC[P` delete-char,
+    //   `ESC[S`/`ESC[T` scroll, `ESC[X` erase-chars, `ESC[L` insert-lines) or
+    //   the mapped cursor/function keys (`[A`–`[H`, `[Z`, and the focus
+    //   events `ESC[I`/`ESC[O`). A terminal never sends them as keystrokes, so
+    //   the previous swallow-stay-swallowed is correct; recovering them leaked
+    //   one letter each and was the over-correction this narrows.
+    // - Parameters mean the two-byte introducer was NOT bare: `ESC[1z` is a
+    //   parameterised sequence, not the user typing 'z', and the old code
+    //   collapsed it to `[z` and dropped the `1`.
+    //
+    // `[a`–`[e` and `Oa`–`Oe` (rxvt) and `Op`–`Oy` (keypad) are in keyName, so
+    // they never reach here. At the byte level this is still an ambiguity the
+    // tokenizer cannot resolve — `ESC [ z` is a syntactically valid CSI — so
+    // the decision belongs at the key map, not in tokenize.ts.
+    const parameterless =
+      parts[2] === undefined && parts[4] === undefined && parts[5] === undefined
+    if (!key.name && parameterless && /^(?:\[|O)[a-z]$/.test(code)) {
       key.text = code.charAt(1)
     } else {
       key.code = code

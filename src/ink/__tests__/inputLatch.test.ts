@@ -134,9 +134,11 @@ describe('a spurious CSI/SS3 introducer does not delete the next letter', () => 
    * input — silently deleting the character: `ESC [ zhong` inserted only
    * "hong". Any stray ESC from the IME before a keystroke lost that keystroke.
    *
-   * The fix re-keys an unmapped `ESC [ X` / `ESC O X` as the literal character
-   * X; the introducer was spurious, the letter is the user's. `inputOf` runs
-   * the key through InputEvent — the exact string the prompt receives.
+   * The fix re-keys a param-free `ESC [ x` / `ESC O x` with a lowercase tail as
+   * the literal character x; the introducer was spurious, the letter is the
+   * user's. Uppercase finals and parameterised forms keep the parent behaviour
+   * (swallowed) — see the over-correction test below. `inputOf` runs the key
+   * through InputEvent — the exact string the prompt receives.
    */
   const inputOf = (chunks: string[]): string => {
     let state: any = { ...INITIAL_STATE, _tokenizer: undefined }
@@ -162,6 +164,30 @@ describe('a spurious CSI/SS3 introducer does not delete the next letter', () => 
   test('a stray introducer split across reads still recovers the letter', () => {
     expect(inputOf(['\x1b[', 'zhong'])).toBe('zhong')
     expect(inputOf(['\x1bO', 'zhong'])).toBe('zhong')
+  })
+
+  test('control finals and parameterised forms are NOT re-keyed as text', () => {
+    // The original recovery was too broad. These have no entry in the key map,
+    // but they are not the user's typing either: uppercase finals are ECMA-48
+    // control functions (J erase-display, K erase-line, G cursor-absolute,
+    // P delete-char, S/T scroll, X erase-chars, L insert-lines), and a terminal
+    // never sends them as keystrokes, while `ESC[1z` carries a parameter (the
+    // `1` is dropped when the parts collapse, so recovering would also lose
+    // it). The parent build swallowed all of these; so must this one. Only the
+    // param-free *lowercase* form is a spurious introducer plus a keystroke.
+    for (const seq of [
+      '\x1b[J',
+      '\x1b[K',
+      '\x1b[G',
+      '\x1b[P',
+      '\x1b[S',
+      '\x1b[T',
+      '\x1b[X',
+      '\x1b[L',
+      '\x1b[1z',
+    ]) {
+      expect(inputOf([seq])).toBe('')
+    }
   })
 
   test('unchanged: real CSI/SS3 keys still parse as keys, not text', () => {

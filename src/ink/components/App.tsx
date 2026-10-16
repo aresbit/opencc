@@ -8,7 +8,7 @@ import { logError } from '../../utils/log.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
-import { hasPendingInput, INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses } from '../parse-keypress.js';
+import { FLUSH_TIMEOUTS, hasPendingInput, INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses, planFlush } from '../parse-keypress.js';
 import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js';
@@ -116,15 +116,13 @@ export default class App extends PureComponent<Props, State> {
   keyParseState = INITIAL_STATE;
   // Timer for flushing incomplete escape sequences
   incompleteEscapeTimer: NodeJS.Timeout | null = null;
-  // How many times flushIncomplete has deferred the flush because stdin still
-  // had pending bytes. Bounded so an unterminated sequence (or a spurious
-  // introducer the tokenizer latched on) cannot swallow typing indefinitely —
-  // recovered-and-reset after MAX_INCOMPLETE_REARMS deferrals.
-  incompleteRearms = 0;
-  readonly MAX_INCOMPLETE_REARMS = 4;
-  // Timeout durations for incomplete sequences (ms)
-  readonly NORMAL_TIMEOUT = 50; // Short timeout for regular esc sequences
-  readonly PASTE_TIMEOUT = 500; // Longer timeout for paste operations
+  // When the current "holding input" episode began (ms), or null when nothing
+  // is held. Recovery is bounded by a budget measured from here, so continuous
+  // keystrokes cannot defer the flush forever — see planFlush in parse-keypress.
+  holdStartedAt: number | null = null;
+  // Flush timing (phase + per-hold budget), shared with the tests so the
+  // harness replays the real policy rather than a paraphrase of it.
+  readonly FLUSH_TIMEOUTS = FLUSH_TIMEOUTS;
 
   // Terminal query/response dispatch. Responses arrive on stdin (parsed
   // out by parse-keypress) and are routed to pending promise resolvers.
@@ -285,6 +283,37 @@ export default class App extends PureComponent<Props, State> {
     }
   };
 
+  // Arm (or run) the flush for input the parser is holding, on a budget.
+  // Called on every chunk and on every timer fire. The budget is what keeps
+  // recovery bounded: re-arming per chunk is right while a real sequence is
+  // still streaming in, but under a steady stream the timer would be reset
+  // before it could fire and never run at all, so a latch (a stray introducer,
+  // or an IME's ESC) swallowed typing until the user paused. Once the budget is
+  // spent this flushes regardless of arriving bytes.
+  scheduleFlush = (): void => {
+    const now = Date.now();
+    const plan = planFlush(this.keyParseState, this.holdStartedAt, now, this.FLUSH_TIMEOUTS);
+    // Cancel any existing timer first: every call replaces the pending flush.
+    if (this.incompleteEscapeTimer) {
+      clearTimeout(this.incompleteEscapeTimer);
+      this.incompleteEscapeTimer = null;
+    }
+    if (plan.kind === 'idle') {
+      this.holdStartedAt = null;
+      return;
+    }
+    if (plan.kind === 'flush') {
+      this.holdStartedAt = null;
+      // Process as a flush operation (input=null); reuses the parsing logic.
+      this.processInput(null);
+      return;
+    }
+    if (this.holdStartedAt === null) {
+      this.holdStartedAt = now;
+    }
+    this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, plan.delayMs);
+  };
+
   // Helper to flush incomplete escape sequences
   flushIncomplete = (): void => {
     // Clear the timer reference
@@ -292,31 +321,25 @@ export default class App extends PureComponent<Props, State> {
 
     // Only proceed if the parser is holding input (a partial escape sequence,
     // or an open bracketed paste accumulating in pasteBuffer).
-    if (!hasPendingInput(this.keyParseState)) return;
-
-    // Fullscreen: if stdin has data waiting, it's almost certainly the
-    // continuation of the buffered sequence (e.g. `[<64;74;16M` after a
-    // lone ESC). Node's event loop runs the timers phase before the poll
-    // phase, so when a heavy render blocks the loop past 50ms, this timer
-    // fires before the queued readable event even though the bytes are
-    // already buffered. Re-arm instead of flushing: handleReadable will
-    // drain stdin next and clear this timer. Prevents both the spurious
-    // Escape key and the lost scroll event.
-    //
-    // Bounded: while the user keeps typing, every chunk re-arms this timer,
-    // so an unterminated sequence would otherwise swallow keystrokes for as
-    // long as the burst lasts. After MAX_INCOMPLETE_REARMS deferrals the flush
-    // runs regardless, so a latched parser always recovers within ~200ms.
-    if (
-      this.props.stdin.readableLength > 0 &&
-      this.incompleteRearms < this.MAX_INCOMPLETE_REARMS
-    ) {
-      this.incompleteRearms++;
-      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.NORMAL_TIMEOUT);
+    if (!hasPendingInput(this.keyParseState)) {
+      this.holdStartedAt = null;
       return;
     }
-    this.incompleteRearms = 0;
 
+    // A byte is already buffered: it is almost certainly the continuation of
+    // the buffered sequence (e.g. `[<64;74;16M` after a lone ESC). Node's event
+    // loop runs the timers phase before the poll phase, so when a heavy render
+    // blocks the loop past the phase, this timer fires before the queued
+    // readable event even though the bytes are already buffered. Re-arm instead
+    // of flushing; handleReadable will drain stdin next and clear this timer.
+    // scheduleFlush flushes anyway once the hold budget is spent, so this
+    // cannot defer recovery indefinitely.
+    if (this.props.stdin.readableLength > 0) {
+      this.scheduleFlush();
+      return;
+    }
+
+    this.holdStartedAt = null;
     // Process incomplete as a flush operation (input=null)
     // This reuses all existing parsing logic
     this.processInput(null);
@@ -337,14 +360,14 @@ export default class App extends PureComponent<Props, State> {
       reconciler.discreteUpdates(processKeysInBatch, this, keys, undefined, undefined);
     }
 
-    // If the parser is holding input, set a timer to flush it. This covers
-    // both a partially buffered escape sequence and an open bracketed paste
+    // If the parser is holding input, (re)arm the flush. This covers both a
+    // partially buffered escape sequence and an open bracketed paste
     // (IN_PASTE). The paste case is the one that is invisible in `incomplete`:
     // the tokenizer sits at ground state while pasting — the content arrives
     // as text tokens and accumulates in pasteBuffer — so an orphan PASTE_START
     // (no matching PASTE_END) left `incomplete` empty, the timer never armed,
-    // and every later keystroke was swallowed indefinitely. PASTE_TIMEOUT below
-    // already existed for this mode; it was simply unreachable.
+    // and every later keystroke was swallowed indefinitely. scheduleFlush owns
+    // the timing (phase + per-hold budget); see planFlush.
     if (hasPendingInput(this.keyParseState)) {
       // Diagnostic: the parser is buffering stdin instead of emitting keys, so
       // every keystroke is being swallowed until the flush. Log the raw bytes
@@ -353,15 +376,10 @@ export default class App extends PureComponent<Props, State> {
       logForDebugging(
         `[input] buffering incomplete sequence (${this.keyParseState.mode}): ${Buffer.from(this.keyParseState.incomplete || this.keyParseState.pasteBuffer, 'utf8').toString('hex')}`,
       );
-      // Cancel any existing timer first
-      if (this.incompleteEscapeTimer) {
-        clearTimeout(this.incompleteEscapeTimer);
-      }
-      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT);
-    } else if (!this.incompleteEscapeTimer) {
-      // No buffered sequence and no pending flush — a sequence completed
-      // cleanly, so give the next one a fresh deferral budget.
-      this.incompleteRearms = 0;
+      this.scheduleFlush();
+    } else {
+      // Nothing held: end the episode so the next one gets a fresh budget.
+      this.holdStartedAt = null;
     }
   };
   handleReadable = (): void => {
