@@ -10,6 +10,27 @@ const FOCUS_CHECK_DEBOUNCE_MS = 1000
 const HINT_COOLDOWN_MS = 30000
 
 /**
+ * Whether the clipboard may be read *passively* — without the user asking.
+ *
+ * Not on a Linux Wayland session. A compositor without a data-control protocol
+ * (GNOME/mutter) only hands the selection to the focused client, so `wl-paste`
+ * maps its own toplevel to take keyboard focus for the read. Probing on focus
+ * regain therefore closes a loop: focus-in → (1s debounce) → `wl-paste` steals
+ * focus → the terminal regains it → focus-in again, about once a second for as
+ * long as the app is open. Each lap flashes the terminal window and makes the
+ * IME drop its focus, which discards whatever pinyin is being composed.
+ *
+ * An explicit paste (Ctrl+V, an empty bracketed paste) still reads the
+ * clipboard: one focus grab per keystroke the user chose to press, no loop.
+ */
+export function canProbeClipboardPassively(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return !(platform === 'linux' && env.WAYLAND_DISPLAY)
+}
+
+/**
  * Hook that shows a notification when the terminal regains focus
  * and the clipboard contains an image.
  *
@@ -30,7 +51,7 @@ export function useClipboardImageHint(
     const wasFocused = lastFocusedRef.current
     lastFocusedRef.current = isFocused
 
-    if (!enabled || !isFocused || wasFocused) {
+    if (!enabled || !isFocused || wasFocused || !canProbeClipboardPassively()) {
       return
     }
 
