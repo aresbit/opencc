@@ -211,9 +211,12 @@ export function createMateBotRemoteWorkerServer(
     options.cliPath ?? resolve(import.meta.dir, '../entrypoints/cli.tsx')
   const permissionMode = options.permissionMode ?? 'acceptEdits'
   const tasks = new Map<string, WorkerTask>()
-  const actorMailbox = new LocalActorMailbox(
-    options.actorMailboxRoot ?? resolve(workspaceRoot, '.matebot/actors'),
-  )
+  // Default to the mailbox sessions read (~/.claude/actors). The old default,
+  // <workspace>/.matebot/actors, was read by nothing: a cross-IP tx landed
+  // there and no session on this host ever saw it.
+  const actorMailbox = options.actorMailboxRoot
+    ? new LocalActorMailbox(options.actorMailboxRoot)
+    : new LocalActorMailbox()
 
   const activeCount = () =>
     [...tasks.values()].filter(task =>

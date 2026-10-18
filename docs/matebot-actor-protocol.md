@@ -10,8 +10,9 @@ MateBot 把 Agent 的通信能力收敛为 Actor 模型。每个复杂 Agent 拥
 | --- | --- |
 | `actor://team/name` | 本机 Actor；不同工作目录、不同进程通过共享配置目录通信 |
 | `name` | 当前 team 下的简写 |
-| `ws://host:port/ws#team/name` | 跨 IP/端口的远程 Actor |
-| `wss://host/ws#team/name` | TLS 保护的远程 Actor |
+| `actor://team/name@node` / `name@node` | 另一台主机上的 Actor，经 `opencc actord` 投递（见下文 actor-net） |
+| `ws://host:port/ws#team/name` | 旧式：matebot worker 背后的 Actor |
+| `wss://host/ws#team/name` | 旧式：TLS 保护的 worker |
 
 本地 mailbox 默认存放在 `$CLAUDE_CONFIG_DIR/actors/`；未设置时使用 OpenCC 的默认配置目录。写入和领取都持有文件锁，`rx` 是原子 claim，同一信封最多交付一次。
 
@@ -88,3 +89,32 @@ bun run matebot
 ## 与旧邮箱兼容
 
 `SendMessage` 会同时写入旧 teammate mailbox 和 Actor mailbox；`ActorTool tx` 发往本地 Actor 时也会镜像到旧邮箱。因此旧 Agent 可以逐步迁移，不需要一次替换全部控制消息。新协议应优先使用 Actor 信封，因为它具有稳定 ID、关联 ID、TTL 和跨 IP 地址。
+
+## actor-net：跨主机投递（`opencc actord`）
+
+身份用**节点名**而不是 IP：`node` 默认是 hostname（`OPENCC_NODE` 可覆盖），IP 只出现在 `~/.claude/actors/nodes.json`（`{"pc": "ws://100.x.y.z:7781"}`）。换网络不换地址；两台机器上同路径的目录也因节点名不同而不再冲突。`@本机节点` 解析为本地地址，所以旧地址全部照旧。
+
+会话不碰网络：发往 `name@node` 的信由 mailbox 追加到 `~/.claude/actors/.net/outbox/<node>.json`；每台主机一个 `opencc actord` 把它送出去，并把收到的信**直接写进会话读的 `~/.claude/actors`**。
+
+```bash
+# 每台主机
+OPENCC_ACTORD_TOKEN='同一个集群密钥' \
+OPENCC_ACTORD_LISTEN=100.x.y.z:7781 \   # 本机 tailnet 地址；默认 127.0.0.1:7781
+opencc actord
+```
+
+帧（每对节点一条常驻 WebSocket，`/actor`，每条消息一个 JSON 帧）：
+
+| 帧 | 含义 |
+| --- | --- |
+| `hi {node, v, ts, mac, live}` | 双方各发一次；`mac = HMAC-SHA256(token, "actor-net/1\|node\|ts")`，±2 分钟 |
+| `tx {env}` | 投递 |
+| `ok {id}` | 已持久写入对方信箱，发送方删出 outbox |
+| `rcpt {to, id, by, at, status, reason}` | 对方会话消费了（`acked`）或放弃了（`dead`：过期、退役、拒收） |
+| `live {live}` | 本机在线地址快照，变化即发、≤30s 一次 |
+
+边界规则：出站把 `from`/`replyTo` 加上 `@本节点`；入站要求 `to` 是本节点、`from` 是**已认证的对端节点**——对端不能冒充第三台主机。入站信封带 `metadata.via`，注入会话时标注 `origin="node:<名>"`。
+
+语义：线上至少一次（outbox 每 5s 重发直到 `ok`），接收端按信封 id 去重，会话领取至多一次；消费回执写回发送方本机的回执文件，所以 `reliableSend`/`awaitDelivery` 跨主机照常给出 `acked`/`dead`/`timeout`。重发窗口 4 分钟，短于接收端 5 分钟去重窗口；超出则发送方收到 `dead` 回执而不是静默重复。顺序只保证同一 outbox 内大致有序。
+
+监听非回环地址必须配置 token，否则 actord 拒绝启动——入站信会进入能执行 shell 的会话。

@@ -151,6 +151,13 @@ async function main(): Promise<void> {
         console.log(prompt.join("\n"));
         return;
     }
+    // `opencc actord`: the wrapper puts flags first, so match the first
+    // positional argument rather than argv[2].
+    if (args.find(arg => !arg.startsWith("-")) === "actord") {
+        const { runActord } = await import("../actor/net/actord.js");
+        await runActord();
+        return;
+    }
     if (process.argv[2] === "--claude-in-chrome-mcp") {
         profileCheckpoint("cli_claude_in_chrome_mcp_path");
         const { runClaudeInChromeMcpServer } =

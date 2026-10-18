@@ -41,6 +41,8 @@ export type DeliveryStatus =
   | 'unreachable'
   /** Written and retried, never consumed. Parked as a dead letter. */
   | 'timeout'
+  /** The receiving host gave up on it (expired, retired, rejected) and said so. */
+  | 'dead'
 
 export interface DeliveryResult {
   status: DeliveryStatus
@@ -106,6 +108,16 @@ export async function awaitDelivery(options: {
     const deadline = Date.now() + waitMs
     while (Date.now() < deadline) {
       const receipt = await mailbox.receiptFor(from, envelope.id)
+      if (receipt?.status === 'dead') {
+        return {
+          status: 'dead',
+          envelopeId: envelope.id,
+          to,
+          attempts,
+          receipt,
+          detail: `The receiving side gave up on it: ${receipt.reason ?? 'unknown reason'} (${receipt.ackedBy}).`,
+        }
+      }
       if (receipt) {
         return { status: 'acked', envelopeId: envelope.id, to, attempts, receipt }
       }

@@ -9,6 +9,7 @@ import {
   ACTOR_PROTOCOL_VERSION,
   type ActorAddress,
   type ActorEnvelope,
+  getLocalNodeName,
   isExpiredActorEnvelope,
   parseActorAddress,
 } from './types.js'
@@ -57,6 +58,34 @@ export type DeliveryReceipt = {
   envelopeId: string
   ackedBy: string
   ackedAt: string
+  /**
+   * Absent or 'acked': consumed. 'dead': the receiving host gave up on it
+   * (expired, retired, rejected) — relayed back by actord so a remote sender
+   * learns the outcome instead of timing out.
+   */
+  status?: 'acked' | 'dead'
+  reason?: string
+}
+
+/** A receipt waiting for actord to carry it to the sender's host. */
+export type OutboundReceipt = DeliveryReceipt & {
+  /** The original sender, `actor://team/name@node`. */
+  to: string
+}
+
+/** An envelope waiting for actord to carry it to another host. */
+export type OutboundEnvelope = {
+  envelope: ActorEnvelope
+  queuedAt: string
+}
+
+/** What this host last heard from a peer node. Written by actord. */
+export type PeerState = {
+  node: string
+  connected: boolean
+  /** Remote addresses (`…@node`) that peer reports as served. */
+  live: string[]
+  updatedAt: string
 }
 
 /** An envelope that will not be delivered, with the reason it was given up on. */
@@ -106,9 +135,19 @@ function isEnvelope(value: unknown): value is ActorEnvelope {
 
 export class LocalActorMailbox {
   readonly root: string
+  /** The node this mailbox belongs to; addresses `@` it are local. */
+  readonly node: string
 
-  constructor(root = join(getClaudeConfigHomeDir(), 'actors')) {
+  constructor(
+    root = join(getClaudeConfigHomeDir(), 'actors'),
+    options: { node?: string } = {},
+  ) {
     this.root = root
+    this.node = options.node ?? getLocalNodeName()
+  }
+
+  private parse(value: string): ActorAddress {
+    return parseActorAddress(value, undefined, this.node)
   }
 
   /**
@@ -161,7 +200,12 @@ export class LocalActorMailbox {
   }
 
   async send(envelope: ActorEnvelope): Promise<void> {
-    const address = parseActorAddress(envelope.to)
+    const address = this.parse(envelope.to)
+    if (address.transport === 'node') {
+      // Another host's mailbox. actord carries it; see actor/net/ActorNode.
+      await this.enqueueOutbound(address.node!, envelope)
+      return
+    }
     if (address.transport !== 'local') {
       throw new Error('LocalActorMailbox only accepts actor:// destinations')
     }
@@ -180,7 +224,7 @@ export class LocalActorMailbox {
 
   /** Atomically claims unread messages. Each envelope is delivered at most once. */
   async receive(addressValue: string, limit = 1): Promise<ActorEnvelope[]> {
-    const address = parseActorAddress(addressValue)
+    const address = this.parse(addressValue)
     if (address.transport !== 'local') {
       throw new Error('LocalActorMailbox only accepts actor:// addresses')
     }
@@ -243,7 +287,7 @@ export class LocalActorMailbox {
    */
   async claim(addressValue: string, ids: readonly string[]): Promise<void> {
     if (ids.length === 0) return
-    const address = parseActorAddress(addressValue)
+    const address = this.parse(addressValue)
     if (address.transport !== 'local') {
       throw new Error('LocalActorMailbox only accepts actor:// addresses')
     }
@@ -274,7 +318,7 @@ export class LocalActorMailbox {
    * a peer needs to discover before it can send the first message.
    */
   async announce(addressValue: string): Promise<void> {
-    const address = parseActorAddress(addressValue)
+    const address = this.parse(addressValue)
     if (address.transport !== 'local') return
     const path = this.presencePathFor(address)
     await mkdir(dirname(path), { recursive: true })
@@ -331,6 +375,18 @@ export class LocalActorMailbox {
         }
       }
     }
+    // Actors other hosts report through actord. Unread counts are theirs to
+    // know, so 0 here; `live` is what a sender picks a peer by.
+    for (const peer of await this.listPeerStates()) {
+      const seen = Date.parse(peer.updatedAt)
+      const fresh =
+        peer.connected &&
+        Number.isFinite(seen) &&
+        Date.now() - seen <= PRESENCE_STALE_MS
+      for (const address of peer.live) {
+        found.push({ address, unread: 0, lastSeenAt: peer.updatedAt, live: fresh })
+      }
+    }
     return found.sort((a, b) => a.address.localeCompare(b.address))
   }
 
@@ -375,8 +431,34 @@ export class LocalActorMailbox {
     envelopeId: string,
     ackedBy: string,
   ): Promise<void> {
-    const address = parseActorAddress(senderAddress)
+    const address = this.parse(senderAddress)
+    const receipt: DeliveryReceipt = {
+      envelopeId,
+      ackedBy,
+      ackedAt: new Date().toISOString(),
+    }
+    if (address.transport === 'node') {
+      // The sender is on another host: its sidecar is there, not here.
+      await this.enqueueReceipt(address.node!, { ...receipt, to: address.canonical })
+      return
+    }
+    await this.recordReceipt(senderAddress, receipt)
+  }
+
+  /**
+   * Write a receipt into the sender's sidecar on this host.
+   *
+   * `ack` does this for a local consumer; actord does it for a receipt relayed
+   * from another host, so a sender waiting in awaitDelivery cannot tell — and
+   * need not care — which host consumed its envelope.
+   */
+  async recordReceipt(
+    senderAddress: string,
+    receipt: DeliveryReceipt,
+  ): Promise<void> {
+    const address = this.parse(senderAddress)
     if (address.transport !== 'local') return
+    const envelopeId = receipt.envelopeId
     const path = this.ackPathFor(address)
     await this.ensureFile(path)
     const release = await lockfile.lock(path, LOCK_OPTIONS)
@@ -390,11 +472,11 @@ export class LocalActorMailbox {
       }
       const cutoff = Date.now() - ACK_RETENTION_MS
       const kept = receipts.filter(
-        receipt =>
-          receipt?.envelopeId !== envelopeId &&
-          Date.parse(receipt?.ackedAt ?? '') > cutoff,
+        existing =>
+          existing?.envelopeId !== envelopeId &&
+          Date.parse(existing?.ackedAt ?? '') > cutoff,
       )
-      kept.push({ envelopeId, ackedBy, ackedAt: new Date().toISOString() })
+      kept.push(receipt)
       await writeFile(
         path,
         jsonStringify(kept.slice(-MAX_ACKS), null, 2),
@@ -410,7 +492,7 @@ export class LocalActorMailbox {
     senderAddress: string,
     envelopeId: string,
   ): Promise<DeliveryReceipt | null> {
-    const address = parseActorAddress(senderAddress)
+    const address = this.parse(senderAddress)
     try {
       const parsed = jsonParse(await readFile(this.ackPathFor(address), 'utf8'))
       if (!Array.isArray(parsed)) return null
@@ -425,11 +507,38 @@ export class LocalActorMailbox {
   }
 
   private deadPathFor(address: ActorAddress): string {
+    // A remote address parks under `name@node`, never under a local actor
+    // that happens to share the name.
+    const key = address.node ? `${address.name}@${address.node}` : address.name
     return join(
       this.root,
       this.safeComponent(address.team),
-      `${this.safeComponent(address.name)}${DEAD_SUFFIX}`,
+      `${this.safeComponent(key)}${DEAD_SUFFIX}`,
     )
+  }
+
+  /** A remote sender learns its envelope died here instead of timing out. */
+  private async notifyRemoteSenders(
+    envelopes: readonly ActorEnvelope[],
+    reason: string,
+  ): Promise<void> {
+    for (const envelope of envelopes) {
+      let sender: ActorAddress
+      try {
+        sender = this.parse(envelope.from)
+      } catch {
+        continue
+      }
+      if (sender.transport !== 'node') continue
+      await this.enqueueReceipt(sender.node!, {
+        to: sender.canonical,
+        envelopeId: envelope.id,
+        ackedBy: `${envelope.to}@${this.node}`,
+        ackedAt: new Date().toISOString(),
+        status: 'dead',
+        reason,
+      })
+    }
   }
 
   /**
@@ -443,7 +552,17 @@ export class LocalActorMailbox {
     addressValue: string,
     staleMs = PRESENCE_STALE_MS,
   ): Promise<boolean> {
-    const address = parseActorAddress(addressValue)
+    const address = this.parse(addressValue)
+    if (address.transport === 'node') {
+      const peer = await this.readPeerState(address.node!)
+      if (!peer?.connected) return false
+      const seen = Date.parse(peer.updatedAt)
+      return (
+        Number.isFinite(seen) &&
+        Date.now() - seen <= staleMs &&
+        peer.live.includes(address.canonical)
+      )
+    }
     if (address.transport !== 'local') return true // not ours to judge
     try {
       const raw = jsonParse(
@@ -472,8 +591,9 @@ export class LocalActorMailbox {
     reason: DeadLetter['reason'],
   ): Promise<void> {
     if (envelopes.length === 0) return
-    const address = parseActorAddress(addressValue)
-    if (address.transport !== 'local') return
+    const address = this.parse(addressValue)
+    if (address.transport === 'websocket') return
+    if (address.transport === 'local') await this.notifyRemoteSenders(envelopes, reason)
     const path = this.deadPathFor(address)
     await this.ensureFile(path)
     const release = await lockfile.lock(path, LOCK_OPTIONS)
@@ -502,7 +622,7 @@ export class LocalActorMailbox {
 
   /** Undeliverable envelopes parked for this address, oldest first. */
   async listDeadLetters(addressValue: string): Promise<DeadLetter[]> {
-    const address = parseActorAddress(addressValue)
+    const address = this.parse(addressValue)
     try {
       const parsed = jsonParse(
         await readFile(this.deadPathFor(address), 'utf8'),
@@ -521,7 +641,7 @@ export class LocalActorMailbox {
    * a file nobody will ever open again.
    */
   async retire(addressValue: string): Promise<void> {
-    const address = parseActorAddress(addressValue)
+    const address = this.parse(addressValue)
     if (address.transport !== 'local') return
     const pending = await this.peek(addressValue)
     if (pending.length > 0) {
@@ -546,8 +666,141 @@ export class LocalActorMailbox {
     )
   }
 
+  // ── Cross-host queues (driven by actord) ──────────────────────────
+  //
+  // Everything a session does stays a local file operation: a send to another
+  // host appends to .net/outbox/<node>.json, a receipt for a remote sender to
+  // .net/rcpt/<node>.json, and actord drains both. What actord learns about a
+  // peer lands in .net/peers/<node>.json, which isReachable and list read.
+
+  private netPath(kind: 'outbox' | 'rcpt' | 'peers', node: string): string {
+    return join(this.root, '.net', kind, `${this.safeComponent(node)}.json`)
+  }
+
+  private async readArray<T>(path: string): Promise<T[]> {
+    try {
+      const parsed = jsonParse(await readFile(path, 'utf8'))
+      return Array.isArray(parsed) ? (parsed as T[]) : []
+    } catch {
+      return []
+    }
+  }
+
+  private async mutateArray<T>(
+    path: string,
+    change: (items: T[]) => T[],
+  ): Promise<void> {
+    await this.ensureFile(path)
+    const release = await lockfile.lock(path, LOCK_OPTIONS)
+    try {
+      const next = change(await this.readArray<T>(path))
+      await writeFile(path, jsonStringify(next, null, 2), 'utf8')
+    } finally {
+      await release()
+    }
+  }
+
+  /** Queue an envelope for another host. Idempotent on envelope id. */
+  async enqueueOutbound(node: string, envelope: ActorEnvelope): Promise<void> {
+    await this.mutateArray<OutboundEnvelope>(this.netPath('outbox', node), items =>
+      items.some(item => item.envelope?.id === envelope.id)
+        ? items
+        : [...items, { envelope, queuedAt: new Date().toISOString() }],
+    )
+  }
+
+  async pendingOutbound(node: string): Promise<OutboundEnvelope[]> {
+    return this.readArray<OutboundEnvelope>(this.netPath('outbox', node))
+  }
+
+  /** Drop envelopes the peer confirmed (or that were given up on). */
+  async settleOutbound(node: string, ids: readonly string[]): Promise<void> {
+    if (ids.length === 0) return
+    const done = new Set(ids)
+    await this.mutateArray<OutboundEnvelope>(this.netPath('outbox', node), items =>
+      items.filter(item => !done.has(item.envelope?.id)),
+    )
+  }
+
+  async enqueueReceipt(node: string, receipt: OutboundReceipt): Promise<void> {
+    await this.mutateArray<OutboundReceipt>(this.netPath('rcpt', node), items => [
+      ...items.filter(item => item.envelopeId !== receipt.envelopeId),
+      receipt,
+    ])
+  }
+
+  async pendingReceipts(node: string): Promise<OutboundReceipt[]> {
+    return this.readArray<OutboundReceipt>(this.netPath('rcpt', node))
+  }
+
+  async settleReceipts(node: string, envelopeIds: readonly string[]): Promise<void> {
+    if (envelopeIds.length === 0) return
+    const done = new Set(envelopeIds)
+    await this.mutateArray<OutboundReceipt>(this.netPath('rcpt', node), items =>
+      items.filter(item => !done.has(item.envelopeId)),
+    )
+  }
+
+  /** Nodes that have anything queued for them. */
+  async queuedNodes(): Promise<string[]> {
+    const nodes = new Set<string>()
+    for (const kind of ['outbox', 'rcpt'] as const) {
+      let files: string[] = []
+      try {
+        files = await readdir(join(this.root, '.net', kind))
+      } catch {
+        continue
+      }
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue
+        const node = file.slice(0, -'.json'.length)
+        const items = await this.readArray(join(this.root, '.net', kind, file))
+        if (items.length > 0) nodes.add(node)
+      }
+    }
+    return [...nodes]
+  }
+
+  async writePeerState(state: PeerState): Promise<void> {
+    const path = this.netPath('peers', state.node)
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, jsonStringify(state, null, 2), 'utf8')
+  }
+
+  async readPeerState(node: string): Promise<PeerState | null> {
+    try {
+      const raw = jsonParse(await readFile(this.netPath('peers', node), 'utf8'))
+      return raw && typeof raw === 'object' && Array.isArray((raw as PeerState).live)
+        ? (raw as PeerState)
+        : null
+    } catch {
+      return null
+    }
+  }
+
+  async listPeerStates(): Promise<PeerState[]> {
+    let files: string[] = []
+    try {
+      files = await readdir(join(this.root, '.net', 'peers'))
+    } catch {
+      return []
+    }
+    const states: PeerState[] = []
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue
+      const state = await this.readPeerState(file.slice(0, -'.json'.length))
+      if (state) states.push(state)
+    }
+    return states
+  }
+
+  /** The file a session's inbox lives in, for watching. */
+  mailboxPath(addressValue: string): string {
+    return this.pathFor(this.parse(addressValue))
+  }
+
   async peek(addressValue: string): Promise<ActorEnvelope[]> {
-    const address = parseActorAddress(addressValue)
+    const address = this.parse(addressValue)
     const path = this.pathFor(address)
     return (await this.read(path))
       .filter(

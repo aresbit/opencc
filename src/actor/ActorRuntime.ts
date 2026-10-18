@@ -40,7 +40,12 @@ export class ActorRuntime {
     const target = parseActorAddress(to, parseActorAddress(this.self).team)
     const envelope = createActorEnvelope({
       from: this.self,
-      to: localActorAddress(target.team, target.name),
+      // A worker URL is stripped to the mailbox it fronts; `name@node` keeps
+      // its node so the mailbox routes it to actord instead of a local file.
+      to:
+        target.transport === 'websocket'
+          ? localActorAddress(target.team, target.name)
+          : target.canonical,
       payload,
       ...options,
     })

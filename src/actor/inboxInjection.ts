@@ -1,6 +1,6 @@
 import { LocalActorMailbox } from './LocalActorMailbox.js'
 import { getCurrentActorAddress, isActorNetworkingEnabled, subagentActorAddress } from './currentActor.js'
-import type { ActorEnvelope } from './types.js'
+import { type ActorEnvelope, parseActorAddress } from './types.js'
 import { ACTOR_MESSAGE_TAG } from '../constants/xml.js'
 import { logForDebugging } from '../utils/debug.js'
 import type { Message } from '../types/message.js'
@@ -53,18 +53,37 @@ export function inboxAddressFor(opts: {
     : getCurrentActorAddress()
 }
 
-function formatEnvelopes(envelopes: readonly ActorEnvelope[]): string {
+/**
+ * The host an envelope came from, when it is not this one.
+ *
+ * actord stamps `metadata.via` with the authenticated peer; the `@node` on
+ * `from` says the same thing and is what a reply is addressed to.
+ */
+function remoteOrigin(envelope: ActorEnvelope): string | undefined {
+  const via = envelope.metadata?.via
+  if (typeof via === 'string' && via) return via
+  try {
+    return parseActorAddress(envelope.from).node
+  } catch {
+    return undefined
+  }
+}
+
+/** Shared by the turn-boundary injection and the REPL's idle-time poller. */
+export function formatActorEnvelopes(envelopes: readonly ActorEnvelope[]): string {
   return envelopes
     .map(envelope => {
       const correlation = envelope.correlationId
         ? ` correlation_id="${envelope.correlationId}"`
         : ''
       const replyTo = envelope.replyTo ? ` reply_to="${envelope.replyTo}"` : ''
+      const node = remoteOrigin(envelope)
+      const origin = node ? ` origin="node:${node}"` : ''
       const body =
         typeof envelope.payload === 'string'
           ? envelope.payload
           : JSON.stringify(envelope.payload, null, 2)
-      return `<${ACTOR_MESSAGE_TAG} from="${envelope.from}" kind="${envelope.kind}"${correlation}${replyTo}>\n${body}\n</${ACTOR_MESSAGE_TAG}>`
+      return `<${ACTOR_MESSAGE_TAG} from="${envelope.from}" kind="${envelope.kind}"${origin}${correlation}${replyTo}>\n${body}\n</${ACTOR_MESSAGE_TAG}>`
     })
     .join('\n\n')
 }
@@ -110,7 +129,7 @@ export async function applyActorInbox(
     isMeta: true,
     message: {
       role: 'user',
-      content: [{ type: 'text', text: formatEnvelopes(batch) }],
+      content: [{ type: 'text', text: formatActorEnvelopes(batch) }],
     },
   } as Message
 
@@ -119,16 +138,7 @@ export async function applyActorInbox(
       address,
       batch.map(envelope => envelope.id),
     )
-    // Receipts are best-effort relative to delivery: the model has the message
-    // either way, and failing the turn because a sender's sidecar could not be
-    // written would trade a real delivery for a bookkeeping error.
-    for (const envelope of batch) {
-      await mailbox
-        .ack(envelope.from, envelope.id, address)
-        .catch(error =>
-          logForDebugging(`[ActorInbox] ack failed for ${envelope.id}: ${error}`),
-        )
-    }
+    await ackDelivered(mailbox, batch, address)
   } catch (error) {
     logForDebugging(`[ActorInbox] claim failed for ${address}: ${error}`)
     return { messages, delivered: 0 }
@@ -138,4 +148,26 @@ export async function applyActorInbox(
     `[ActorInbox] delivered ${batch.length} envelope(s) to ${address}`,
   )
   return { messages: [...messages, block], delivered: batch.length }
+}
+
+/**
+ * Write a receipt for each envelope handed to the model.
+ *
+ * Receipts are best-effort relative to delivery: the model has the message
+ * either way, and failing the turn because a sender's sidecar could not be
+ * written would trade a real delivery for a bookkeeping error. A sender on
+ * another host gets its receipt relayed by actord.
+ */
+export async function ackDelivered(
+  mailbox: LocalActorMailbox,
+  envelopes: readonly ActorEnvelope[],
+  address: string,
+): Promise<void> {
+  for (const envelope of envelopes) {
+    await mailbox
+      .ack(envelope.from, envelope.id, address)
+      .catch(error =>
+        logForDebugging(`[ActorInbox] ack failed for ${envelope.id}: ${error}`),
+      )
+  }
 }

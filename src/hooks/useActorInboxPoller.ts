@@ -1,8 +1,9 @@
+import { type FSWatcher, mkdirSync, watch } from 'fs'
+import { basename, dirname } from 'path'
 import { useCallback, useEffect, useRef } from 'react'
 import { LocalActorMailbox } from '../actor/LocalActorMailbox.js'
 import { getCurrentActorAddress } from '../actor/currentActor.js'
-import type { ActorEnvelope } from '../actor/types.js'
-import { ACTOR_MESSAGE_TAG } from '../constants/xml.js'
+import { ackDelivered, formatActorEnvelopes } from '../actor/inboxInjection.js'
 import { getEngine } from '../services/functionHooks/bridge.js'
 import { logForDebugging } from '../utils/debug.js'
 
@@ -46,6 +47,9 @@ export function nextBackoffMs(
 
 const ANNOUNCE_INTERVAL_MS = 30_000
 
+/** Coalesces the burst of change events one locked rewrite produces. */
+const WATCH_DEBOUNCE_MS = 50
+
 /** Delivered per turn, so one noisy sender cannot bury the user's own prompt. */
 const MAX_ENVELOPES_PER_TURN = 20
 
@@ -57,21 +61,6 @@ type Props = {
   onSubmitMessage: (formatted: string) => boolean
 }
 
-function formatEnvelopes(envelopes: readonly ActorEnvelope[]): string {
-  return envelopes
-    .map(envelope => {
-      const correlation = envelope.correlationId
-        ? ` correlation_id="${envelope.correlationId}"`
-        : ''
-      const replyTo = envelope.replyTo ? ` reply_to="${envelope.replyTo}"` : ''
-      const body =
-        typeof envelope.payload === 'string'
-          ? envelope.payload
-          : JSON.stringify(envelope.payload, null, 2)
-      return `<${ACTOR_MESSAGE_TAG} from="${envelope.from}" kind="${envelope.kind}"${correlation}${replyTo}>\n${body}\n</${ACTOR_MESSAGE_TAG}>`
-    })
-    .join('\n\n')
-}
 
 /**
  * Delivers envelopes addressed to this session into the conversation.
@@ -114,7 +103,7 @@ export function useActorInboxPoller({
         `[ActorInbox] ${pending.length} envelope(s) for ${address}, delivering ${batch.length}`,
       )
 
-      if (!onSubmitMessage(formatEnvelopes(batch))) {
+      if (!onSubmitMessage(formatActorEnvelopes(batch))) {
         logForDebugging('[ActorInbox] Turn rejected, leaving envelopes unread')
         return
       }
@@ -122,6 +111,9 @@ export function useActorInboxPoller({
         address,
         batch.map(envelope => envelope.id),
       )
+      // Idle-time delivery used to claim without a receipt, so a sender
+      // waiting on an idle session timed out although its mail was read.
+      await ackDelivered(mailbox, batch, address)
     } catch (error) {
       logForDebugging(`[ActorInbox] Poll failed: ${String(error)}`)
     } finally {
@@ -142,6 +134,32 @@ export function useActorInboxPoller({
   useEffect(() => {
     deliverRef.current = deliver
   }, [deliver])
+
+  // Wake on the mailbox file itself. Mail written by another process —
+  // actord relaying from another host, or a session in another directory —
+  // fires no in-process event, so without this it waited out the 5s poll.
+  useEffect(() => {
+    if (!enabled) return
+    const address = getCurrentActorAddress()
+    let watcher: FSWatcher | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const path = new LocalActorMailbox().mailboxPath(address)
+      mkdirSync(dirname(path), { recursive: true })
+      watcher = watch(dirname(path), (_event, file) => {
+        if (file !== basename(path)) return
+        clearTimeout(timer)
+        timer = setTimeout(() => void deliverRef.current(), WATCH_DEBOUNCE_MS)
+      })
+      watcher.on('error', () => watcher?.close())
+    } catch (error) {
+      logForDebugging(`[ActorInbox] watch unavailable, polling only: ${error}`)
+    }
+    return () => {
+      clearTimeout(timer)
+      watcher?.close()
+    }
+  }, [enabled])
 
   useEffect(() => {
     if (!enabled) return
