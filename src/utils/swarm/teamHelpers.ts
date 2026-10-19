@@ -67,6 +67,11 @@ export type TeamFile = {
   createdAt: number
   leadAgentId: string
   leadSessionId?: string // Actual session UUID of the leader (for discovery)
+  /**
+   * Outlives the session that created it (MateBot): never removed by
+   * session-end cleanup, only by an explicit TeamDelete.
+   */
+  persistent?: boolean
   hiddenPaneIds?: string[] // Pane IDs that are currently hidden from the UI
   teamAllowedPaths?: TeamAllowedPath[] // Paths all teammates can edit without asking
   members: Array<{
@@ -576,7 +581,16 @@ export function unregisterTeamForSessionCleanup(teamName: string): void {
 export async function cleanupSessionTeams(): Promise<void> {
   const sessionCreatedTeams = getSessionCreatedTeams()
   if (sessionCreatedTeams.size === 0) return
-  const teams = Array.from(sessionCreatedTeams)
+  // A persistent team is owned by its host, not by this process: removing it
+  // here deleted the config, inboxes, task list and teammate worktrees of a
+  // team the host was about to resume. Only an explicit TeamDelete ends it.
+  const teams = Array.from(sessionCreatedTeams).filter(
+    name => readTeamFile(name)?.persistent !== true,
+  )
+  if (teams.length === 0) {
+    sessionCreatedTeams.clear()
+    return
+  }
   logForDebugging(
     `cleanupSessionTeams: removing ${teams.length} orphan team dir(s): ${teams.join(', ')}`,
   )

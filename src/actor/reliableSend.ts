@@ -131,6 +131,24 @@ export async function awaitDelivery(options: {
     }
   }
 
+  // Still sitting unread in a local mailbox is not a dead letter: the receiver
+  // is busy (mid-turn) or between reads, and will consume it — the receipt
+  // then lands as usual. Parking it as well left the same envelope both queued
+  // and "dead", which is how a message that was later read showed up in
+  // <receiver>.dead.json as unacked.
+  const queued = await stillQueued(mailbox, to, envelope.id)
+  if (queued) {
+    return {
+      status: 'timeout',
+      envelopeId: envelope.id,
+      to,
+      attempts,
+      detail:
+        `Not consumed within ${waitMs}ms over ${attempts} attempt(s), but still queued unread in ${to}'s ` +
+        'mailbox: it is delivered when that session next reads, and the receipt follows.',
+    }
+  }
+
   await mailbox
     .deadLetter(to, [envelope], 'unacked')
     .catch(error => logForDebugging(`[Actor] dead-letter failed: ${error}`))
@@ -143,6 +161,19 @@ export async function awaitDelivery(options: {
     detail:
       `Delivered to the mailbox but no receiver consumed it within ` +
       `${waitMs}ms over ${attempts} attempt(s). Parked as a dead letter for ${to}.`,
+  }
+}
+
+async function stillQueued(
+  mailbox: LocalActorMailbox,
+  to: string,
+  envelopeId: string,
+): Promise<boolean> {
+  try {
+    if (parseActorAddress(to, undefined, mailbox.node).transport !== 'local') return false
+    return (await mailbox.peek(to)).some(envelope => envelope.id === envelopeId)
+  } catch {
+    return false
   }
 }
 

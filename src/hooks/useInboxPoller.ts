@@ -198,7 +198,14 @@ export function useInboxPoller({
     // Helper to mark messages as read in the inbox file.
     // Called after messages are successfully delivered or reliably queued.
     const markRead = () => {
-      void markMessagesAsRead(agentName, currentAppState.teamContext?.teamName)
+      const teamName = currentAppState.teamContext?.teamName
+      void markMessagesAsRead(agentName, teamName).then(async () => {
+        // The lead's actor-mailbox twins of what was just read: retire them
+        // and send their senders the receipt (actor/leaderMailbox.ts).
+        if (!teamName || !isTeamLead(currentAppState.teamContext)) return
+        const { reconcileLeaderMailbox } = await import('../actor/leaderMailbox.js')
+        await reconcileLeaderMailbox(teamName).catch(() => {})
+      })
     }
 
     // Separate permission messages from regular teammate messages

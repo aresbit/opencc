@@ -30,6 +30,8 @@ import {
   setLeaderTeamName,
 } from '../../utils/tasks.js'
 import { generateWordSlug } from '../../utils/words.js'
+import { setLeaderActorTeam, ensureActorPresenceHeartbeat } from '../../actor/currentActor.js'
+import { isPersistentTeamMode, restoreLeaderTeam } from '../../utils/swarm/leaderTeam.js'
 import { TEAM_CREATE_TOOL_NAME } from './constants.js'
 import { getPrompt } from './prompt.js'
 import { renderToolUseMessage } from './UI.js'
@@ -139,6 +141,25 @@ export const TeamCreateTool: Tool<InputSchema, Output> = buildTool({
       )
     }
 
+    // The same team, led from the same directory: this is the lead coming
+    // back (a restarted MateBot host, or a fresh session told to lead it), not
+    // a name collision. Re-attach instead of renaming — a random new name
+    // splits the team from every teammate inbox and task already under it.
+    const existingFile = readTeamFile(team_name)
+    const existingLead = existingFile?.members.find(
+      member => member.agentId === existingFile.leadAgentId,
+    )
+    if (existingFile && existingLead?.cwd === getCwd()) {
+      await restoreLeaderTeam(team_name, setAppState)
+      return {
+        data: {
+          team_name,
+          team_file_path: getTeamFilePath(team_name),
+          lead_agent_id: existingFile.leadAgentId,
+        },
+      }
+    }
+
     // If team already exists, generate a unique name instead of failing
     const finalTeamName = generateUniqueTeamName(team_name)
 
@@ -160,6 +181,7 @@ export const TeamCreateTool: Tool<InputSchema, Output> = buildTool({
       createdAt: Date.now(),
       leadAgentId,
       leadSessionId: getSessionId(), // Store actual session ID for team discovery
+      persistent: isPersistentTeamMode(),
       members: [
         {
           agentId: leadAgentId,
@@ -176,8 +198,10 @@ export const TeamCreateTool: Tool<InputSchema, Output> = buildTool({
 
     await writeTeamFileAsync(finalTeamName, teamFile)
     // Track for session-end cleanup — teams were left on disk forever
-    // unless explicitly TeamDelete'd (gh-32730).
-    registerTeamForSessionCleanup(finalTeamName)
+    // unless explicitly TeamDelete'd (gh-32730). Not a persistent (MateBot)
+    // team: its host restarts this process with --resume and expects the
+    // team, its inboxes, tasks and worktrees to still be there.
+    if (!isPersistentTeamMode()) registerTeamForSessionCleanup(finalTeamName)
 
     // Reset and create the corresponding task list directory (Team = Project = TaskList)
     // This ensures task numbering starts fresh at 1 for each new swarm
@@ -210,6 +234,10 @@ export const TeamCreateTool: Tool<InputSchema, Output> = buildTool({
         },
       },
     }))
+
+    // Teammates address the lead as actor://<team>/team-lead.
+    setLeaderActorTeam(finalTeamName)
+    ensureActorPresenceHeartbeat()
 
     logEvent('tengu_team_created', {
       team_name:

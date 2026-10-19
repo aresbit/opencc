@@ -17,6 +17,7 @@ import { clearLeaderTeamName } from '../../utils/tasks.js'
 import { TEAM_DELETE_TOOL_NAME } from './constants.js'
 import { getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+import { setLeaderActorTeam } from '../../actor/currentActor.js'
 
 const inputSchema = lazySchema(() => z.strictObject({}))
 type InputSchema = ReturnType<typeof inputSchema>
@@ -113,6 +114,9 @@ export const TeamDeleteTool: Tool<InputSchema, Output> = buildTool({
           teamName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
     }
+
+    // No longer the lead: stop serving actor://<team>/team-lead.
+    setLeaderActorTeam(null)
 
     // Clear team context and inbox from app state
     setAppState(prev => ({

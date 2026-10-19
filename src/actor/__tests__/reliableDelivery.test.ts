@@ -134,28 +134,56 @@ describe('receipts', () => {
     expect(result.receipt?.ackedBy).toBe(RECEIVER)
   })
 
-  test('an unconsumed message times out and is parked, not lost', async () => {
+  test('a message still queued unread times out without being parked', async () => {
     const box = await mailbox()
     await box.announce(RECEIVER)
 
     const result = await reliableSend({
       from: SENDER,
       to: RECEIVER,
-      payload: 'nobody is home',
+      payload: 'read me later',
       expectAckMs: 60,
       maxAttempts: 2,
       mailbox: box,
     })
 
     expect(result.status).toBe('timeout')
-    expect(result.attempts).toBe(2)
+    expect(result.detail).toContain('still queued')
+    // Queued and "dead" at once is what made a later-read message look lost.
+    expect(await box.listDeadLetters(RECEIVER)).toHaveLength(0)
+    const queued = await box.peek(RECEIVER)
+    expect(queued.map(envelope => envelope.payload)).toEqual(['read me later'])
 
-    // The sender can find out afterwards what did not arrive. Before this,
-    // the only trace of a lost message was its absence.
+    // The receiver reads it after the sender stopped waiting: the receipt
+    // still lands, so a later check sees it was delivered.
+    await box.claim(RECEIVER, [queued[0]!.id])
+    await box.ack(SENDER, queued[0]!.id, RECEIVER)
+    expect(await box.receiptFor(SENDER, result.envelopeId)).not.toBeNull()
+  })
+
+  test('a message taken without a receipt is parked as unacked, not lost', async () => {
+    const box = await mailbox()
+    await box.announce(RECEIVER)
+
+    const sending = reliableSend({
+      from: SENDER,
+      to: RECEIVER,
+      payload: 'nobody acked',
+      expectAckMs: 150,
+      maxAttempts: 1,
+      mailbox: box,
+    })
+    // A receiver that claims but never writes a receipt.
+    await Bun.sleep(30)
+    const taken = await box.peek(RECEIVER)
+    await box.claim(RECEIVER, taken.map(envelope => envelope.id))
+
+    const result = await sending
+    expect(result.status).toBe('timeout')
     const dead = await box.listDeadLetters(RECEIVER)
     expect(dead).toHaveLength(1)
     expect(dead[0]!.reason).toBe('unacked')
-    expect(dead[0]!.envelope.payload).toBe('nobody is home')
+    expect(dead[0]!.envelope.payload).toBe('nobody acked')
   })
 
   test('a retry does not deliver the message twice', async () => {

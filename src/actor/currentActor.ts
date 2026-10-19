@@ -42,6 +42,77 @@ export function resetCurrentActorAddressCache(): void {
   cachedAddress = null
 }
 
+// ── The team lead's second address ─────────────────────────────────
+//
+// Teammates and SendMessage address the leader as `actor://<team>/team-lead`,
+// but the leader's own address is a function of its directory
+// (`actor://default/<dir>-<hash>`): a leader has no agent name, and its team
+// lives in AppState, which getCurrentActorAddress cannot see. So every
+// envelope sent to the leader landed in a mailbox the leader never read, and
+// every sender waiting for a receipt timed out. While a session leads a team
+// it serves both addresses.
+
+let leaderActorTeam: string | null = null
+
+/** Called by TeamCreate / team restore (name) and TeamDelete (null). */
+export function setLeaderActorTeam(teamName: string | null): void {
+  leaderActorTeam = teamName?.trim() || null
+  if (leaderActorTeam) void announceServedAddresses()
+}
+
+/** `actor://<team>/team-lead` while this session leads a team, else null. */
+export function getLeaderActorAddress(): string | null {
+  if (!leaderActorTeam || getAgentName()) return null
+  return localActorAddress(leaderActorTeam, TEAM_LEAD_NAME)
+}
+
+export function getLeaderActorTeam(): string | null {
+  return getLeaderActorAddress() ? leaderActorTeam : null
+}
+
+/** Every address this session reads mail for: its own, then the lead alias. */
+export function getServedActorAddresses(): string[] {
+  const own = getCurrentActorAddress()
+  const lead = getLeaderActorAddress()
+  return lead && lead !== own ? [own, lead] : [own]
+}
+
+const PRESENCE_HEARTBEAT_MS = 30_000
+let presenceTimer: ReturnType<typeof setInterval> | undefined
+
+async function announceServedAddresses(): Promise<void> {
+  if (!isActorNetworkingEnabled()) return
+  try {
+    const { LocalActorMailbox } = await import('./LocalActorMailbox.js')
+    const mailbox = new LocalActorMailbox()
+    for (const address of getServedActorAddresses()) await mailbox.announce(address)
+  } catch {
+    // Presence is advisory; a failed heartbeat must not fail a turn.
+  }
+}
+
+/**
+ * Keep this session's addresses announced.
+ *
+ * The REPL's inbox poller re-announces on its own, but a headless session
+ * (`--print`, the way MateBot hosts run OpenCC) has no poller: it was only
+ * ever announced when the model happened to call ActorTool, so a sender's
+ * reachability check failed and it had to force-send. Idempotent; unref'd.
+ */
+export function ensureActorPresenceHeartbeat(): void {
+  if (presenceTimer || !isActorNetworkingEnabled()) return
+  void announceServedAddresses()
+  presenceTimer = setInterval(() => void announceServedAddresses(), PRESENCE_HEARTBEAT_MS)
+  presenceTimer.unref?.()
+}
+
+/** Test seam. */
+export function resetLeaderActorStateForTests(): void {
+  leaderActorTeam = null
+  if (presenceTimer) clearInterval(presenceTimer)
+  presenceTimer = undefined
+}
+
 /**
  * The address a subagent serves.
  *

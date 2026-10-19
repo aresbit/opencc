@@ -2,7 +2,14 @@ import { type FSWatcher, mkdirSync, watch } from 'fs'
 import { basename, dirname } from 'path'
 import { useCallback, useEffect, useRef } from 'react'
 import { LocalActorMailbox } from '../actor/LocalActorMailbox.js'
-import { getCurrentActorAddress } from '../actor/currentActor.js'
+import {
+  getCurrentActorAddress,
+  getLeaderActorTeam,
+  getServedActorAddresses,
+} from '../actor/currentActor.js'
+import { reconcileLeaderMailbox } from '../actor/leaderMailbox.js'
+import { localActorAddress } from '../actor/types.js'
+import { TEAM_LEAD_NAME } from '../utils/swarm/constants.js'
 import { ackDelivered, formatActorEnvelopes } from '../actor/inboxInjection.js'
 import { getEngine } from '../services/functionHooks/bridge.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -90,30 +97,39 @@ export function useActorInboxPoller({
 
       if (Date.now() - announcedAt.current >= ANNOUNCE_INTERVAL_MS) {
         announcedAt.current = Date.now()
-        await mailbox.announce(address)
+        for (const served of getServedActorAddresses()) await mailbox.announce(served)
       }
 
       if (isLoading || focusedInputDialog) return
 
-      const pending = await mailbox.peek(address)
-      if (pending.length === 0) return
+      const ownPending = await mailbox.peek(address)
+      // The lead alias: only what its teammate inbox does not carry.
+      const leadTeam = getLeaderActorTeam()
+      const leadAddress = leadTeam ? localActorAddress(leadTeam, TEAM_LEAD_NAME) : null
+      const leadPending = leadTeam ? (await reconcileLeaderMailbox(leadTeam, mailbox)).deliver : []
+      if (ownPending.length === 0 && leadPending.length === 0) return
 
-      const batch = pending.slice(0, MAX_ENVELOPES_PER_TURN)
+      const own = ownPending.slice(0, MAX_ENVELOPES_PER_TURN)
+      const lead = leadPending.slice(0, MAX_ENVELOPES_PER_TURN - own.length)
+      const batch = [...own, ...lead]
       logForDebugging(
-        `[ActorInbox] ${pending.length} envelope(s) for ${address}, delivering ${batch.length}`,
+        `[ActorInbox] ${ownPending.length + leadPending.length} envelope(s), delivering ${batch.length}`,
       )
 
       if (!onSubmitMessage(formatActorEnvelopes(batch))) {
         logForDebugging('[ActorInbox] Turn rejected, leaving envelopes unread')
         return
       }
-      await mailbox.claim(
-        address,
-        batch.map(envelope => envelope.id),
-      )
-      // Idle-time delivery used to claim without a receipt, so a sender
-      // waiting on an idle session timed out although its mail was read.
-      await ackDelivered(mailbox, batch, address)
+      for (const [to, envelopes] of [[address, own], [leadAddress, lead]] as const) {
+        if (!to || envelopes.length === 0) continue
+        await mailbox.claim(
+          to,
+          envelopes.map(envelope => envelope.id),
+        )
+        // Idle-time delivery used to claim without a receipt, so a sender
+        // waiting on an idle session timed out although its mail was read.
+        await ackDelivered(mailbox, envelopes, to)
+      }
     } catch (error) {
       logForDebugging(`[ActorInbox] Poll failed: ${String(error)}`)
     } finally {

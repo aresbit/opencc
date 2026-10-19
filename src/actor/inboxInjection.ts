@@ -1,6 +1,14 @@
 import { LocalActorMailbox } from './LocalActorMailbox.js'
-import { getCurrentActorAddress, isActorNetworkingEnabled, subagentActorAddress } from './currentActor.js'
-import { type ActorEnvelope, parseActorAddress } from './types.js'
+import {
+  ensureActorPresenceHeartbeat,
+  getCurrentActorAddress,
+  getLeaderActorTeam,
+  isActorNetworkingEnabled,
+  subagentActorAddress,
+} from './currentActor.js'
+import { reconcileLeaderMailbox } from './leaderMailbox.js'
+import { TEAM_LEAD_NAME } from '../utils/swarm/constants.js'
+import { type ActorEnvelope, localActorAddress, parseActorAddress } from './types.js'
 import { ACTOR_MESSAGE_TAG } from '../constants/xml.js'
 import { logForDebugging } from '../utils/debug.js'
 import type { Message } from '../types/message.js'
@@ -112,17 +120,39 @@ export async function applyActorInbox(
 
   const address = inboxAddressFor(opts)
   const mailbox = new LocalActorMailbox()
+  const isMainSession = !opts.agentId
+  // Headless sessions have no REPL poller to announce them.
+  if (isMainSession) ensureActorPresenceHeartbeat()
 
-  let pending: ActorEnvelope[]
+  // What to hand the model this turn, per address it was sent to.
+  const sources: Array<{ address: string; envelopes: ActorEnvelope[] }> = []
   try {
-    pending = await mailbox.peek(address)
+    sources.push({ address, envelopes: await mailbox.peek(address) })
   } catch (error) {
     logForDebugging(`[ActorInbox] peek failed for ${address}: ${error}`)
-    return { messages, delivered: 0 }
   }
-  if (pending.length === 0) return { messages, delivered: 0 }
+  // The lead's team-lead address: only what its teammate inbox does not carry.
+  const leadTeam = isMainSession ? getLeaderActorTeam() : null
+  if (leadTeam) {
+    try {
+      const { deliver } = await reconcileLeaderMailbox(leadTeam, mailbox)
+      sources.push({ address: localActorAddress(leadTeam, TEAM_LEAD_NAME), envelopes: deliver })
+    } catch (error) {
+      logForDebugging(`[ActorInbox] lead mailbox reconcile failed: ${error}`)
+    }
+  }
 
-  const batch = pending.slice(0, MAX_ENVELOPES_PER_TURN)
+  let budget = MAX_ENVELOPES_PER_TURN
+  const batches = sources
+    .map(source => {
+      const envelopes = source.envelopes.slice(0, Math.max(0, budget))
+      budget -= envelopes.length
+      return { address: source.address, envelopes }
+    })
+    .filter(batch => batch.envelopes.length > 0)
+  const batch = batches.flatMap(b => b.envelopes)
+  if (batch.length === 0) return { messages, delivered: 0 }
+
   const block: Message = {
     type: 'user',
     uuid: makeEnvelopeUuid(),
@@ -134,18 +164,20 @@ export async function applyActorInbox(
   } as Message
 
   try {
-    await mailbox.claim(
-      address,
-      batch.map(envelope => envelope.id),
-    )
-    await ackDelivered(mailbox, batch, address)
+    for (const { address: to, envelopes } of batches) {
+      await mailbox.claim(
+        to,
+        envelopes.map(envelope => envelope.id),
+      )
+      await ackDelivered(mailbox, envelopes, to)
+    }
   } catch (error) {
     logForDebugging(`[ActorInbox] claim failed for ${address}: ${error}`)
     return { messages, delivered: 0 }
   }
 
   logForDebugging(
-    `[ActorInbox] delivered ${batch.length} envelope(s) to ${address}`,
+    `[ActorInbox] delivered ${batch.length} envelope(s) to ${batches.map(b => b.address).join(', ')}`,
   )
   return { messages: [...messages, block], delivered: batch.length }
 }

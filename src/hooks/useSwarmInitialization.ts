@@ -15,6 +15,7 @@ import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js'
 import { initializeTeammateContextFromSession } from '../utils/swarm/reconnection.js'
 import { readTeamFile } from '../utils/swarm/teamHelpers.js'
 import { initializeTeammateHooks } from '../utils/swarm/teammateInit.js'
+import { restoreLeaderTeamOnStartup } from '../utils/swarm/leaderTeam.js'
 import { getDynamicTeamContext } from '../utils/teammate.js'
 
 type SetAppState = (f: (prevState: AppState) => AppState) => void
@@ -74,6 +75,9 @@ export function useSwarmInitialization(
             agentId: context.agentId,
             agentName: context.agentName,
           })
+        } else {
+          // Not a teammate: a lead resumed from a transcript leads its team again.
+          void restoreLeaderTeamOnStartup(initialMessages, setAppState)
         }
       }
     }

@@ -19,6 +19,7 @@ import { installStreamJsonStdoutGuard } from 'src/utils/streamJsonStdoutGuard.js
 import type { ToolPermissionContext } from 'src/Tool.js'
 import type { ThinkingConfig } from 'src/utils/thinking.js'
 import { assembleToolPool, filterToolsByDenyRules } from 'src/tools.js'
+import { isAgentSwarmsEnabled } from 'src/utils/agentSwarmsEnabled.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { uniq } from 'src/utils/array.js'
 import { mergeAndFilterTools } from 'src/utils/toolPool.js'
@@ -695,6 +696,14 @@ export async function runHeadless(
     sessionStartHooksPromise: options.sessionStartHooksPromise,
     restoredWorkerState: structuredIO.restoredWorkerState,
   })
+
+  // A resumed team lead leads its team again (see utils/swarm/leaderTeam.ts):
+  // without this the headless inbox loop below, gated on teamContext, never
+  // reads the lead's inbox after a host restart.
+  if (isAgentSwarmsEnabled()) {
+    const { restoreLeaderTeamOnStartup } = await import('src/utils/swarm/leaderTeam.js')
+    await restoreLeaderTeamOnStartup(initialMessages, setAppState)
+  }
 
   // SessionStart hooks can emit initialUserMessage — the first user turn for
   // headless orchestrator sessions where stdin is empty and additionalContext
@@ -2545,6 +2554,14 @@ function runHeadlessStreaming(
               agentName,
               refreshedState.teamContext?.teamName,
             )
+            // Retire the actor-mailbox twins of what was just read, and send
+            // their senders the receipt they are waiting on.
+            if (refreshedState.teamContext?.teamName) {
+              const { reconcileLeaderMailbox } = await import('src/actor/leaderMailbox.js')
+              await reconcileLeaderMailbox(refreshedState.teamContext.teamName).catch(error =>
+                logForDebugging(`[print.ts] leader mailbox reconcile failed: ${error}`),
+              )
+            }
 
             // Process shutdown_approved messages - remove teammates from team file
             // This mirrors what useInboxPoller does in interactive mode (lines 546-606)
@@ -2616,6 +2633,33 @@ function runHeadlessStreaming(
             })
             void run()
             return // run() will come back here after processing
+          }
+
+          // Mail only the actor mailbox holds (relayed from another host by
+          // actord, or written there directly): nothing else will deliver it.
+          if (refreshedState.teamContext?.teamName) {
+            const team = refreshedState.teamContext.teamName
+            const [{ reconcileLeaderMailbox }, { LocalActorMailbox }, { localActorAddress }, { formatActorEnvelopes, ackDelivered }] =
+              await Promise.all([
+                import('src/actor/leaderMailbox.js'),
+                import('src/actor/LocalActorMailbox.js'),
+                import('src/actor/types.js'),
+                import('src/actor/inboxInjection.js'),
+              ])
+            const { deliver } = await reconcileLeaderMailbox(team).catch(() => ({ deliver: [] as never[] }))
+            if (deliver.length > 0) {
+              const mailbox = new LocalActorMailbox()
+              const address = localActorAddress(team, agentName)
+              await mailbox.claim(address, deliver.map(envelope => envelope.id))
+              await ackDelivered(mailbox, deliver, address)
+              enqueue({
+                mode: 'prompt',
+                value: formatActorEnvelopes(deliver),
+                uuid: randomUUID(),
+              })
+              void run()
+              return // run() will come back here after processing
+            }
           }
 
           // No messages - check if we need to prompt for shutdown
