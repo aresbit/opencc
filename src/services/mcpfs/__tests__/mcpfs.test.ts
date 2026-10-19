@@ -21,6 +21,7 @@ import {
  */
 
 const home = mkdtempSync(join(tmpdir(), 'mcpfs-test-'))
+const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
 process.env.CLAUDE_CONFIG_DIR = home
 
 let mods: {
@@ -151,6 +152,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server.close()
+  // Bun runs every test file in one process: leave no global state behind.
+  mods.projection.resetMcpFsProjectorForTests()
+  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
 })
 
 const root = () => mods.projection.getMcpFsProjector().root
