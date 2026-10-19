@@ -4,6 +4,7 @@ import { clearInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import {
   ALL_AGENT_DISALLOWED_TOOLS,
   ASYNC_AGENT_ALLOWED_TOOLS,
+  ASYNC_AGENT_DISALLOWED_TOOLS,
   CUSTOM_AGENT_DISALLOWED_TOOLS,
   IN_PROCESS_TEAMMATE_ALLOWED_TOOLS,
 } from '../../constants/tools.js'
@@ -68,6 +69,11 @@ export type ResolvedAgentTools = {
   allowedAgentTypes?: string[]
 }
 
+/** OPENCC_ASYNC_AGENT_TOOLS=restricted restores the former async allowlist. */
+export function isRestrictedAsyncToolset(): boolean {
+  return process.env.OPENCC_ASYNC_AGENT_TOOLS?.trim().toLowerCase() === 'restricted'
+}
+
 export function filterToolsForAgent({
   tools,
   isBuiltIn,
@@ -98,7 +104,7 @@ export function filterToolsForAgent({
     if (!isBuiltIn && CUSTOM_AGENT_DISALLOWED_TOOLS.has(tool.name)) {
       return false
     }
-    if (isAsync && !ASYNC_AGENT_ALLOWED_TOOLS.has(tool.name)) {
+    if (isAsync) {
       if (isAgentSwarmsEnabled() && isInProcessTeammate()) {
         // Allow AgentTool for in-process teammates to spawn sync subagents.
         // Validation in AgentTool.call() prevents background agents and teammate spawning.
@@ -110,7 +116,12 @@ export function filterToolsForAgent({
           return true
         }
       }
-      return false
+      // A detached agent has nobody to answer a dialog.
+      if (tool.requiresUserInteraction?.()) return false
+      if (isRestrictedAsyncToolset()) return ASYNC_AGENT_ALLOWED_TOOLS.has(tool.name)
+      // Same tools as a foreground subagent, minus what only makes sense
+      // attached to the team (see ASYNC_AGENT_DISALLOWED_TOOLS).
+      return !ASYNC_AGENT_DISALLOWED_TOOLS.has(tool.name)
     }
     return true
   })

@@ -1,4 +1,8 @@
-import { ASYNC_AGENT_ALLOWED_TOOLS } from '../constants/tools.js'
+import {
+  ALL_AGENT_DISALLOWED_TOOLS,
+  ASYNC_AGENT_ALLOWED_TOOLS,
+  ASYNC_AGENT_DISALLOWED_TOOLS,
+} from '../constants/tools.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -88,16 +92,26 @@ export function getCoordinatorUserContext(
     return {}
   }
 
-  const workerTools = isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)
-    ? [BASH_TOOL_NAME, FILE_READ_TOOL_NAME, FILE_EDIT_TOOL_NAME]
-        .sort()
-        .join(', ')
-    : Array.from(ASYNC_AGENT_ALLOWED_TOOLS)
-        .filter(name => !INTERNAL_WORKER_TOOLS.has(name))
-        .sort()
-        .join(', ')
-
-  let content = `Workers spawned via the ${AGENT_TOOL_NAME} tool have access to these tools: ${workerTools}`
+  let content: string
+  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+    const simple = [BASH_TOOL_NAME, FILE_READ_TOOL_NAME, FILE_EDIT_TOOL_NAME].sort().join(', ')
+    content = `Workers spawned via the ${AGENT_TOOL_NAME} tool have access to these tools: ${simple}`
+  } else if (process.env.OPENCC_ASYNC_AGENT_TOOLS?.trim().toLowerCase() === 'restricted') {
+    const allowed = Array.from(ASYNC_AGENT_ALLOWED_TOOLS)
+      .filter(name => !INTERNAL_WORKER_TOOLS.has(name))
+      .sort()
+      .join(', ')
+    content = `Workers spawned via the ${AGENT_TOOL_NAME} tool have access to these tools: ${allowed}`
+  } else {
+    // Built from the sets filterToolsForAgent applies, so the description
+    // and what a worker actually gets cannot drift apart.
+    const withheld = [
+      ...new Set([...ALL_AGENT_DISALLOWED_TOOLS, ...ASYNC_AGENT_DISALLOWED_TOOLS, ...INTERNAL_WORKER_TOOLS]),
+    ]
+      .sort()
+      .join(', ')
+    content = `Workers spawned via the ${AGENT_TOOL_NAME} tool have the same tools you have, except: ${withheld}`
+  }
 
   if (mcpClients.length > 0) {
     const serverNames = mcpClients.map(c => c.name).join(', ')

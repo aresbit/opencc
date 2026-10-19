@@ -18,6 +18,8 @@ import { FILE_WRITE_TOOL_NAME } from '../tools/FileWriteTool/prompt.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../tools/NotebookEditTool/constants.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
+import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
+import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_GET_TOOL_NAME } from '../tools/TaskGetTool/constants.js'
 import { TASK_LIST_TOOL_NAME } from '../tools/TaskListTool/constants.js'
@@ -60,8 +62,35 @@ export const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set([
   ...ALL_AGENT_DISALLOWED_TOOLS,
 ])
 
+/**
+ * What a background (async) agent may NOT have, on top of
+ * ALL_AGENT_DISALLOWED_TOOLS — everything else a foreground subagent has, it has.
+ *
+ * This used to be an allowlist (ASYNC_AGENT_ALLOWED_TOOLS below), so a
+ * background agent silently lost every tool not named in it — CodeAct, Action,
+ * ast_grep, ChromeCDP, SSHRemote and everything added since — and the same
+ * subagent could do less the moment it was run in the background. The reasons
+ * a subagent cannot have a tool (recursion, main-thread-only state, a dialog
+ * nobody will answer) are already in ALL_AGENT_DISALLOWED_TOOLS and in each
+ * tool's requiresUserInteraction(); what is left is specific to running
+ * detached from the team:
+ *
+ * - TeamCreate / TeamDelete would rewrite the parent session's team context.
+ * - SendMessage signs as `team-lead` from any non-teammate (see
+ *   SendMessageTool handleMessage), so a background subagent would impersonate
+ *   the lead. It messages through ActorTool, under its own address.
+ *
+ * In-process teammates are async too, and keep SendMessage and the task tools
+ * through IN_PROCESS_TEAMMATE_ALLOWED_TOOLS.
+ */
+export const ASYNC_AGENT_DISALLOWED_TOOLS = new Set([
+  TEAM_CREATE_TOOL_NAME,
+  TEAM_DELETE_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
+])
+
 /*
- * Async Agent Tool Availability Status (Source of Truth)
+ * The former async allowlist, kept for OPENCC_ASYNC_AGENT_TOOLS=restricted.
  */
 export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
   FILE_READ_TOOL_NAME,

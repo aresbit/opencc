@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { getSpecializedToolGuidance } from '../../constants/prompts.js'
-import { ASYNC_AGENT_ALLOWED_TOOLS } from '../../constants/tools.js'
+import { ASYNC_AGENT_DISALLOWED_TOOLS } from '../../constants/tools.js'
 import { ActorTool } from '../ActorTool/ActorTool.js'
 import { ChromeCDPTool } from '../ChromeCDPTool/ChromeCDPTool.js'
 import { EvalApplyTool } from '../EvalApplyTool/EvalApplyTool.js'
@@ -47,7 +47,7 @@ describe('specialized tool discovery and trigger contracts', () => {
       'eval_apply',
       'ActorTool',
     ]) {
-      expect(ASYNC_AGENT_ALLOWED_TOOLS.has(name)).toBe(true)
+      expect(ASYNC_AGENT_DISALLOWED_TOOLS.has(name)).toBe(false)
     }
   })
 
