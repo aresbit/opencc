@@ -26,6 +26,7 @@ import {
 
 import { CODE_ACT_TOOL_NAME } from './toolName.js'
 import { getSkillStoreDir, promoteRun } from '../../utils/codeActPromote.js'
+import { mcpPermissionCheck, openMcpRun } from '../../services/mcpfs/approval.js'
 import { addSkillDirectories } from '../../skills/loadSkillsDir.js'
 export { CODE_ACT_TOOL_NAME }
 
@@ -172,6 +173,30 @@ export const CodeActTool = buildTool({
   isReadOnly(_input) { return false },
   isDestructive(_input) { return true },
 
+  /**
+   * MCP tools reached from code are approved once per run: the scan lists the
+   * ones that are not read-only and not already allowed by a rule, and the
+   * gateway refuses anything outside that list while the run executes. Code
+   * that reaches no such tool keeps CodeAct's existing behaviour.
+   */
+  async checkPermissions(input, context) {
+    if (input.promote || input.poll_run_id || input.stop_run_id) {
+      return { behavior: 'allow', updatedInput: input }
+    }
+    const check = await mcpPermissionCheck(input.code, input.language, context)
+    if (check.kind === 'deny') {
+      return {
+        behavior: 'deny',
+        message: check.message,
+        decisionReason: { type: 'other', reason: check.message },
+      }
+    }
+    if (check.kind === 'ask') {
+      return { behavior: 'ask', message: check.message, updatedInput: input }
+    }
+    return { behavior: 'allow', updatedInput: input }
+  },
+
   renderToolUseMessage() { return null },
 
   async call(
@@ -280,11 +305,16 @@ export const CodeActTool = buildTool({
     }
 
     if (run_in_background) {
+      // The session outlives this call: it closes when the run settles.
+      const mcp = await openMcpRun(code, language, context)
       const record = startBackgroundRun(code, {
         language: language as CodeActLanguage | undefined,
         timeoutMs: timeoutMs ?? DEFAULT_BACKGROUND_TIMEOUT_MS,
         cwd,
         persistKey,
+        environment: mcp.environment,
+        mcpServersDir: mcp.serversDir,
+        onSettled: mcp.close,
       })
       return {
         data: {
@@ -301,13 +331,21 @@ export const CodeActTool = buildTool({
       }
     }
 
-    const result = await executeCodeActCode(code, {
-      language: language as CodeActLanguage | undefined,
-      timeoutMs,
-      signal: context.abortController.signal,
-      cwd,
-      persistKey,
-    })
+    const mcp = await openMcpRun(code, language, context, context.abortController.signal)
+    let result
+    try {
+      result = await executeCodeActCode(code, {
+        language: language as CodeActLanguage | undefined,
+        timeoutMs,
+        signal: context.abortController.signal,
+        cwd,
+        persistKey,
+        environment: mcp.environment,
+        mcpServersDir: mcp.serversDir,
+      })
+    } finally {
+      mcp.close()
+    }
 
     if (result.success && result.sourcePath) {
       lastSuccessfulRun = { sourcePath: result.sourcePath, language }

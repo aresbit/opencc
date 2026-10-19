@@ -247,6 +247,27 @@ from actions.ytdlp import download
 import { download } from './actions/ytdlp.js'
 \`\`\`
 
+### MCP servers as code
+
+Every connected MCP server is mirrored as typed modules in ~/.claude/mcp-fs/servers/,
+linked into each TypeScript/Python sandbox as ./servers. Read servers/README.md, then
+the server's README.md and the one tool file you need — not the whole tree. Calls run
+on opencc's own live connection, so server-side state (an open binary, a session)
+persists across calls and runs. Results stay in your process: filter, join and loop in
+code, and print only what matters.
+
+\`\`\`typescript
+import { binaryOverview } from './servers/rea/index.ts'   // typed input; typed result when the tool has an outputSchema
+const overview = await binaryOverview({ path: '/bin/ls' }) // otherwise { text, json, content }
+\`\`\`
+\`\`\`python
+from servers.rea import binary_overview
+print(binary_overview(path="/bin/ls").json)
+\`\`\`
+
+Read-only tools run freely. Any other MCP tool is approved once per run, from what the
+code imports by name; a tool reached only through a dynamic name is refused.
+
 ### Iterative improvement loop
 
 1. Write code that solves the problem

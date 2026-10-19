@@ -5,6 +5,7 @@ import {
   clearGcpCredentialsCache,
 } from '../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
+import { isEnvDefinedFalsy } from '../utils/envUtils.js'
 import { toError } from '../utils/errors.js'
 import { logError } from '../utils/log.js'
 import { applyConfigEnvironmentVariables } from '../utils/managedEnv.js'
@@ -167,5 +168,19 @@ export function onChangeAppState({
     } catch (error) {
       logError(toError(error))
     }
+  }
+
+  // mcp-fs: keep ~/.claude/mcp-fs/servers in step with the MCP connections.
+  // Connects and tools/list_changed refreshes all land here as a new mcp
+  // slice; the projector fingerprints per server and only rewrites what moved.
+  if (
+    (newState.mcp.clients !== oldState.mcp.clients ||
+      newState.mcp.tools !== oldState.mcp.tools) &&
+    !isEnvDefinedFalsy(process.env.OPENCC_MCPFS)
+  ) {
+    const { clients, tools } = newState.mcp
+    void import('../services/mcpfs/projection.js')
+      .then(m => m.scheduleMcpFsProjection(clients, tools))
+      .catch(error => logError(toError(error)))
   }
 }

@@ -126,10 +126,6 @@ import { GoalCreateTool } from './tools/GoalTool/GoalCreateTool.js'
 import { GoalGetTool } from './tools/GoalTool/GoalGetTool.js'
 import { GoalUpdateTool } from './tools/GoalTool/GoalUpdateTool.js'
 import { GoalClearTool } from './tools/GoalTool/GoalClearTool.js'
-import { McpFsTool } from './tools/McpFsTool/McpFsTool.js'
-import { McpFsDiscoverTool } from './tools/McpFsTool/McpFsDiscoverTool.js'
-import { McpFsReadTool } from './tools/McpFsTool/McpFsReadTool.js'
-import { McpFsExecTool } from './tools/McpFsTool/McpFsExecTool.js'
 import { CodeActTool } from './tools/CodeActTool/CodeActTool.js'
 import { ActionTool } from './tools/ActionTool/ActionTool.js'
 import { NumberTheoryMasterTool } from './tools/NumberTheoryMasterTool/NumberTheoryMasterTool.js'
@@ -317,10 +313,6 @@ export function getAllBaseTools(): Tools {
     GoalGetTool,
     GoalUpdateTool,
     GoalClearTool,
-    McpFsTool,
-    McpFsDiscoverTool,
-    McpFsReadTool,
-    McpFsExecTool,
     CodeActTool,
     CodeRunTool,
     // The recovery path for handle-ized tool results. contextHandleHook and

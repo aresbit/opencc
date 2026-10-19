@@ -15,7 +15,7 @@
 import { spawn } from 'child_process'
 import { StringDecoder } from 'string_decoder'
 import { join } from 'path'
-import { mkdir, mkdtemp, writeFile, rm as rmDir, readdir, cp, copyFile } from 'fs/promises'
+import { mkdir, mkdtemp, writeFile, rm as rmDir, readdir, cp, copyFile, lstat, readlink, symlink, unlink } from 'fs/promises'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { getCodeActSandboxDir } from './codeActBuiltins.js'
@@ -45,6 +45,12 @@ export interface CodeActOptions {
   persistKey?: string
   /** Additional environment for trusted internal callers such as ActionTool. */
   environment?: Record<string, string>
+  /**
+   * The mcp-fs tree (live MCP servers as typed modules). Linked into the
+   * sandbox as ./servers so code imports `./servers/<server>/index.ts` or
+   * `from servers.<server> import …`.
+   */
+  mcpServersDir?: string
   /**
    * Called as output arrives, rather than only at exit.
    *
@@ -109,6 +115,35 @@ async function copyBuiltinsInto(sandboxDir: string, builtinsSrc: string, builtin
   }
 }
 
+/**
+ * Point ./servers at the mcp-fs tree. A link, not a copy: the tree is rewritten
+ * when a server announces new tools, and a persistent sandbox must see that.
+ * Junctions need no privilege on Windows; copying is the last resort.
+ */
+async function linkMcpServers(sandboxDir: string, target: string): Promise<void> {
+  const link = join(sandboxDir, 'servers')
+  try {
+    const current = await lstat(link)
+    if (current.isSymbolicLink()) {
+      if ((await readlink(link)) === target) return
+      await unlink(link)
+    } else {
+      return // the code made its own ./servers; leave it alone
+    }
+  } catch {
+    // Not there yet.
+  }
+  try {
+    await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+  } catch {
+    try {
+      await cp(target, link, { recursive: true })
+    } catch {
+      // Without the tree, imports fail with a clear module-not-found.
+    }
+  }
+}
+
 // ── Core execution ─────────────────────────────────────────────────
 
 export async function executeCodeActCode(
@@ -159,6 +194,8 @@ export async function executeCodeActCode(
 
   // Always refresh actions/ directory (so updates are picked up)
   await copyDirContents(getActionsSrcDir(), join(sandboxDir, 'actions'))
+
+  if (options?.mcpServersDir) await linkMcpServers(sandboxDir, options.mcpServersDir)
 
   // Write agent code with appropriate extension and import hint
   const agentBasename = `agent${adapter.extension}`
@@ -242,7 +279,7 @@ export async function executeCodeActCode(
     // whole sandbox on an ephemeral run — anything the script wrote has to be
     // both noticed and rescued before that happens.
     const { artifacts, truncated } = await collectArtifacts(sandboxDir, {
-      managed: [adapter.builtinsDir, 'actions', agentBasename, 'agent'],
+      managed: [adapter.builtinsDir, 'actions', 'servers', agentBasename, 'agent'],
       // A persistent sandbox still holds every previous run's output, so only
       // what this run touched counts as this run's artifacts.
       since: persistKey ? startedAt : undefined,

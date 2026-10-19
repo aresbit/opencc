@@ -128,34 +128,20 @@ export async function buildContinuationCandidate(
 // ── mcp-fs awareness ──────────────────────────────────────────────
 
 /**
- * Summarize available mcp-fs tools so the goal continuation prompt can hint
- * that the model should reach for `mcpfs` / `mcpfs_exec` instead of guessing
- * shell commands. Best-effort: returns null when discovery fails or there
- * are no registered tools, so the prompt degrades cleanly.
+ * The connected MCP servers as mcp-fs projects them, so a goal continuation
+ * can point at code-level access instead of one tool call per item. Reads the
+ * in-memory projection index: no discovery, no subprocess. Null when there are
+ * no servers, so the prompt degrades cleanly.
  */
 async function buildMcpFsSnapshot(): Promise<string | null> {
   try {
-    // Lazy import to avoid pulling mcpFilesystem (which spawns subprocesses on
-    // first import) into the hot path for users who never use goals.
-    const mod = (await import('./mcpFilesystem.js')) as typeof import('./mcpFilesystem.js')
-    // Cached path: avoids re-doing readdir + readFile + registry write on every
-    // continuation turn. 15s TTL is plenty — server-tool installs are rare.
-    const entries = await mod.discoverToolsCached({ probeMcpServers: false })
-    if (!entries || entries.length === 0) return null
-
-    // Cap to keep prompt small; group by server.
-    const byServer = new Map<string, string[]>()
-    for (const e of entries) {
-      const list = byServer.get(e.server) ?? []
-      if (list.length < 6) list.push(e.toolName)
-      byServer.set(e.server, list)
-    }
-    const lines: string[] = []
-    for (const [server, tools] of byServer) {
-      lines.push(`- ${server}: ${tools.join(', ')}`)
-      if (lines.length >= 8) break
-    }
-    return lines.join('\n')
+    const { getMcpFsProjector } = await import('../services/mcpfs/projection.js')
+    const servers = Object.values(getMcpFsProjector().getIndex().servers)
+    if (servers.length === 0) return null
+    return servers
+      .slice(0, 8)
+      .map(server => `- ${server.ident}/ (${server.name}): ${server.tools.length} tools`)
+      .join('\n')
   } catch {
     return null
   }
@@ -206,9 +192,9 @@ function augmentContinuationPrompt(
   if (augs.mcpFsSnapshot) {
     blocks.push(
       [
-        'Available mcp-fs tools (call via the `mcpfs` tool, or `mcpfs_exec` for multi-step workflows that should keep intermediate output out of context):',
+        'MCP servers importable from CodeAct (~/.claude/mcp-fs/servers/<server>/, README.md lists the tools):',
         augs.mcpFsSnapshot,
-        'Prefer these for external system access (filesystem, repos, services) instead of ad-hoc shell commands when an mcp-fs tool covers the action.',
+        'For work over many items, call them from one CodeAct run and print only the result, instead of one tool call per item.',
       ].join('\n'),
     )
   }

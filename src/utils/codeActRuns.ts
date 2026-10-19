@@ -94,6 +94,8 @@ function evictFinished(): void {
 
 export interface StartOptions extends Omit<CodeActOptions, 'signal'> {
   language?: CodeActOptions['language']
+  /** Called once the run has ended, however it ended. */
+  onSettled?: () => void
 }
 
 /** Start a run and return immediately with a handle to it. */
@@ -171,6 +173,7 @@ export function startBackgroundRun(
       current.error = error instanceof Error ? error.message : String(error)
       current.endedAt = Date.now()
     })
+    .finally(() => options.onSettled?.())
 
   return record
 }
