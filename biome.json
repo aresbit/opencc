@@ -106,6 +106,12 @@
 			"formatter": {
 				"enabled": false
 			}
+		},
+		{
+			"includes": ["**/imagine_prompt.generated.ts"],
+			"formatter": {
+				"enabled": false
+			}
 		}
 	],
 	"assist": {
