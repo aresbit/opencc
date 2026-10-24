@@ -4285,6 +4285,55 @@ async function run(): Promise<CommanderCommand> {
     } = await import('./cli/handlers/plugins.js');
     await pluginUpdateHandler(plugin, options);
   });
+
+  // Function-hook plugins (mods): ~/.claude/mods and <project>/.claude/mods.
+  // Changes apply to engines started afterwards; see services/functionHooks/README.md.
+  const modsCmd = program.command('mods').alias('mod').description('Manage function-hook plugins (mods)').configureHelp(createSortedHelpConfig());
+  modsCmd.command('list').description('List built-in hook plugins and mods with their state').option('--json', 'Output as JSON').action(async (options: {
+    json?: boolean;
+  }) => {
+    const {
+      modsListHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsListHandler(options);
+  });
+  modsCmd.command('enable <name>').description('Enable a mod (writes enabled: true to its mod.json)').option('-s, --scope <scope>', 'user or project (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
+    scope?: string;
+    json?: boolean;
+  }) => {
+    const {
+      modsSetEnabledHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsSetEnabledHandler(name, true, options);
+  });
+  modsCmd.command('disable <name>').description('Disable a mod (writes enabled: false to its mod.json)').option('-s, --scope <scope>', 'user or project (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
+    scope?: string;
+    json?: boolean;
+  }) => {
+    const {
+      modsSetEnabledHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsSetEnabledHandler(name, false, options);
+  });
+  modsCmd.command('install <source>').description('Copy a mod directory or file into the mods directory').option('-s, --scope <scope>', 'user (default) or project').option('--force', 'Replace a mod of the same name (the old copy is kept under .uninstalled/)').option('--json', 'Output as JSON').action(async (source: string, options: {
+    scope?: string;
+    force?: boolean;
+    json?: boolean;
+  }) => {
+    const {
+      modsInstallHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsInstallHandler(source, options);
+  });
+  modsCmd.command('uninstall <name>').alias('remove').alias('rm').description('Remove a mod (moved to .uninstalled/ in its mods directory)').option('-s, --scope <scope>', 'user or project (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
+    scope?: string;
+    json?: boolean;
+  }) => {
+    const {
+      modsUninstallHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsUninstallHandler(name, options);
+  });
   // END ANT-ONLY
 
   // Setup token command
