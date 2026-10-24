@@ -22,9 +22,9 @@ import { getClaudeConfigHomeDir } from '../../../utils/envUtils.js'
 import { getCwd } from '../../../utils/cwd.js'
 import type { ModManifest, ModSource } from './types.js'
 
-const ENTRY_NAMES = ['mod.ts', 'mod.tsx', 'mod.js', 'mod.mjs', 'index.ts', 'index.js']
-const FILE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs'])
-const MANIFEST_NAME = 'mod.json'
+export const ENTRY_NAMES = ['mod.ts', 'mod.tsx', 'mod.js', 'mod.mjs', 'index.ts', 'index.js']
+export const FILE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs'])
+export const MANIFEST_NAME = 'mod.json'
 
 export function getUserModsDir(): string {
   return join(getClaudeConfigHomeDir(), 'mods')
@@ -56,7 +56,7 @@ async function readJsonManifest(dir: string): Promise<Partial<ModManifest>> {
   }
 }
 
-async function entryFor(dir: string): Promise<string | undefined> {
+export async function entryFor(dir: string): Promise<string | undefined> {
   for (const candidate of ENTRY_NAMES) {
     const path = join(dir, candidate)
     if (await exists(path)) return path

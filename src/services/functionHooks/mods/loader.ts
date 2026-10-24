@@ -217,7 +217,9 @@ async function loadOne(source: ModSource): Promise<ModLoadResult> {
   const result: ModLoadResult = {
     name,
     entry: source.entry,
+    dir: source.dir,
     scope: source.scope,
+    manifest: source.manifest,
     loaded: false,
     events: [],
   }
@@ -232,6 +234,7 @@ async function loadOne(source: ModSource): Promise<ModLoadResult> {
         ? imported.manifest
         : {}
     const manifest = { ...inline, ...source.manifest }
+    result.manifest = manifest as ModLoadResult['manifest']
     const capabilities = (manifest.capabilities as string[] | undefined) ?? []
 
     if (manifest.enabled === false) {
@@ -317,7 +320,9 @@ export async function loadMods(
     results.push({
       name: source.manifest.name,
       entry: source.entry,
+      dir: source.dir,
       scope: source.scope,
+      manifest: source.manifest,
       loaded: false,
       events: [],
       skipped: 'shadowed',

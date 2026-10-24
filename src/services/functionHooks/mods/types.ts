@@ -71,7 +71,14 @@ export interface LoadedMod extends ModSource {
 export interface ModLoadResult {
   name: string
   entry: string
+  /** Directory the mod came from (the mods root itself for a one-file mod). */
+  dir: string
   scope: 'user' | 'project'
+  /**
+   * The manifest as the chain sees it: the mod's inline \`manifest\` with
+   * mod.json applied over it. Only mod.json is known when the import fails.
+   */
+  manifest?: ModManifest
   loaded: boolean
   events: string[]
   /**
