@@ -66,6 +66,11 @@ const outputSchema = lazySchema(() =>
         assumptions: z.array(z.string()),
         correctnessContract: z.string(),
         evaluation: z.array(z.string()),
+        limits: z.object({
+          decidability: z.string(),
+          complexity: z.string(),
+          fragment: z.string(),
+        }),
       })
       .optional(),
     dataflow: z
@@ -139,6 +144,11 @@ function formatPlan(plan: ReturnType<typeof selectAnalysisMethod>): string {
     '',
     'Evaluation gates:',
     ...plan.evaluation.map(item => `- ${item}`),
+    '',
+    'Limits:',
+    `- Decidability: ${plan.limits.decidability}`,
+    `- Complexity: ${plan.limits.complexity}`,
+    `- Fragment: ${plan.limits.fragment}`,
     '',
     `Alternatives: ${plan.alternatives.join('; ')}`,
     ...(plan.assumptions.length > 0 ? ['', 'Assumptions:', ...plan.assumptions.map(item => `- ${item}`)] : []),

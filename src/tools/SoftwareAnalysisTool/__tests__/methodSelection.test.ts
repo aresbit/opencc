@@ -35,4 +35,42 @@ describe('selectAnalysisMethod', () => {
     expect(plan.primary).toContain('Steensgaard')
     expect(plan.assumptions.join(' ')).toContain('Scalability')
   })
+
+  test('every goal states a decidability limit, an intrinsic cost, and a fragment', () => {
+    const goals = [
+      'general',
+      'test-design',
+      'fuzzing',
+      'test-generation',
+      'dataflow',
+      'pointer-analysis',
+      'taint-analysis',
+      'type-safety',
+      'fault-localization',
+      'input-minimization',
+      'symbolic-execution',
+    ] as const
+
+    for (const goal of goals) {
+      const { limits } = selectAnalysisMethod({ goal })
+      expect(limits.decidability.length).toBeGreaterThan(40)
+      expect(limits.complexity.length).toBeGreaterThan(40)
+      expect(limits.fragment.length).toBeGreaterThan(40)
+    }
+  })
+
+  test('names Rice for type safety and path explosion for symbolic execution', () => {
+    const typing = selectAnalysisMethod({ goal: 'type-safety' })
+    expect(typing.limits.decidability).toContain('Rice')
+    expect(typing.limits.decidability).toContain('finite-state abstraction')
+
+    const symbolic = selectAnalysisMethod({ goal: 'symbolic-execution' })
+    expect(symbolic.limits.complexity).toContain('path explosion')
+    expect(symbolic.limits.fragment).toContain('unresolved coverage gaps')
+  })
+
+  test('proof-oriented plans warn that correctness does not compose', () => {
+    const plan = selectAnalysisMethod({ goal: 'dataflow', assurance: 'proof-oriented' })
+    expect(plan.evaluation.join(' ')).toContain('does not compose')
+  })
 })

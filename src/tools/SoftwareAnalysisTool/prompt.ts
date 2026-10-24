@@ -5,7 +5,7 @@ export const DESCRIPTION = `Plan and compute evidence-driven software analyses u
 
 Use this tool when the task requires choosing an analysis method, solving a finite GEN/KILL dataflow problem, or ranking suspicious code from passing/failing coverage spectra.
 
-**action: "plan"** selects a method for test design, fuzzing, automated generation, dataflow, pointer or taint analysis, type safety, fault localization, delta debugging, or symbolic execution. It returns assumptions, alternatives, an explicit correctness contract, and evaluation gates.
+**action: "plan"** selects a method for test design, fuzzing, automated generation, dataflow, pointer or taint analysis, type safety, fault localization, delta debugging, or symbolic execution. It returns assumptions, alternatives, an explicit correctness contract, and evaluation gates, plus the limits of the method: the undecidable question, the intrinsic cost, and the fragment actually answered.
 
 **action: "dataflow"** reads a JSON CFG artifact and computes a deterministic forward/backward, union/intersection bit-vector fixed point. It validates node references and reports every IN/OUT set.
 
@@ -29,6 +29,15 @@ export function getPrompt(): string {
 9. Spectrum-based fault localization is correlational. Tarantula/Ochiai/DStar rankings guide inspection and must be confirmed causally.
 10. ddmin returns a 1-minimal reproducer relative to its partitions and oracle, not necessarily the globally smallest input. Preserve PASS/FAIL/UNRESOLVED and stabilize flaky failures; use HDD or grammar-aware shrinking for structured inputs and git bisect for revisions.
 11. Symbolic/concolic execution is bounded by instruction/environment models, solver theories, path search, loop/recursion limits, and path explosion. Replay witnesses concretely; UNKNOWN, timeout, unsupported operations, and concretization are unresolved gaps.
+12. Every non-trivial semantic property of a Turing-complete program is undecidable (halting, reachability, Rice). Verification is the model-checking problem \`M ⊨ φ\` and inherits that hardness, so no tool removes it: say which side is sacrificed — soundness or precision — and over which fragment.
+13. Bounding the question does not make it cheap. Bounded halting is NP-complete, finite-state model checking is PSPACE-complete, and a short deductive proof may simply not exist (short proofs for all tautologies would imply NP = coNP). Name the parameter that explodes — states, paths, iterations, precision — and fix a budget and a stopping rule before running.
+14. Correctness does not decompose: unit-level proofs do not compose into a system property without interface specifications, and a claim made about source does not transfer to the compiled artifact. State assumptions at every boundary and the layer at which the claim is made.
+15. Types are an abstract interpretation over a finite (non-dependent) state space, hence decidable and cheap — and therefore coarse. A typed program is not a correct program; use types as a filter, not as the proof. Dependent types and polymorphic recursion push inference back to undecidable.
+16. Cost is intrinsic, so prefer a fragment with a decision or refutation procedure, and treat an empirical failure taxonomy as evidence with a stated sampling basis, never as proof.
+
+## Limits
+
+\`action: "plan"\` returns a \`limits\` object with three fields: \`decidability\` (the undecidable question and why no implementation settles it), \`complexity\` (the source of the intrinsic cost and the parameter that explodes), and \`fragment\` (the restricted question the method actually answers). Report all three next to the correctness contract; a plan that omits them is incomplete.
 
 ## plan
 

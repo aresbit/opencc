@@ -11,3 +11,14 @@ test('prompt preserves the core correctness caveats and source', () => {
   expect(prompt).toContain('UNKNOWN')
   expect(DESCRIPTION).toContain('read-only')
 })
+
+test('prompt states the computability and complexity limits explicitly', () => {
+  const prompt = getPrompt()
+  expect(prompt).toContain('Rice')
+  expect(prompt).toContain('NP-complete')
+  expect(prompt).toContain('PSPACE-complete')
+  expect(prompt).toContain('does not decompose')
+  expect(prompt).toContain('decidability')
+  expect(prompt).toContain('fragment')
+  expect(DESCRIPTION).toContain('undecidable question')
+})
