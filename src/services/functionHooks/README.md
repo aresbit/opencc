@@ -498,6 +498,28 @@ an ordinary `setInterval` — a mod is ordinary code in the process — and
 `bumpEpoch()` is how a tick outside React reaches the screen. The same three
 pieces are what a status panel or an approval widget is built from.
 
+### Managing mods from outside a session
+
+A host that shows mods to a person — the HydraHub desktop's Plugins panel —
+must not keep a second copy of these rules. `opencc mods` is that surface, and
+`mods/manage.ts` is what it calls:
+
+```
+opencc mods list --json                 every built-in and mod, as a session would load them
+opencc mods enable|disable <name>       writes enabled into mod.json (--scope user|project)
+opencc mods install <dir-or-file>       copies a mod into ~/.claude/mods (--scope project, --force)
+opencc mods uninstall <name>            moves it to <mods>/.uninstalled/, which discovery skips
+```
+
+`list` brings the chain up through `initEngine()` in the command's working
+directory, so it reports the same thing the next session there will load:
+each mod's `state` (`loaded`, `idle` for no hooks, `disabled`, `shadowed`,
+`error`, `quarantined`), its resolved manifest, the events it hooks and whether
+any of them are `ui.*` (terminal-only), plus `$.plugins.status()` for the
+built-ins. Disabling a one-file mod turns it into `name/mod.<ext>` with a
+mod.json, unless it imports its neighbours by relative path. Changes apply to
+engines started afterwards; a running session keeps the chain it built.
+
 ### Reloading
 
 `loadMods()` again re-runs `register()`, and the entry file is imported keyed
