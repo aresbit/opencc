@@ -10,7 +10,11 @@ import {
 import { reconcileLeaderMailbox } from '../actor/leaderMailbox.js'
 import { localActorAddress } from '../actor/types.js'
 import { TEAM_LEAD_NAME } from '../utils/swarm/constants.js'
-import { ackDelivered, formatActorEnvelopes } from '../actor/inboxInjection.js'
+import {
+  ackDelivered,
+  formatActorEnvelopes,
+  withInboxDeliveryLock,
+} from '../actor/inboxInjection.js'
 import { getEngine } from '../services/functionHooks/bridge.js'
 import { logForDebugging } from '../utils/debug.js'
 
@@ -88,11 +92,8 @@ export function useActorInboxPoller({
   const announcedAt = useRef(0)
 
   // ── Shared delivery logic ──
-  const deliver = useCallback(async () => {
-    if (inFlight.current) return
-    inFlight.current = true
-    try {
-      const address = getCurrentActorAddress()
+  const deliverOnce = useCallback(
+    async (address: string) => {
       const mailbox = new LocalActorMailbox()
 
       if (Date.now() - announcedAt.current >= ANNOUNCE_INTERVAL_MS) {
@@ -130,12 +131,24 @@ export function useActorInboxPoller({
         // waiting on an idle session timed out although its mail was read.
         await ackDelivered(mailbox, envelopes, to)
       }
+    },
+    [isLoading, focusedInputDialog, onSubmitMessage, announcedAt],
+  )
+
+  const deliver = useCallback(async () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    try {
+      const address = getCurrentActorAddress()
+      // Same lock the turn-boundary injection takes. Two consumers peeking
+      // before either claims is exactly how one envelope became two turns.
+      await withInboxDeliveryLock(address, () => deliverOnce(address))
     } catch (error) {
       logForDebugging(`[ActorInbox] Poll failed: ${String(error)}`)
     } finally {
       inFlight.current = false
     }
-  }, [isLoading, focusedInputDialog, onSubmitMessage])
+  }, [deliverOnce])
 
   // The loop reads the current `deliver` through a ref instead of depending on
   // it. `deliver` changes identity whenever `isLoading` flips, which is on

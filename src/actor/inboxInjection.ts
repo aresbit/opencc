@@ -103,6 +103,40 @@ function makeEnvelopeUuid(): string {
 }
 
 /**
+ * Serialize delivery per address inside this process.
+ *
+ * Two consumers run here — the REPL's idle poller and the query turn
+ * boundary — and both peek before either claims. The mailbox claim is atomic
+ * across processes, but it cannot make a *read-then-deliver* sequence atomic,
+ * so a message that lands between the two peeks is handed to the model twice:
+ * one envelope id, two `<actor-message>` blocks. The ordering has to happen
+ * above the mailbox, not inside it.
+ *
+ * The lock is held across delivery on purpose. Delivering before claiming is
+ * what keeps a crashed turn from silently retiring mail it never showed; the
+ * lock only stops a second consumer from reading the same envelope in the
+ * window that design leaves open.
+ */
+const deliveryChains = new Map<string, Promise<unknown>>()
+
+export function withInboxDeliveryLock<T>(
+  address: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = deliveryChains.get(address) ?? Promise.resolve()
+  const next = previous.then(fn, fn)
+  // Store a settled copy: one failed delivery must not poison later turns.
+  deliveryChains.set(
+    address,
+    next.then(
+      () => {},
+      () => {},
+    ),
+  )
+  return next
+}
+
+/**
  * Append any waiting mail to this turn's messages and acknowledge it.
  *
  * Returns the input array unchanged when there is nothing waiting, so the
@@ -117,7 +151,15 @@ export async function applyActorInbox(
   opts: { agentId?: string; agentType?: string } = {},
 ): Promise<InboxInjectionResult> {
   if (!isActorNetworkingEnabled()) return { messages, delivered: 0 }
+  return withInboxDeliveryLock(inboxAddressFor(opts), () =>
+    applyActorInboxLocked(messages, opts),
+  )
+}
 
+async function applyActorInboxLocked(
+  messages: Message[],
+  opts: { agentId?: string; agentType?: string } = {},
+): Promise<InboxInjectionResult> {
   const address = inboxAddressFor(opts)
   const mailbox = new LocalActorMailbox()
   const isMainSession = !opts.agentId

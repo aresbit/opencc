@@ -6,6 +6,7 @@ import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { LocalActorMailbox } from '../LocalActorMailbox.js'
 import { getLocalNodeName } from '../types.js'
 import { DEFAULT_ACTORD_PORT, loadPeerTable, startActorNode } from './ActorNode.js'
+import { resolvePeerBridges } from './tailcatBridge.js'
 
 function readListen(): { host: string; port: number } {
   const [hostname, portText] = (process.env.OPENCC_ACTORD_LISTEN?.trim() ||
@@ -95,7 +96,14 @@ export async function runActord(): Promise<void> {
   const { host: hostname, port } = readListen()
   const root = join(getClaudeConfigHomeDir(), 'actors')
   const node = getLocalNodeName()
-  const peers = loadPeerTable(root)
+  // `tailcat:<blob>:<port>` peers get a loopback bridge: the link crosses the
+  // network inside WireGuard and this host exposes no listening port for it.
+  const { peers, bridges } = resolvePeerBridges(loadPeerTable(root), {
+    log: line => console.log(`${new Date().toISOString()} [tailcat-bridge] ${line}`),
+  })
+  for (const bridge of bridges) {
+    console.log(`actord: peer ${bridge.node} via tailcat at ${bridge.url}`)
+  }
 
   let handle
   try {
@@ -131,6 +139,7 @@ export async function runActord(): Promise<void> {
   console.log(`actord: address sessions here as actor://<team>/<name>@${handle.node}`)
 
   const shutdown = async () => {
+    for (const bridge of bridges) bridge.stop()
     await handle.stop()
     process.exit(0)
   }
