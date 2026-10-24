@@ -3,7 +3,7 @@
 import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
-import { parseSync } from '@swc/core'
+import ts from 'typescript'
 
 type CliOptions = {
   keepTemp: boolean
@@ -13,34 +13,39 @@ type CliOptions = {
 
 type Span = { start: number; end: number }
 
-function collectExternalLiteralSpans(node: unknown, spans: Span[]): void {
-  if (node === null || node === undefined) return
+const log = (message: string): void => {
+  process.stdout.write(`${message}\n`)
+}
 
-  if (Array.isArray(node)) {
-    for (const item of node) {
-      collectExternalLiteralSpans(item, spans)
+const logError = (message: string): void => {
+  process.stderr.write(`${message}\n`)
+}
+
+/**
+ * Collect the build-time `("external" as string)` idiom only.
+ *
+ * The ant build needs to flip this literal so the bundler's constant folding
+ * keeps the ANT-only branch. Rewriting every `'external'` string would also
+ * corrupt unrelated runtime checks such as
+ * `process.env.USER_TYPE === 'external'`, so match the exact idiom: a string
+ * literal wrapped in `as string`.
+ */
+function collectExternalLiteralSpans(
+  sourceFile: ts.SourceFile,
+  spans: Span[],
+): void {
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isStringLiteral(node) &&
+      node.text === 'external' &&
+      ts.isAsExpression(node.parent) &&
+      node.parent.type.kind === ts.SyntaxKind.StringKeyword
+    ) {
+      spans.push({ start: node.getStart(sourceFile), end: node.getEnd() })
     }
-    return
+    ts.forEachChild(node, visit)
   }
-
-  if (typeof node !== 'object') return
-
-  const record = node as Record<string, unknown>
-  if (
-    record.type === 'StringLiteral' &&
-    record.value === 'external' &&
-    typeof record.span === 'object' &&
-    record.span !== null
-  ) {
-    const span = record.span as Record<string, unknown>
-    if (typeof span.start === 'number' && typeof span.end === 'number') {
-      spans.push({ start: span.start, end: span.end })
-    }
-  }
-
-  for (const key of Object.keys(record)) {
-    collectExternalLiteralSpans(record[key], spans)
-  }
+  visit(sourceFile)
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -90,51 +95,50 @@ async function collectSourceFiles(srcRoot: string): Promise<string[]> {
   return files
 }
 
-async function transformSourceTree(projectRoot: string): Promise<number> {
+async function transformSourceTree(
+  projectRoot: string,
+): Promise<{ found: number; replaced: number }> {
   const srcRoot = join(projectRoot, 'src')
   const files = await collectSourceFiles(srcRoot)
-  let total = 0
+  let found = 0
+  let replaced = 0
 
   for (const file of files) {
     const source = await readFile(file, 'utf8')
     const isTsx = file.endsWith('.tsx')
-    const ast = parseSync(source, {
-      syntax: 'typescript',
-      tsx: isTsx,
-      comments: true,
-      target: 'es2022',
-    })
+    const sourceFile = ts.createSourceFile(
+      file,
+      source,
+      ts.ScriptTarget.Latest,
+      /* setParentNodes */ true,
+      isTsx ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    )
     const spans: Span[] = []
-    collectExternalLiteralSpans(ast, spans)
-    total += spans.length
+    collectExternalLiteralSpans(sourceFile, spans)
+    found += spans.length
 
-    if (spans.length > 0) {
-      let outputBytes = Buffer.from(source, 'utf8')
-      const sorted = [...new Map(spans.map(s => [`${s.start}:${s.end}`, s])).values()]
-        .sort((a, b) => b.start - a.start)
-      for (const span of sorted) {
-        const startByte = span.start - 1
-        const endByte = span.end - 1
-        if (startByte < 0 || endByte > outputBytes.length || startByte >= endByte) {
-          continue
-        }
-        const literal = outputBytes.subarray(startByte, endByte).toString('utf8')
-        if (literal !== '"external"' && literal !== "'external'") {
-          continue
-        }
-        const quote = literal.startsWith("'") ? "'" : '"'
-        const replacementBytes = Buffer.from(`${quote}ant${quote}`, 'utf8')
-        outputBytes = Buffer.concat([
-          outputBytes.subarray(0, startByte),
-          replacementBytes,
-          outputBytes.subarray(endByte),
-        ])
-      }
-      await writeFile(file, outputBytes.toString('utf8'), 'utf8')
+    if (spans.length === 0) continue
+
+    // Apply replacements back-to-front so earlier offsets stay valid.
+    let output = source
+    const sorted = [...new Map(spans.map(s => [`${s.start}:${s.end}`, s])).values()].sort(
+      (a, b) => b.start - a.start,
+    )
+    for (const span of sorted) {
+      const literal = output.slice(span.start, span.end)
+      if (literal !== '"external"' && literal !== "'external'") continue
+      const quote = literal.startsWith("'") ? "'" : '"'
+      output =
+        output.slice(0, span.start) + `${quote}ant${quote}` + output.slice(span.end)
+      replaced += 1
+    }
+
+    if (output !== source) {
+      await writeFile(file, output, 'utf8')
     }
   }
 
-  return total
+  return { found, replaced }
 }
 
 async function copyProjectToTemp(srcRoot: string, targetRoot: string): Promise<void> {
@@ -171,8 +175,8 @@ async function main(): Promise<void> {
     await mkdir(tempRoot, { recursive: true })
   }
 
-  console.log(`[build-ant] source: ${sourceRoot}`)
-  console.log(`[build-ant] temp:   ${tempRoot}`)
+  log(`[build-ant] source: ${sourceRoot}`)
+  log(`[build-ant] temp:   ${tempRoot}`)
 
   await copyProjectToTemp(sourceRoot, tempRoot)
 
@@ -182,21 +186,26 @@ async function main(): Promise<void> {
     await ensureNodeModules(tempRoot, sourceRoot)
   }
 
-  const replacements = await transformSourceTree(tempRoot)
-  console.log(`[build-ant] replaced string literals: ${replacements}`)
+  const { found, replaced } = await transformSourceTree(tempRoot)
+  log(`[build-ant] ant-only literals: found ${found}, replaced ${replaced}`)
+  if (found !== replaced) {
+    throw new Error(
+      `Refusing to build: ${found - replaced} ant-only literals were not rewritten`,
+    )
+  }
 
   await run(['bun', 'run', 'build'], tempRoot)
-  console.log(`[build-ant] build output: ${join(tempRoot, 'dist')}`)
+  log(`[build-ant] build output: ${join(tempRoot, 'dist')}`)
 
   if (!options.keepTemp && !options.outDir) {
     await rm(tempRoot, { recursive: true, force: true })
-    console.log('[build-ant] temp directory removed')
+    log('[build-ant] temp directory removed')
   } else {
-    console.log('[build-ant] temp directory retained')
+    log('[build-ant] temp directory retained')
   }
 }
 
 void main().catch(error => {
-  console.error(`[build-ant] failed: ${error instanceof Error ? error.message : String(error)}`)
+  logError(`[build-ant] failed: ${error instanceof Error ? error.message : String(error)}`)
   process.exit(1)
 })

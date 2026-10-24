@@ -48,6 +48,10 @@ const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../
 /* eslint-enable @typescript-eslint/no-require-imports */
 const NO_OP_SUBSCRIBE = (_cb: () => void) => () => {};
 const NULL = () => null;
+// Decompiler stub: the internal build injected this as a global component.
+function TungstenPill(_props: { selected?: boolean }): null {
+  return null;
+}
 const MAX_VOICE_HINT_SHOWS = 3;
 type Props = {
   exitMessage: {

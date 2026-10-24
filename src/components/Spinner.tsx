@@ -36,6 +36,10 @@ import { getCurrentTurnTokenBudget, getTurnOutputTokens } from '../bootstrap/sta
 import { TeammateSpinnerTree } from './Spinner/TeammateSpinnerTree.js';
 import { useAnimationFrame } from '../ink.js';
 import { getGlobalConfig } from '../utils/config.js';
+// Decompiler stubs: the internal build injected these as globals. Keep the
+// ant-only TTFT line inert instead of throwing a ReferenceError.
+const apiMetricsRef: { current: ApiMetricEntry[] } | null = null;
+const computeTtftText = (_metrics: ApiMetricEntry[]): string => '';
 export type { SpinnerMode } from './Spinner/index.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];

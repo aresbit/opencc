@@ -26,6 +26,7 @@ import {
 import { getSkillToolCommands } from 'src/commands.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
 import { getOutputStyleConfig } from './outputStyles.js'
+import { getAntModelOverrideConfig } from '../utils/model/antModels.js'
 import type {
   MCPServerConnection,
   ConnectedMCPServer,
