@@ -46,6 +46,7 @@ import { AwrOpsTool } from './tools/AwrOpsTool/AwrOpsTool.js'
 import { AwrStRunTool } from './tools/AwrStRunTool/AwrStRunTool.js'
 import { EvalApplyTool } from './tools/EvalApplyTool/EvalApplyTool.js'
 import { ActorTool } from './tools/ActorTool/ActorTool.js'
+import { SwarmNetTool } from './tools/SwarmNetTool/SwarmNetTool.js'
 import { SSHRemoteTool } from './tools/SSHRemoteTool/SSHRemoteTool.js'
 import { CodeRunTool } from './tools/CodeRunTool/CodeRunTool.js'
 import { DerefTool } from './tools/DerefTool/DerefTool.js'
@@ -300,6 +301,7 @@ export function getAllBaseTools(): Tools {
     FFramesTool,
     EvalApplyTool,
     ActorTool,
+    SwarmNetTool,
     SSHRemoteTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),

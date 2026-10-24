@@ -1,5 +1,11 @@
-import { randomUUID } from 'crypto'
+import {
+  createHash,
+  randomUUID,
+} from 'crypto'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { hostname } from 'os'
+import { join } from 'path'
+import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 
 export const ACTOR_PROTOCOL_VERSION = 1
 
@@ -32,10 +38,50 @@ export function normalizeNodeName(value: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
-/** This host's node name: OPENCC_NODE, else the hostname. */
+/** This host's node name: OPENCC_NODE, else hostname + a persisted suffix. */
+let cachedAutoNode: string | undefined
+
+/**
+ * Stable per-machine suffix, persisted under the config dir.
+ *
+ * Hostnames are not unique (VMs, containers, two "ubuntu" laptops), and a
+ * digest of MACs changes when Docker/VPN interfaces come and go. A random id
+ * written once is stable across reboots, unique across machines, and requires
+ * no configuration — which is the point.
+ */
+function autoNodeSuffix(): string {
+  try {
+    const dir = getClaudeConfigHomeDir()
+    const path = join(dir, 'node-id')
+    if (existsSync(path)) {
+      const existing = readFileSync(path, 'utf8').trim()
+      if (existing) return existing.slice(0, 12)
+    }
+    mkdirSync(dir, { recursive: true })
+    const generated = randomUUID().replace(/-/g, '').slice(0, 8)
+    try {
+      writeFileSync(path, generated, { flag: 'wx' })
+    } catch {
+      // Another process won the race; read its value below.
+    }
+    const stored = readFileSync(path, 'utf8').trim()
+    return (stored || generated).slice(0, 12)
+  } catch {
+    return createHash('sha256')
+      .update(`${hostname()}|${process.platform}|${process.arch}`)
+      .digest('hex')
+      .slice(0, 8)
+  }
+}
+
 export function getLocalNodeName(): string {
   const configured = process.env.OPENCC_NODE?.trim()
-  return normalizeNodeName(configured || hostname()) || 'localhost'
+  if (configured) return normalizeNodeName(configured) || 'localhost'
+  if (!cachedAutoNode) {
+    const base = normalizeNodeName(hostname()) || 'localhost'
+    cachedAutoNode = normalizeNodeName(`${base}-${autoNodeSuffix()}`) || 'localhost'
+  }
+  return cachedAutoNode
 }
 
 /**

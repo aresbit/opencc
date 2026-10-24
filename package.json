@@ -41,6 +41,8 @@
     "matebot": "bun run --feature VOICE_MODE src/entrypoints/cli.tsx --matebot",
     "matebot:worker": "bun run src/entrypoints/matebot-worker.ts",
     "actord": "bun run src/entrypoints/cli.tsx actord",
+    "swarm-daemon": "bun run src/entrypoints/cli.tsx swarm-daemon",
+    "verify:swarm-lan": "bun run scripts/verify-swarm-lan.ts",
     "prepublishOnly": "bun run build",
     "lint": "biome lint src/",
     "lint:fix": "biome lint --fix src/",

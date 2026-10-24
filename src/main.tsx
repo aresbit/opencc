@@ -72,7 +72,7 @@ const getTeammatePromptAddendum = () => require('./utils/swarm/teammatePromptAdd
 const getTeammateModeSnapshot = () => require('./utils/swarm/backends/teammateModeSnapshot.js') as typeof import('./utils/swarm/backends/teammateModeSnapshot.js');
 /* eslint-enable @typescript-eslint/no-require-imports */
 import * as coordinatorModeModule from './coordinator/coordinatorMode.js';
-import { setMateBotMode } from './utils/matebotMode.js';
+import { isMateBotModeEnabled, setMateBotMode } from './utils/matebotMode.js';
 // Dead code elimination: conditional import for KAIROS (assistant mode)
 /* eslint-disable @typescript-eslint/no-require-imports */
 const assistantModule = feature('KAIROS') ? require('./assistant/index.js') as typeof import('./assistant/index.js') : null;
@@ -1928,6 +1928,23 @@ async function run(): Promise<CommanderCommand> {
     await setupPromise;
     logForDebugging(`[STARTUP] setup() completed in ${Date.now() - setupStart}ms`);
     profileCheckpoint('action_after_setup');
+
+    // MateBot hosts are long-lived and drive teammates, so give them the
+    // resident relay pump and Agent-DNS discovery without a second command.
+    // Embedded mode no-ops when a standalone `opencc swarm-daemon` already
+    // owns the host; OPENCC_SWARM_DAEMON=0 opts out.
+    if (isMateBotModeEnabled()) {
+      void import('./swarm/daemon.js')
+        .then(m => m.startEmbeddedSwarmDaemon())
+        .catch(error =>
+          logForDebugging(
+            `[swarm-daemon] embedded start failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { level: 'warn' },
+          ),
+        );
+    }
 
     // Replay user messages into stream-json only when the socket was
     // explicitly requested. The auto-generated socket is passive — it

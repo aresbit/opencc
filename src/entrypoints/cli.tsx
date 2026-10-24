@@ -158,6 +158,14 @@ async function main(): Promise<void> {
         await runActord();
         return;
     }
+    // `opencc swarm-daemon`: resident relay pump + Agent-DNS beacon loop.
+    // Same wrapper tolerance as actord: match the first positional flag.
+    if (args.find(arg => !arg.startsWith("-")) === "swarm-daemon") {
+        profileCheckpoint("cli_swarm_daemon_path");
+        const { runSwarmDaemon } = await import("../swarm/daemon.js");
+        await runSwarmDaemon(args.filter(arg => arg !== "swarm-daemon"));
+        return;
+    }
     if (process.argv[2] === "--claude-in-chrome-mcp") {
         profileCheckpoint("cli_claude_in_chrome_mcp_path");
         const { runClaudeInChromeMcpServer } =
