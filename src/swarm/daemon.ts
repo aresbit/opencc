@@ -209,14 +209,20 @@ function releaseLockSync(): void {
 /**
  * `allowRunning` is for embedded mode: a standalone daemon already serving the
  * host is a success, not an error. Standing alone still refuses to start twice.
+ *
+ * Either way the holder of the lock is reported through `mode`, so a standalone
+ * start can tell "another standalone owns the host" apart from "a MateBot
+ * session already embeds the daemon".
  */
 async function acquireDaemonLock(
   allowRunning: boolean,
+  mode: 'embedded' | 'standalone',
 ): Promise<(() => Promise<void>) | null> {
   const path = daemonLockPath()
   await mkdir(getDnsRoot(), { recursive: true })
   const payload = jsonStringify({
     pid: process.pid,
+    mode,
     node: process.env.OPENCC_NODE || undefined,
     startedAt: new Date().toISOString(),
   })
@@ -239,12 +245,15 @@ async function acquireDaemonLock(
       try {
         const current = jsonParse(await readFile(path, 'utf8')) as {
           pid?: number
+          mode?: string
         }
         if (current?.pid && current.pid !== process.pid) {
           process.kill(current.pid, 0)
           if (allowRunning) return null
           throw new Error(
-            `swarm-daemon already running (pid ${current.pid}); stop it or remove ${path}`,
+            `swarm-daemon already running (pid ${current.pid}${
+              current.mode ? `, ${current.mode}` : ''
+            }); stop it or remove ${path}`,
           )
         }
       } catch (probeError) {
@@ -267,7 +276,10 @@ async function startDaemon(
   options: DaemonOptions,
   settings: { embedded: boolean; stdout: boolean },
 ): Promise<DaemonHandle | null> {
-  const releaseLock = await acquireDaemonLock(settings.embedded)
+  const releaseLock = await acquireDaemonLock(
+    settings.embedded,
+    settings.embedded ? 'embedded' : 'standalone',
+  )
   if (!releaseLock) return null
 
   const log = (line: string) => logLine(settings.stdout, options.verbose, line)
@@ -513,7 +525,25 @@ Env: OPENCC_DNS_GROUP/PORT/TOKEN, OPENCC_AGENT_CAPABILITIES, OPENCC_AGENT_ROLES
     return
   }
 
-  const handle = await startDaemon(options, { embedded: false, stdout: true })
+  let handle: DaemonHandle | null
+  try {
+    handle = await startDaemon(options, { embedded: false, stdout: true })
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith('swarm-daemon already running')
+    ) {
+      // The host is already served — by another standalone daemon or by the
+      // embedded daemon of a running MateBot session. That satisfies this
+      // command's goal, so report it instead of failing the shell.
+      process.stdout.write(
+        `swarm-daemon: ${error.message}\n` +
+          `swarm-daemon: already serving this host; nothing to do\n`,
+      )
+      return
+    }
+    throw error
+  }
   if (!handle) throw new Error('swarm-daemon could not start')
 
   const shutdown = async () => {

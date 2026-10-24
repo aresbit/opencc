@@ -1934,6 +1934,16 @@ async function run(): Promise<CommanderCommand> {
     // Embedded mode no-ops when a standalone `opencc swarm-daemon` already
     // owns the host; OPENCC_SWARM_DAEMON=0 opts out.
     if (isMateBotModeEnabled()) {
+      void import('./actor/net/actord.js')
+        .then(m => m.ensureActordRunning())
+        .catch(error =>
+          logForDebugging(
+            `[actord] autostart failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { level: 'warn' },
+          ),
+        );
       void import('./swarm/daemon.js')
         .then(m => m.startEmbeddedSwarmDaemon())
         .catch(error =>
