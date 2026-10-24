@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { ReadMeTool } from '../ReadMeTool.js'
@@ -202,7 +203,11 @@ describe('read_me tool output', () => {
 })
 
 describe('generated asset consistency', () => {
-  test('records the SHA-256 of the Python source of truth', async () => {
+  // The Python source of truth lives in the hydra backend that vendors this
+  // package; standalone checkouts only carry the generated asset.
+  const hasSource = existsSync(SOURCE_PATH)
+
+  test.skipIf(!hasSource)('records the SHA-256 of the Python source of truth', async () => {
     const source = await readFile(SOURCE_PATH)
     const digest = createHash('sha256').update(source).digest('hex')
     expect(IMAGINE_SOURCE_SHA256).toBe(digest)
@@ -216,7 +221,7 @@ describe('generated asset consistency', () => {
   })
 
   const python = Bun.which('python3')
-  test.skipIf(!python)(
+  test.skipIf(!python || !hasSource)(
     'regenerating from the Python source reproduces the checked-in file',
     async () => {
       const result = Bun.spawnSync({
