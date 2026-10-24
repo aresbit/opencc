@@ -58,9 +58,9 @@ export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
   ...(feature('WORKFLOW_SCRIPTS') ? [WORKFLOW_TOOL_NAME] : []),
 ])
 
-export const CUSTOM_AGENT_DISALLOWED_TOOLS = new Set([
-  ...ALL_AGENT_DISALLOWED_TOOLS,
-])
+// ponytail: identical to ALL_AGENT_DISALLOWED_TOOLS — kept as alias for custom (user-dir) agents.
+// Merge into ALL_AGENT_DISALLOWED_TOOLS when no external code references this name.
+export const CUSTOM_AGENT_DISALLOWED_TOOLS = ALL_AGENT_DISALLOWED_TOOLS
 
 /**
  * What a background (async) agent may NOT have, on top of
