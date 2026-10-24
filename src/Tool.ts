@@ -481,6 +481,21 @@ export type Tool<
    * or unprefixed (CLAUDE_AGENT_SDK_MCP_NO_PREFIX mode).
    */
   mcpInfo?: { serverName: string; toolName: string }
+  /**
+   * For MCP tools: the raw metadata that affects projection/approval. These are
+   * optional so built-ins and older test doubles stay valid; the mcp-fs
+   * projector fingerprints them so a server-side annotation or schema change
+   * forces a rewrite instead of leaving stale readOnly/destructive hints.
+   */
+  mcpAnnotations?: {
+    title?: string
+    readOnlyHint?: boolean
+    destructiveHint?: boolean
+    idempotentHint?: boolean
+    openWorldHint?: boolean
+  }
+  mcpOutputJSONSchema?: unknown
+  mcpDescription?: string
   readonly name: string
   /**
    * Maximum size in characters for tool result before it gets persisted to disk.

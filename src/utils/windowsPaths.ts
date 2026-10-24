@@ -1,9 +1,9 @@
 import memoize from 'lodash-es/memoize.js'
+import { existsSync } from 'fs'
 import * as path from 'path'
 import * as pathWin32 from 'path/win32'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
-import { execSync_DEPRECATED } from './execSyncWrapper.js'
 import { memoizeWithLRU } from './memoize.js'
 import { getPlatform } from './platform.js'
 
@@ -13,12 +13,7 @@ import { getPlatform } from './platform.js'
  * @returns true if the path exists, false otherwise
  */
 function checkPathExists(path: string): boolean {
-  try {
-    execSync_DEPRECATED(`dir "${path}"`, { stdio: 'pipe' })
-    return true
-  } catch {
-    return false
-  }
+  return existsSync(path)
 }
 
 /**
@@ -44,39 +39,60 @@ function findExecutable(executable: string): string | null {
     }
   }
 
-  // Fall back to where.exe
-  try {
-    const result = execSync_DEPRECATED(`where.exe ${executable}`, {
-      stdio: 'pipe',
-      encoding: 'utf8',
-    }).trim()
+  const pathEntries = (process.env.PATH || '')
+    .split(path.delimiter)
+    .map(entry => entry.trim())
+    .filter(Boolean)
+  const cwd = path.resolve(getCwd()).toLowerCase()
+  const pathExts = Array.from(
+    new Set(
+      (process.env.PATHEXT || '.EXE;.CMD;.BAT')
+        .split(';')
+        .map(ext => ext.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  )
 
-    // SECURITY: Filter out any results from the current directory
-    // to prevent executing malicious git.bat/cmd/exe files
-    const paths = result.split('\r\n').filter(Boolean)
-    const cwd = getCwd().toLowerCase()
+  const executableCandidates = executable.includes('.')
+    ? [executable]
+    : [executable, ...pathExts.map(ext => `${executable}${ext}`)]
 
-    for (const candidatePath of paths) {
-      // Normalize and compare paths to ensure we're not in current directory
-      const normalizedPath = path.resolve(candidatePath).toLowerCase()
-      const pathDir = path.dirname(normalizedPath).toLowerCase()
-
-      // Skip if the executable is in the current working directory
-      if (pathDir === cwd || normalizedPath.startsWith(cwd + path.sep)) {
-        logForDebugging(
-          `Skipping potentially malicious executable in current directory: ${candidatePath}`,
-        )
-        continue
-      }
-
-      // Return the first valid path that's not in the current directory
-      return candidatePath
+  for (const baseDir of pathEntries) {
+    const normalizedDir = path.resolve(baseDir).toLowerCase()
+    if (normalizedDir === cwd || normalizedDir.startsWith(cwd + path.sep)) {
+      logForDebugging(
+        `Skipping potentially malicious executable search path in current directory: ${baseDir}`,
+      )
+      continue
     }
 
-    return null
-  } catch {
-    return null
+    for (const candidateName of executableCandidates) {
+      const candidatePath = path.join(baseDir, candidateName)
+      if (checkPathExists(candidatePath)) {
+        return candidatePath
+      }
+    }
   }
+
+  return null
+}
+
+function getDefaultGitBashLocations(): string[] {
+  const roots = [
+    process.env.ProgramW6432,
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    process.env.LocalAppData,
+    'C:\\Program Files',
+    'C:\\Program Files (x86)',
+  ].filter((value): value is string => !!value)
+
+  const candidates = new Set<string>()
+  for (const root of roots) {
+    candidates.add(pathWin32.join(root, 'Git', 'bin', 'bash.exe'))
+    candidates.add(pathWin32.join(root, 'Programs', 'Git', 'bin', 'bash.exe'))
+  }
+  return Array.from(candidates)
 }
 
 /**
@@ -100,19 +116,30 @@ export const findGitBashPath = memoize((): string => {
     if (checkPathExists(process.env.CLAUDE_CODE_GIT_BASH_PATH)) {
       return process.env.CLAUDE_CODE_GIT_BASH_PATH
     }
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.error(
-      `opencc was unable to find CLAUDE_CODE_GIT_BASH_PATH path "${process.env.CLAUDE_CODE_GIT_BASH_PATH}"`,
+    logForDebugging(
+      `Ignoring invalid CLAUDE_CODE_GIT_BASH_PATH: "${process.env.CLAUDE_CODE_GIT_BASH_PATH}"`,
     )
-    // eslint-disable-next-line custom-rules/no-process-exit
-    process.exit(1)
   }
 
   const gitPath = findExecutable('git')
   if (gitPath) {
     const bashPath = pathWin32.join(gitPath, '..', '..', 'bin', 'bash.exe')
     if (checkPathExists(bashPath)) {
+      process.env.CLAUDE_CODE_GIT_BASH_PATH = bashPath
       return bashPath
+    }
+  }
+
+  const bashFromPath = findExecutable('bash')
+  if (bashFromPath && checkPathExists(bashFromPath)) {
+    process.env.CLAUDE_CODE_GIT_BASH_PATH = bashFromPath
+    return bashFromPath
+  }
+
+  for (const candidate of getDefaultGitBashLocations()) {
+    if (checkPathExists(candidate)) {
+      process.env.CLAUDE_CODE_GIT_BASH_PATH = candidate
+      return candidate
     }
   }
 

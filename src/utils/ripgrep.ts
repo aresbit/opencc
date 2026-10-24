@@ -23,6 +23,26 @@ const __dirname = path.join(
   process.env.NODE_ENV === 'test' ? '../../../' : '../',
 )
 
+function executableExists(filePath: string): boolean {
+  return existsSync(filePath)
+}
+
+function findAutoAgentRipgrep(): string | undefined {
+  const candidates = [
+    process.env.AUTOAGENT_RG_PATH,
+    path.resolve(path.dirname(process.execPath), 'rg'),
+    path.resolve(path.dirname(process.execPath), 'rg.exe'),
+    path.resolve(__dirname, 'rg'),
+    path.resolve(__dirname, 'rg.exe'),
+    path.resolve(__dirname, '..', 'bin', 'rg'),
+    path.resolve(__dirname, '..', 'bin', 'rg.exe'),
+    '/usr/lib/autoagent/rg',
+    '/usr/bin/rg',
+  ].filter((candidate): candidate is string => Boolean(candidate))
+
+  return candidates.find(executableExists)
+}
+
 type RipgrepConfig = {
   mode: 'system' | 'builtin' | 'embedded' | 'wasm'
   command: string
@@ -136,6 +156,11 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
       // Using just 'rg' lets the OS resolve it safely with NoDefaultCurrentDirectoryInExePath protection
       return { mode: 'system', command: 'rg', args: [] }
     }
+  }
+
+  const autoAgentRipgrep = findAutoAgentRipgrep()
+  if (autoAgentRipgrep) {
+    return { mode: 'builtin', command: autoAgentRipgrep, args: [] }
   }
 
   // In bundled (native) mode, ripgrep is statically compiled into bun-internal

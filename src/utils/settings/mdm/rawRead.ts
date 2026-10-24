@@ -11,6 +11,7 @@
 
 import { execFile } from 'child_process'
 import { existsSync } from 'fs'
+import { join } from 'path'
 import {
   getMacOSPlistPaths,
   MDM_SUBPROCESS_TIMEOUT_MS,
@@ -29,20 +30,29 @@ export type RawReadResult = {
 
 let rawReadPromise: Promise<RawReadResult> | null = null
 
+function getWindowsRegExe(): string {
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
+  return join(systemRoot, 'System32', 'reg.exe')
+}
+
 function execFilePromise(
   cmd: string,
   args: string[],
 ): Promise<{ stdout: string; code: number | null }> {
   return new Promise(resolve => {
-    execFile(
-      cmd,
-      args,
-      { encoding: 'utf-8', timeout: MDM_SUBPROCESS_TIMEOUT_MS },
-      (err, stdout) => {
-        // biome-ignore lint/nursery/noFloatingPromises: resolve() is not a floating promise
-        resolve({ stdout: stdout ?? '', code: err ? 1 : 0 })
-      },
-    )
+    try {
+      execFile(
+        cmd,
+        args,
+        { encoding: 'utf-8', timeout: MDM_SUBPROCESS_TIMEOUT_MS },
+        (err, stdout) => {
+          // biome-ignore lint/nursery/noFloatingPromises: resolve() is not a floating promise
+          resolve({ stdout: stdout ?? '', code: err ? 1 : 0 })
+        },
+      )
+    } catch {
+      resolve({ stdout: '', code: 1 })
+    }
   })
 }
 
@@ -88,14 +98,15 @@ export function fireRawRead(): Promise<RawReadResult> {
     }
 
     if (process.platform === 'win32') {
+      const regExe = getWindowsRegExe()
       const [hklm, hkcu] = await Promise.all([
-        execFilePromise('reg', [
+        execFilePromise(regExe, [
           'query',
           WINDOWS_REGISTRY_KEY_PATH_HKLM,
           '/v',
           WINDOWS_REGISTRY_VALUE_NAME,
         ]),
-        execFilePromise('reg', [
+        execFilePromise(regExe, [
           'query',
           WINDOWS_REGISTRY_KEY_PATH_HKCU,
           '/v',

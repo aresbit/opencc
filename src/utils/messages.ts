@@ -2472,7 +2472,9 @@ export function normalizeMessagesForAPI(
     filterTrailingThinkingFromLastAssistant(withFilteredOrphans)
   const withFilteredWhitespace =
     filterWhitespaceOnlyAssistantMessages(withFilteredThinking)
-  const withNonEmpty = ensureNonEmptyAssistantContent(withFilteredWhitespace)
+  const withNonEmpty = ensureNonEmptyUserContent(
+    ensureNonEmptyAssistantContent(withFilteredWhitespace),
+  )
 
   // filterOrphanedThinkingOnlyMessages doesn't merge adjacent users (whitespace
   // filter does, but only when IT fires). Merge here so smoosh can fold the
@@ -5138,6 +5140,60 @@ function ensureNonEmptyAssistantContent(
     return message
   })
 
+  return hasChanges ? result : messages
+}
+
+/**
+ * Ensure every user message has non-empty content.
+ *
+ * The API rejects a request when any message is empty ("messages.N: all
+ * messages must have non-empty content") or carries an empty text block. A host
+ * that sent an empty prompt once (a group-chat file share without text) left
+ * such a message in the transcript, and because sessions resume, every later
+ * turn failed with the same 400. Blank text becomes a placeholder and empty
+ * text blocks are dropped (images and tool results stay), so an already
+ * affected transcript recovers on its next request.
+ */
+function ensureNonEmptyUserContent(
+  messages: (UserMessage | AssistantMessage)[],
+): (UserMessage | AssistantMessage)[] {
+  let hasChanges = false
+  const result = messages.map(message => {
+    if (message.type !== 'user') {
+      return message
+    }
+    const content = message.message.content
+    if (typeof content === 'string') {
+      if (content.trim() !== '') {
+        return message
+      }
+      hasChanges = true
+      return {
+        ...message,
+        message: { ...message.message, content: NO_CONTENT_MESSAGE },
+      }
+    }
+    if (!Array.isArray(content)) {
+      return message
+    }
+    const kept = content.filter(
+      block => !(block.type === 'text' && block.text.trim() === ''),
+    )
+    if (kept.length === content.length && kept.length > 0) {
+      return message
+    }
+    hasChanges = true
+    return {
+      ...message,
+      message: {
+        ...message.message,
+        content:
+          kept.length > 0
+            ? kept
+            : [{ type: 'text' as const, text: NO_CONTENT_MESSAGE }],
+      },
+    }
+  })
   return hasChanges ? result : messages
 }
 

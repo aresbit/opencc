@@ -191,3 +191,58 @@ describe('scale', () => {
     expect(large / small).toBeLessThan(40)
   })
 })
+
+describe('empty user content', () => {
+  // A host once sent an empty prompt (a group-chat file share without text);
+  // the empty user message stayed in the resumed transcript and every later
+  // request failed with "messages.N: all messages must have non-empty content".
+  function rawUser(content: unknown) {
+    seq += 1
+    return {
+      type: 'user',
+      uuid: `u${seq}`,
+      message: { role: 'user', content },
+    } as never
+  }
+
+  function contents(out: { type: string; message: { content: unknown } }[]) {
+    return out.filter(m => m.type === 'user').map(m => m.message.content)
+  }
+
+  test('a blank string prompt becomes a placeholder, not an empty message', () => {
+    const out = normalizeMessagesForAPI(
+      [plain('hi'), assistant('m1', 'hello'), rawUser(''), assistant('m2', 'ok'), plain('next')],
+      [],
+    )
+    for (const content of contents(out as never)) {
+      if (typeof content === 'string') expect(content.trim()).not.toBe('')
+      else expect((content as unknown[]).length).toBeGreaterThan(0)
+    }
+    expect(JSON.stringify(out)).toContain('(no content)')
+  })
+
+  test('empty text blocks are dropped and an emptied message keeps a placeholder', () => {
+    const image = {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+    }
+    const out = normalizeMessagesForAPI(
+      [
+        user([{ type: 'text', text: '' }, image]),
+        assistant('m1', 'seen'),
+        user([{ type: 'text', text: '   ' }]),
+      ],
+      [],
+    )
+    const [first, last] = contents(out as never) as unknown[][]
+    expect(first).toEqual([image])
+    expect(texts({ message: { content: last } })).toEqual(['(no content)'])
+  })
+
+  test('well-formed user messages are untouched', () => {
+    const input = [plain('hi'), assistant('m1', 'hello'), plain('again')]
+    const out = normalizeMessagesForAPI(input, [])
+    expect(contents(out as never)).toEqual(contents(input as never))
+  })
+})
+

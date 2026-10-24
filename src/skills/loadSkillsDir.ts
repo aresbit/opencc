@@ -1,3 +1,4 @@
+import { statSync } from 'fs'
 import { realpath } from 'fs/promises'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
@@ -427,6 +428,11 @@ async function loadSkillsFromSkillsDir(
     return []
   }
 
+  // Skip .disabled and hidden directories
+  entries = entries.filter(
+    (entry: any) => !entry.name.startsWith('.'),
+  )
+
   const results = await Promise.all(
     entries.map(async (entry): Promise<SkillWithPath | null> => {
       try {
@@ -650,8 +656,22 @@ export const getSkillDirCommands = memoize(
     const managedSkillsDir = join(getManagedFilePath(), '.claude', 'skills')
     const projectSkillsDirs = getProjectDirsUpToHome('skills', cwd)
 
+    // Also discover .autoagent/skills/ directories alongside .claude/skills/
+    const autoAgentSkillsDirs = getProjectDirsUpToHome('skills', cwd).flatMap(
+      (claudePath) => {
+        const autoAgentPath = claudePath.replace(/\.claude\/skills$/, '.autoagent/skills')
+        if (autoAgentPath === claudePath) return []
+        try {
+          statSync(autoAgentPath)
+          return [autoAgentPath]
+        } catch {
+          return []
+        }
+      },
+    )
+
     logForDebugging(
-      `Loading skills from: managed=${managedSkillsDir}, user=${userSkillsDir}, project=[${projectSkillsDirs.join(', ')}]`,
+      `Loading skills from: managed=${managedSkillsDir}, user=${userSkillsDir}, project=[${projectSkillsDirs.join(', ')}], autoagent=[${autoAgentSkillsDirs.join(', ')}]`,
     )
 
     // Load from additional directories (--add-dir)
@@ -672,12 +692,16 @@ export const getSkillDirCommands = memoize(
         return []
       }
       const additionalSkillsNested = await Promise.all(
-        additionalDirs.map(dir =>
+        additionalDirs.flatMap(dir => [
           loadSkillsFromSkillsDir(
             join(dir, '.claude', 'skills'),
             'projectSettings',
           ),
-        ),
+          loadSkillsFromSkillsDir(
+            join(dir, '.autoagent', 'skills'),
+            'projectSettings',
+          ),
+        ]),
       )
       // No dedup needed — explicit dirs, user controls uniqueness.
       return additionalSkillsNested.flat().map(s => s.skill)
@@ -689,6 +713,7 @@ export const getSkillDirCommands = memoize(
       managedSkills,
       userSkills,
       projectSkillsNested,
+      autoAgentSkillsNested,
       additionalSkillsNested,
       legacyCommands,
     ] = await Promise.all([
@@ -705,14 +730,25 @@ export const getSkillDirCommands = memoize(
             ),
           )
         : Promise.resolve([]),
+      projectSettingsEnabled && autoAgentSkillsDirs.length > 0
+        ? Promise.all(
+            autoAgentSkillsDirs.map(dir =>
+              loadSkillsFromSkillsDir(dir, 'projectSettings'),
+            ),
+          )
+        : Promise.resolve([]),
       projectSettingsEnabled
         ? Promise.all(
-            additionalDirs.map(dir =>
+            additionalDirs.flatMap(dir => [
               loadSkillsFromSkillsDir(
                 join(dir, '.claude', 'skills'),
                 'projectSettings',
               ),
-            ),
+              loadSkillsFromSkillsDir(
+                join(dir, '.autoagent', 'skills'),
+                'projectSettings',
+              ),
+            ]),
           )
         : Promise.resolve([]),
       // Legacy commands-as-skills goes through markdownConfigLoader with
@@ -727,6 +763,7 @@ export const getSkillDirCommands = memoize(
       ...managedSkills,
       ...userSkills,
       ...projectSkillsNested.flat(),
+      ...autoAgentSkillsNested.flat(),
       ...additionalSkillsNested.flat(),
       ...legacyCommands,
     ]

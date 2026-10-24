@@ -130,6 +130,14 @@ async function main(): Promise<void> {
         return;
     }
 
+    // Fast-path for --server: long-running JSON-RPC stdio server.
+    // Zero extra imports beyond the server entrypoint — no CLI machinery.
+    if (args.includes("--server")) {
+        const { main: serverMain } = await import("./server.js");
+        await serverMain();
+        return;
+    }
+
     // For all other paths, load the startup profiler
     const { profileCheckpoint } = await import("../utils/startupProfiler.js");
     profileCheckpoint("cli_entry");

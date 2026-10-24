@@ -1845,6 +1845,11 @@ export const fetchToolsForClient = memoizeWithLRU(
               return classifyMcpToolForCollapse(client.name, tool.name)
             },
             inputJSONSchema: tool.inputSchema as Tool['inputJSONSchema'],
+            // Kept for the mcp-fs projection fingerprint: annotations and the
+            // output schema can change without inputSchema moving.
+            mcpAnnotations: tool.annotations,
+            mcpOutputJSONSchema: tool.outputSchema,
+            mcpDescription: tool.description ?? '',
             async checkPermissions() {
               return {
                 behavior: 'passthrough' as const,

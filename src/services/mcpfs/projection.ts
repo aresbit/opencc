@@ -410,7 +410,13 @@ export class McpFsProjector {
     for (const connection of connected) {
       const own = tools
         .filter(tool => tool.mcpInfo?.serverName === connection.name)
-        .map(tool => [tool.mcpInfo?.toolName, tool.inputJSONSchema])
+        .map(tool => [
+          tool.mcpInfo?.toolName,
+          tool.inputJSONSchema,
+          tool.mcpOutputJSONSchema,
+          tool.mcpDescription,
+          tool.mcpAnnotations,
+        ])
         .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
       const fingerprint = `${connectionId(connection)}:${JSON.stringify(own)}`
       if (this.fingerprints.get(connection.name) === fingerprint && identOf(connection.name)) continue

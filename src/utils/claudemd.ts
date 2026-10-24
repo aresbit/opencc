@@ -906,11 +906,34 @@ export const getMemoryFiles = memoize(
           )),
         )
 
+        // Try reading .autoagent/CLAUDE.md (Project, AutoAgent compatibility)
+        const dotAutoAgentPath = join(dir, '.autoagent', 'CLAUDE.md')
+        result.push(
+          ...(await processMemoryFile(
+            dotAutoAgentPath,
+            'Project',
+            processedPaths,
+            includeExternal,
+          )),
+        )
+
         // Try reading .claude/rules/*.md files (Project)
         const rulesDir = join(dir, '.claude', 'rules')
         result.push(
           ...(await processMdRules({
             rulesDir,
+            type: 'Project',
+            processedPaths,
+            includeExternal,
+            conditionalRule: false,
+          })),
+        )
+
+        // Try reading .autoagent/rules/*.md files (Project, AutoAgent compatibility)
+        const autoAgentRulesDir = join(dir, '.autoagent', 'rules')
+        result.push(
+          ...(await processMdRules({
+            rulesDir: autoAgentRulesDir,
             type: 'Project',
             processedPaths,
             includeExternal,
