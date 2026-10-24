@@ -1,5 +1,6 @@
 import { z } from 'zod/v4'
 import { getCurrentActorAddress } from '../../actor/currentActor.js'
+import { LocalActorMailbox } from '../../actor/LocalActorMailbox.js'
 import { parseActorAddress } from '../../actor/types.js'
 import {
   describeState,
@@ -279,29 +280,79 @@ export const SwarmNetTool = buildTool({
         }
       }
       case 'discover': {
-        const records = await listDnsRecords({
+        const dnsRecords = await listDnsRecords({
           team: input.team ?? team,
           capability: input.capability,
           role: input.role,
           liveOnly: input.live_only ?? true,
         })
+        // actord already knows peers across IP after its WebSocket handshake.
+        // Merge those live addresses so `discover` does not pretend a WAN peer
+        // does not exist just because it never sent a LAN multicast beacon.
+        const mailbox = new LocalActorMailbox()
+        const mailboxPeers = (await mailbox.list()).filter(
+          peer => peer.live !== false && peer.address !== self,
+        )
+        const merged = new Map<
+          string,
+          {
+            address: string
+            node?: string
+            capabilities: string[]
+            roles: string[]
+            load: number
+            status: string
+            source: 'dns' | 'actord'
+          }
+        >()
+        for (const record of dnsRecords) {
+          merged.set(routableAddress(record), {
+            address: routableAddress(record),
+            node: record.node,
+            capabilities: record.capabilities,
+            roles: record.roles,
+            load: record.load,
+            status: record.status,
+            source: 'dns',
+          })
+        }
+        for (const peer of mailboxPeers) {
+          if (merged.has(peer.address)) continue
+          if (input.team || input.capability || input.role) continue
+          let parsed
+          try {
+            parsed = parseActorAddress(peer.address)
+          } catch {
+            continue
+          }
+          merged.set(peer.address, {
+            address: peer.address,
+            node: parsed.node,
+            capabilities: [],
+            roles: [],
+            load: 0,
+            status: peer.live ? 'idle' : 'offline',
+            source: 'actord',
+          })
+        }
+        const entries = [...merged.values()]
         return {
           data: {
             action: 'discover',
             message:
-              records.length === 0
-                ? 'No live Agent-DNS records. Run `opencc swarm-daemon` on each host.'
-                : records
+              entries.length === 0
+                ? 'No live peers. Run `opencc actord` for cross-IP, or `opencc swarm-daemon` for LAN discovery.'
+                : entries
                     .map(
                       record =>
-                        `${routableAddress(record)} caps=[${record.capabilities.join(',')}] ` +
-                        `roles=[${record.roles.join(',')}] load=${record.load} status=${record.status} node=${record.node}`,
+                        `${record.address} source=${record.source}` +
+                        (record.node ? ` node=${record.node}` : '') +
+                        ` caps=[${record.capabilities.join(',')}]` +
+                        ` roles=[${record.roles.join(',')}]` +
+                        ` load=${record.load} status=${record.status}`,
                     )
                     .join('\n'),
-            data: records.map(record => ({
-              ...record,
-              routable: routableAddress(record),
-            })),
+            data: entries,
           },
         }
       }

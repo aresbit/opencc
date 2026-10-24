@@ -24,6 +24,10 @@ export type SwarmProfile = {
   group?: string
   port?: number
   token?: string
+  interface?: string
+  broadcast?: boolean
+  /** host:port peers to unicast beacons to, for subnets without multicast. */
+  bootstrap?: string[]
   intervalMs?: number
   ttlMs?: number
   pumpIntervalMs?: number
@@ -67,6 +71,10 @@ export function normalizeSwarmProfile(raw: unknown): SwarmProfile {
     group: typeof value.group === 'string' ? value.group.trim() : undefined,
     port: positiveInt(value.port),
     token: typeof value.token === 'string' ? value.token.trim() : undefined,
+    interface:
+      typeof value.interface === 'string' ? value.interface.trim() : undefined,
+    broadcast: typeof value.broadcast === 'boolean' ? value.broadcast : undefined,
+    bootstrap: strings(value.bootstrap, 32),
     intervalMs: positiveInt(value.intervalMs),
     ttlMs: positiveInt(value.ttlMs),
     pumpIntervalMs: positiveInt(value.pumpIntervalMs),

@@ -78,6 +78,12 @@ export type DnsConfig = {
   ttlMs: number
   token?: string
   disabled: boolean
+  /** Interface name or IPv4 address. Empty means auto-select the LAN NIC. */
+  interface?: string
+  /** Also send to 255.255.255.255 and each subnet broadcast. */
+  broadcast: boolean
+  /** host:port peers to unicast beacons to, for subnets without multicast. */
+  bootstrap: string[]
 }
 
 export function getDnsConfig(): DnsConfig {
@@ -107,7 +113,44 @@ export function getDnsConfig(): DnsConfig {
       undefined,
     disabled:
       process.env.OPENCC_DNS_DISABLED === '1' || profile.disabled === true,
+    interface:
+      process.env.OPENCC_DNS_INTERFACE?.trim() || profile.interface || undefined,
+    broadcast:
+      process.env.OPENCC_DNS_BROADCAST !== '0' && profile.broadcast !== false,
+    bootstrap: (
+      process.env.OPENCC_DNS_BOOTSTRAP?.split(',') ??
+      profile.bootstrap ??
+      []
+    )
+      .map(item => item.trim())
+      .filter(Boolean)
+      .slice(0, 32),
   }
+}
+
+/** `host` → host:port, `[v6]:port` and `host:port` pass through. */
+export function parseBootstrapTarget(
+  value: string,
+  defaultPort: number,
+): { host: string; port: number } | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']')
+    if (end < 0) return null
+    const host = trimmed.slice(1, end)
+    const port = Number.parseInt(trimmed.slice(end + 1).replace(/^:/, ''), 10)
+    return { host, port: Number.isFinite(port) && port > 0 ? port : defaultPort }
+  }
+  const parts = trimmed.split(':')
+  if (parts.length === 2) {
+    const port = Number.parseInt(parts[1]!, 10)
+    return {
+      host: parts[0]!,
+      port: Number.isFinite(port) && port > 0 ? port : defaultPort,
+    }
+  }
+  return { host: trimmed, port: defaultPort }
 }
 
 function recordsHash(records: readonly AgentDnsRecord[]): string {
@@ -374,7 +417,11 @@ export async function mergeBeaconRecords(
         rejected++
         continue
       }
-      const existing = cache.records[incoming.address]
+      // Key by node + address: two machines can legitimately serve the same
+      // actor address (same checkout path), and keying on address alone would
+      // make them overwrite each other in one shared cache.
+      const key = `${incoming.node}\u0000${incoming.address}`
+      const existing = cache.records[key]
       if (
         existing &&
         (existing.seq > incoming.seq ||
@@ -384,7 +431,7 @@ export async function mergeBeaconRecords(
         rejected++
         continue
       }
-      cache.records[incoming.address] = {
+      cache.records[key] = {
         ...incoming,
         capabilities: Array.isArray(incoming.capabilities)
           ? incoming.capabilities.slice(0, 32)

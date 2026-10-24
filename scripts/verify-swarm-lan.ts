@@ -4,6 +4,12 @@
  *
  *   bun run scripts/verify-swarm-lan.ts           # self-test, one machine
  *   bun run scripts/verify-swarm-lan.ts --join    # join the real LAN and list peers
+ *   bun run scripts/verify-swarm-lan.ts --join --duration=30
+ *   bun run scripts/verify-swarm-lan.ts --join --port=47777 --group=239.255.77.77
+ *   bun run scripts/verify-swarm-lan.ts --join --token=cluster-key
+ *
+ * --duration is in seconds (default 15). Run --join on both machines at the
+ * same time; one alone can only see itself, and self-beacons are ignored.
  *
  * Self-test starts two daemons on the machine (different node names, separate
  * config dirs, same multicast port), then checks:
@@ -20,6 +26,10 @@ import { mkdtemp, readFile, rm } from 'fs/promises'
 import { randomBytes } from 'crypto'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
+import {
+  listSwarmInterfaces,
+  pickSwarmInterface,
+} from '../src/swarm/network.ts'
 
 type Args = {
   join: boolean
@@ -28,6 +38,7 @@ type Args = {
   group?: string
   token?: string
   node?: string
+  bootstrap?: string
   relay: boolean
 }
 
@@ -46,7 +57,12 @@ function parseArgs(argv: string[]): Args {
     if (arg === '--join') args.join = true
     else if (arg === '--no-relay') args.relay = false
     else if (arg.startsWith('--duration=')) {
-      args.durationMs = Number.parseInt(arg.slice('--duration='.length), 10) || 15_000
+      const seconds =
+        Number.parseInt(arg.slice('--duration='.length), 10) || 15
+      args.durationMs = Math.max(1, seconds) * 1000
+    } else if (arg.startsWith('--duration-ms=')) {
+      args.durationMs =
+        Number.parseInt(arg.slice('--duration-ms='.length), 10) || 15_000
     } else if (arg.startsWith('--port=')) {
       args.port = Number.parseInt(arg.slice('--port='.length), 10) || 0
     } else if (arg.startsWith('--group=')) {
@@ -55,6 +71,8 @@ function parseArgs(argv: string[]): Args {
       args.token = arg.slice('--token='.length)
     } else if (arg.startsWith('--node=')) {
       args.node = arg.slice('--node='.length)
+    } else if (arg.startsWith('--bootstrap=')) {
+      args.bootstrap = arg.slice('--bootstrap='.length)
     }
   }
   return args
@@ -72,6 +90,7 @@ function childEnv(input: {
   token?: string
   capabilities: string
   roles: string
+  bootstrap?: string
   noDns?: boolean
 }): Record<string, string> {
   const env: Record<string, string> = {}
@@ -91,20 +110,25 @@ function childEnv(input: {
   env.OPENCC_AGENT_ROLES = input.roles
   if (input.group) env.OPENCC_DNS_GROUP = input.group
   if (input.token) env.OPENCC_DNS_TOKEN = input.token
+  if (input.bootstrap) env.OPENCC_DNS_BOOTSTRAP = input.bootstrap
   if (input.noDns) env.OPENCC_DNS_DISABLED = '1'
   return env
 }
 
-function spawnDaemon(input: {
-  configDir: string
-  node: string
-  port: number
-  group?: string
-  token?: string
-  capabilities: string
-  roles: string
-  noDns?: boolean
-}): ReturnType<typeof Bun.spawn> {
+function spawnDaemon(
+  input: {
+    configDir: string
+    node: string
+    port: number
+    group?: string
+    token?: string
+    capabilities: string
+    roles: string
+    bootstrap?: string
+    noDns?: boolean
+  },
+  inheritLogs = false,
+): ReturnType<typeof Bun.spawn> {
   return Bun.spawn(
     [
       process.execPath,
@@ -116,8 +140,8 @@ function spawnDaemon(input: {
     {
       cwd: projectRoot(),
       env: childEnv(input),
-      stdout: 'pipe',
-      stderr: 'pipe',
+      stdout: inheritLogs ? 'inherit' : 'pipe',
+      stderr: inheritLogs ? 'inherit' : 'pipe',
     },
   )
 }
@@ -379,19 +403,37 @@ async function joinTest(args: Args): Promise<boolean> {
   const configDir = join(root, 'node')
   const port = args.port || 47777
   const node = args.node || `join-${randomBytes(3).toString('hex')}`
-  const child = spawnDaemon({
-    configDir,
-    node,
-    port,
-    group: args.group,
-    token: args.token,
-    capabilities: 'code',
-    roles: 'generalist',
-  })
+  const child = spawnDaemon(
+    {
+      configDir,
+      node,
+      port,
+      group: args.group,
+      token: args.token,
+      capabilities: 'code',
+      roles: 'generalist',
+      bootstrap: args.bootstrap,
+    },
+    true,
+  )
 
   try {
+    const picked = pickSwarmInterface(process.env.OPENCC_DNS_INTERFACE)
+    const interfaces = listSwarmInterfaces()
     out(`joining LAN as ${node}; multicast ${args.group ?? '239.255.77.77'}:${port}`)
     out(`token: ${args.token ? 'signed' : 'unsigned (zero-config)'}`)
+    out(
+      `interface: ${
+        picked ? `${picked.name} ${picked.address} -> ${picked.broadcast}` : 'OS default'
+      }`,
+    )
+    if (args.bootstrap) out(`bootstrap: ${args.bootstrap}`)
+    if (interfaces.length > 1) {
+      out('local IPv4 interfaces:')
+      for (const item of interfaces) {
+        out(`  ${item.name.padEnd(16)} ${item.address.padEnd(15)} ${item.broadcast}`)
+      }
+    }
     out(`waiting ${Math.round(args.durationMs / 1000)}s for beacons...`)
     const deadline = Date.now() + args.durationMs
     let lastCount = 0

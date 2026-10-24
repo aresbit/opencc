@@ -44,6 +44,7 @@ import {
   type DnsTransport,
 } from './dnsTransport.js'
 import { pumpAllLocal } from './relay.js'
+import { pickSwarmInterface } from './network.js'
 import {
   getSwarmProfilePath,
   loadSwarmProfileSync,
@@ -280,6 +281,7 @@ async function startDaemon(
   let stopped = false
   const timers: Array<ReturnType<typeof setInterval>> = []
   let transport: DnsTransport | undefined
+  const repliedAt = new Map<string, number>()
 
   const handlePacket = async (packet: DnsPacket): Promise<void> => {
     const { beacon, from } = packet
@@ -301,6 +303,21 @@ async function startDaemon(
       log(
         `dns ${beacon.node}: accepted=${result.accepted} rejected=${result.rejected}`,
       )
+    }
+    // One-sided bootstrap: if only A knows B's address, B sees A's beacon and
+    // answers unicast so A learns B too. Rate-limited; multicast-only setups
+    // never reply, which avoids N² chatter on a flat LAN.
+    if (config.bootstrap.length > 0) {
+      const now = Date.now()
+      const last = repliedAt.get(from.address) ?? 0
+      if (now - last > 60_000) {
+        repliedAt.set(from.address, now)
+        const records = await readLocalRecords()
+        await transport?.announce('agent-dns.beacon', records, {
+          address: from.address,
+          port: from.port,
+        })
+      }
     }
   }
 
@@ -327,7 +344,17 @@ async function startDaemon(
         error instanceof Error ? error.message : String(error)
       }`,
     )
-    transport = { announce: async () => {}, close: async () => {} }
+    transport = {
+      announce: async () => {},
+      close: async () => {},
+      stats: () => ({
+        sent: 0,
+        received: 0,
+        dropped: 0,
+        sendErrors: 0,
+        broadcast: false,
+      }),
+    }
   }
 
   const beaconTick = async (
@@ -362,6 +389,12 @@ async function startDaemon(
       // Best effort: a goodbye is not a correctness requirement.
     }
     await transport?.close()
+    const finalStats = transport?.stats()
+    if (finalStats) {
+      log(
+        `stats tx=${finalStats.sent} rx=${finalStats.received} drop=${finalStats.dropped} sendErrors=${finalStats.sendErrors}`,
+      )
+    }
     await releaseLock()
     log('stopped')
   }
@@ -404,6 +437,10 @@ async function startDaemon(
   log(
     `ready team=${getSwarmTeam()} served=${getServedActorAddresses().length} discovered=${
       (await listDnsRecords({ liveOnly: true })).length
+    } dns iface=${transport.stats().interface ?? 'default'} signed=${
+      config.token ? 'yes' : 'no'
+    } tx=${transport.stats().sent} rx=${transport.stats().received} drop=${
+      transport.stats().dropped
     }`,
   )
   return { stop }
@@ -449,6 +486,12 @@ Env: OPENCC_DNS_GROUP/PORT/TOKEN, OPENCC_AGENT_CAPABILITIES, OPENCC_AGENT_ROLES
             ttlMs: config.ttlMs,
             signed: Boolean(config.token),
             disabled: config.disabled,
+            interface:
+              pickSwarmInterface(config.interface)?.address ??
+              config.interface ??
+              'default',
+            broadcast: config.broadcast,
+            bootstrap: config.bootstrap,
           },
           capabilities:
             parseCaps(process.env.OPENCC_AGENT_CAPABILITIES) ??

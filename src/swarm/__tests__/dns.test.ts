@@ -14,6 +14,7 @@ import {
   listDnsRecords,
   mergeBeaconRecords,
   parseBeacon,
+  parseBootstrapTarget,
   pruneDnsCache,
   purgeNodeRecords,
   signBeacon,
@@ -104,6 +105,21 @@ describe('Agent-DNS beacon security', () => {
     const packet = buildBeacon('agent-dns.beacon', records, config, 'pc')
     expect(Buffer.byteLength(JSON.stringify(packet))).toBeLessThanOrEqual(1400)
     expect(packet.records.length).toBeLessThan(100)
+  })
+
+  it('parses unicast bootstrap targets', () => {
+    expect(parseBootstrapTarget('192.168.1.10', 47777)).toEqual({
+      host: '192.168.1.10',
+      port: 47777,
+    })
+    expect(parseBootstrapTarget('pc-b:49000', 47777)).toEqual({
+      host: 'pc-b',
+      port: 49000,
+    })
+    expect(parseBootstrapTarget('[fd00::1]:49000', 47777)).toEqual({
+      host: 'fd00::1',
+      port: 49000,
+    })
   })
 })
 

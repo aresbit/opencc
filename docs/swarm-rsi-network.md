@@ -340,6 +340,8 @@ opencc swarm-daemon --init
   "capabilities": ["code", "test"],
   "roles": ["algorithm", "testing"],
   "token": "同一个集群密钥（可选）",
+  "interface": "wlan0",
+  "broadcast": true,
   "pumpIntervalMs": 1000
 }
 ```
@@ -360,6 +362,224 @@ bun run verify:swarm-lan --join   # 加入真实局域网，打印发现的 peer
 自检会启动两个独立 daemon，输出一张表：发现是否成功、收敛毫秒数、
 双方看到的 peer 能力、TTL 过期时间、A→B→D 中继是否送达。
 
-跨机验证时，两台机器同时运行 `--join`，在同一多播组、同一端口、
-相同 token（可省略）即可互相看到。
+跨机验证时，两台机器同时运行 `--join`（默认等 15 秒，可 `--duration=30`），
+在同一多播组、同一端口、相同 token（可省略）即可互相看到。
+
+`--join` 会打印子进程日志和本机网卡选择，失败时按计数判断：
+
+| 现象 | 含义 | 处理 |
+|---|---|---|
+| 只有一台机器在跑，`(no peers)` | 自身 beacon 会被过滤，属预期 | 两台同时运行 |
+| `tx>0, rx=0` | 包发出了，但一个都没收到 | AP 客户端隔离、防火墙 UDP、跨 VLAN；换有线或放行端口 |
+| `rx>0, drop>0` | 收到了但验签/时间窗失败 | 两台 token 不一致，或系统时间差 >2 分钟 |
+| `interface:` 选错网卡 | 多网卡/Docker/VPN 抢了默认路由 | `OPENCC_DNS_INTERFACE=wlan0` 或写进 `swarm.json` 的 `interface` |
+| `sendErrors>0` | socket 发送失败 | 检查网卡名、权限和广播开关 |
+
+默认会同时发多播和有限广播/子网广播，路由器只放行其中一种时仍能发现。
+所有发送目标都走同一个端口，接收端绑定 `0.0.0.0`，不需要额外配置。
+
+## 13. 跨 IP 通信：actord 是载体，DNS 是发现
+
+先把职责分清，避免把“发现不到”误判成“不能通信”：
+
+| 层 | 跨 IP 能力 | 机制 |
+|---|---|---|
+| `ActorTool tx/rx` | **支持** | 地址 `name@node`，经本机 `actord` 投递 |
+| `actord` | **支持** | 每对节点一条常驻 WebSocket；HMAC 握手；outbox 重发直到 `ok`；回执跨主机 |
+| `Agent-DNS` | 局域网多播 | 发现 + 能力广播；**不承载消息** |
+| `SwarmNet` | 支持 | 选中的路径末跳写成 `name@node`，实际仍由 actord 送达 |
+
+所以“DNS 只能局域网广播”不等于“agent 只能局域网通信”。跨 IP 的正确姿势是
+`actord + nodes.json`；DNS 只是把局域网里的手工 peer 配置省掉。
+
+### 两台 PC 通过 actord 通信
+
+机器 A：
+
+```bash
+export OPENCC_NODE=pc-a                 # 唯一即可；也可留空自动生成
+export OPENCC_ACTORD_TOKEN=cluster-key  # 两端必须相同
+export OPENCC_ACTORD_LISTEN=0.0.0.0:7781
+opencc actord
+```
+
+机器 B：
+
+```bash
+export OPENCC_NODE=pc-b
+export OPENCC_ACTORD_TOKEN=cluster-key
+export OPENCC_ACTORD_LISTEN=0.0.0.0:7781
+opencc actord
+```
+
+`actord` 默认只监听 `127.0.0.1:7781`；跨机时用
+`OPENCC_ACTORD_LISTEN=0.0.0.0:7781` 或
+`OPENCC_ACTORD_LISTEN=100.x.y.z:7781`（tailnet 地址）。监听非回环地址时
+没有 token 会直接拒绝启动。
+
+两端各写 peer 表 `~/.claude/actors/nodes.json`（或 `OPENCC_ACTORD_PEERS`）：
+
+```json
+{ "pc-b": "ws://192.168.1.20:7781" }
+```
+
+```json
+{ "pc-a": "ws://192.168.1.10:7781" }
+```
+
+然后在两端各跑一个会话（`opencc` / `opencc --matebot`），会话会把自己服务的
+地址通过 `live` 帧广播给对端。之后：
+
+```json
+{"action":"tx","to":"actor://default/researcher@pc-b","payload":{"task":1},
+ "kind":"task.command","expect_ack_ms":5000}
+```
+
+成功条件是：两端 `actord` 已互连、`pc-b` 上确有会话服务该地址、防火墙放行
+TCP 7781。回执由最终消费者写入发送者的 `.acks.json`，`expect_ack_ms` 能拿到
+`acked` / `dead` / `timeout`。
+
+握手与投递时序：
+
+```text
+A actord ──hi {node, v, ts, mac, live}──► B actord
+A actord ◄─hi + live {served addresses}── B actord
+A 会话 tx(name@pc-b) ──► A mailbox .net/outbox/pc-b.json
+A actord ──tx {envelope}──────────────► B actord
+B actord ──写进 B 的 actor mailbox────► B 会话 rx
+B 会话消费 ──rcpt {id, by, at, acked}──► A 的 .acks.json
+```
+
+- `hi` 的 MAC 是 `HMAC-SHA256(token, "actor-net/1|node|ts")`，±2 分钟。
+- 线上至少一次：outbox 每 5 秒重发直到 `ok`；接收端按 envelope id 去重。
+- 会话领取至多一次；过期/退役进 dead letter，并通过 `rcpt status=dead` 回传。
+- `live` 帧每 30 秒内至少一次，内容是本机正在服务的 `name@node` 地址。
+
+Tailscale/ZeroTier 场景直接用对方的虚拟 IP，不需要端口转发；这也是
+`actor-net` 用节点名而不是 IP 做身份的原因——换网络不换地址。
+
+### 跨子网发现：bootstrap
+
+多播不跨路由器。若两个网段都能互相访问 UDP，但多播被拦，用 unicast bootstrap：
+
+```bash
+# 在 B 上配置 A 的地址；A 收到 beacon 后会回发一次，双方都能学到
+OPENCC_DNS_BOOTSTRAP=192.168.1.10:47777 opencc swarm-daemon
+```
+
+或在 `swarm.json`：
+
+```json
+{ "bootstrap": ["192.168.1.10:47777"] }
+```
+
+只配一边即可：接收方会对来源地址做一次限速回发（60 秒一次），避免 N² 风暴。
+两边都配当然也可以。发现之后，实际投递仍然走 actord 的 WebSocket。
+
+### `discover` 会合并两层
+
+`SwarmNetTool discover` 现在同时返回：
+
+- `source=dns`：Agent-DNS 学到的地址、能力、角色、负载。
+- `source=actord`：已经通过 actord 建链、但没发过 LAN beacon 的跨 IP peer。
+
+因此跨 IP 的 peer 不会再因为“没有多播”而在 `discover` 里消失。
+
+## 14. 实测输出（可复现）
+
+以下记录来自本机 Linux + Bun 1.3.13。跨物理机结果会受交换机、
+Wi-Fi AP 隔离和防火墙影响，所以第 3 节保留失败判据。
+
+### 14.1 单元测试
+
+```text
+$ bun test src/swarm
+
+17 pass
+0 fail
+49 expect() calls
+Ran 17 tests across 2 files.
+```
+
+覆盖：Viterbi 选路、时延发射、Beta/信息素更新、验证集门控升版、
+签名/重放/篡改、TTL、缓存合并、自身回环过滤、bootstrap 解析。
+
+### 14.2 本机自检
+
+```text
+$ bun run verify:swarm-lan
+multicast: 239.255.77.77:48276
+token: unsigned (zero-config)
+
+discovery: PASS (1110 ms)
+A sees  actor://default/opencc-...  verify-b-22e670  test,security   testing,security
+B sees  actor://default/opencc-...  verify-a-22e670  code,algorithm  algorithm
+
+ttl expiry after B is killed: PASS (3016 ms)
+
+relay: PASS (actor://default/verify-relay-a -> actor://default/verify-relay-b -> actor://default/verify-relay-d)
+  first (manual pump): delivered
+  second (daemon pump): delivered
+
+result: PASS
+```
+
+### 14.3 两个 `--join` 进程（同机回环）
+
+```text
+joining LAN as join-a1b896; multicast 239.255.77.77:47777
+token: unsigned (zero-config)
+interface: wlp18s0 192.168.3.222 -> 192.168.3.255
+waiting 8s for beacons...
+
+swarm-daemon: dns: interface wlp18s0 192.168.3.222 (192.168.3.255)
+swarm-daemon: dns join-b4f5a6: accepted=1 rejected=0
+  peers: 1
+
+discovered peers
+  address ... node join-b4f5a6 caps code roles generalist
+swarm-daemon: stats tx=27 rx=48 drop=0 sendErrors=0
+result: PASS
+```
+
+`tx` 包含多播 + 有限广播 + 子网广播；`rx=48` 中包含本机自身 beacon
+（被过滤，不计入 peers）。两个进程互相 PASS。
+
+### 14.4 `discover` 合并 actord 远端 peer
+
+```text
+$ ... discover
+actor://default/researcher@pc-b source=actord node=pc-b caps=[] roles=[] load=0 status=idle
+```
+
+这条记录来自 `~/.claude/actors/.net/peers/pc-b.json`，即 actord 的
+`live` 快照，不依赖多播。DNS 记录存在时会带 `source=dns` 和能力/角色。
+
+### 14.5 `--matebot` 内嵌启动
+
+```text
+$ opencc --matebot -p "/version"
+2.1.888 (built ...)
+exit=0 elapsed=1s
+
+$ tail ~/.claude/debug/swarm-daemon.log
+... start pid=... self=actor://default/... dns=239.255.77.77:47777 pump=1000ms beacon=5000ms
+... ready team=default served=1 discovered=0 ...
+```
+
+一次性会话不会因为 daemon 的 socket/定时器而挂住；PID 锁在退出时清理。
+已有独立 `opencc swarm-daemon` 时，内嵌启动自动 no-op。
+
+### 14.6 复现清单
+
+```bash
+bun test src/swarm
+bun run verify:swarm-lan
+bun run verify:swarm-lan --join --duration=30     # 两台机器同时运行
+OPENCC_DNS_BOOTSTRAP=<对端IP>:47777 bun run verify:swarm-lan --join --duration=30
+```
+
+跨物理机失败时，把 `--join` 输出里的 `interface`、`tx`、`rx`、`drop`、
+`sendErrors` 四项贴出来，按前面 `--join` 计数判据即可定位是网卡、隔离、
+防火墙还是 token/时钟问题。
 
