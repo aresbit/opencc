@@ -434,6 +434,9 @@ hooks while leaving its `tool.call` and the rest running.
 - **`desktop-tool-ledger`** — the desktop counterpart: a ledger of the calls
   through `tool.call`, drawn as a pane in the HydraHub desktop's Plugins tab
   and a line above its composer. See [Desktop slots](#desktop-slots).
+- **`token-meter`** — the session's tokens, cost and context fill in the
+  desktop, from `usage.record` (below). The desktop has no token display of
+  its own beyond the reply being streamed; this mod is all of it.
 
 None of them spends a model token.
 
@@ -554,6 +557,31 @@ export function register(on, options, ctx) {
 
 The desktop shows a session's slots once its engine is running, which is
 after the session's first turn.
+
+### Token usage: `usage.record`
+
+Every API response the engine counts — the numbers behind `/cost` and the
+context gauge — goes down the chain as `usage.record` once it is recorded:
+
+```ts
+on('usage.record', ($, e, next) => {
+  // e.model                     the model this response came from
+  // e.call     { inputTokens, outputTokens, cacheReadInputTokens,
+  //              cacheCreationInputTokens, costUSD, contextTokens, contextWindow }
+  // e.session  the same four counts and costUSD for everything so far, plus
+  //            webSearchRequests, apiDurationMs, costMayBeInaccurate and
+  //            models: { [name]: counts + costUSD + contextWindow }
+  return next(e)
+})
+```
+
+It is an observer: the answer is ignored and nothing a hook does changes what
+was counted. It costs nothing unless something hooks it — the record is not
+even built — and it is dispatched on a microtask, so a slow or throwing hook
+never sits inside the API stream. `contextTokens` is the terminal gauge's
+count for that response (input, both cache buckets and output), and
+`session` is per process, which for the desktop is per session. Subagents'
+calls are included; they spend the same budget.
 
 ### Managing mods from outside a session
 

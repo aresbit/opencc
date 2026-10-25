@@ -45,7 +45,7 @@ describe('the examples load', () => {
     // Asserted as the whole set rather than a subset: an example that stops
     // loading should fail here, and a new one should have to be added
     // deliberately rather than slipping in untested.
-    expect(loaded).toEqual(['desktop-tool-ledger', 'quant-lifecycle', 'subagent-trace', 'tetris'])
+    expect(loaded).toEqual(['desktop-tool-ledger', 'quant-lifecycle', 'subagent-trace', 'tetris', 'token-meter'])
   })
 })
 
@@ -263,5 +263,83 @@ describe('desktop-tool-ledger', () => {
     expect((await act('reset')).message).toBe('Ledger cleared.')
     expect(ledger('composer')).toEqual([])
     expect(await act('nonsense')).toEqual({ handled: false })
+  })
+})
+
+describe('token-meter', () => {
+  const meter = (slotId: 'panel' | 'composer') =>
+    renderDesktopSlots($)[slotId].filter(c => c.pluginId === 'mod:token-meter')
+  const record = (over: { context?: number; models?: Record<string, number> } = {}) => {
+    const models = over.models ?? { 'claude-sonnet-4-5': 0.0421 }
+    return {
+      model: Object.keys(models)[0],
+      call: {
+        inputTokens: 900,
+        outputTokens: 400,
+        cacheReadInputTokens: 11000,
+        cacheCreationInputTokens: 0,
+        costUSD: 0.01,
+        contextTokens: over.context ?? 12300,
+        contextWindow: 200000,
+      },
+      session: {
+        inputTokens: 2100,
+        outputTokens: 1250,
+        cacheReadInputTokens: 11000,
+        cacheCreationInputTokens: 300,
+        costUSD: Object.values(models).reduce((a, b) => a + b, 0),
+        webSearchRequests: 0,
+        apiDurationMs: 1000,
+        costMayBeInaccurate: false,
+        models: Object.fromEntries(
+          Object.entries(models).map(([name, costUSD]) => [
+            name,
+            { inputTokens: 1000, outputTokens: 600, cacheReadInputTokens: 5500, cacheCreationInputTokens: 150, costUSD, contextWindow: 200000 },
+          ]),
+        ),
+      },
+    }
+  }
+  const usage = (e: unknown) => dispatch($, 'usage.record', e, identity)
+
+  test('waits for the first model call', async () => {
+    await loadExamples()
+    expect(JSON.stringify(meter('panel'))).toContain('还没有调用模型')
+    expect(meter('composer')).toEqual([])
+  })
+
+  test('draws the session totals, cost and context fill', async () => {
+    await loadExamples()
+    await usage(record())
+    const strip = meter('composer')[0]?.tree as { text: string; tone: string }
+    // Input counts what the model read, cached or not: 2100 + 11000 + 300.
+    expect(strip.text).toBe('↑ 13.4k · ↓ 1.3k · $0.0421 · 上下文 6%')
+    expect(strip.tone).toBe('muted')
+    const pane = JSON.stringify(meter('panel'))
+    expect(pane).toContain('"value":"$0.0421"')
+    expect(pane).toContain('12.3k / 200k')
+    expect(pane).not.toContain('Table')
+  })
+
+  test('splits by model once there is more than one, and warns near the limit', async () => {
+    await loadExamples()
+    await usage(record({ context: 170000, models: { 'claude-sonnet-4-5': 0.6, 'claude-haiku-4-5': 0.01 } }))
+    const pane = JSON.stringify(meter('panel'))
+    expect(pane).toContain('"type":"Table"')
+    expect(pane).toContain('claude-haiku-4-5')
+    expect(pane).toContain('上下文已用 85%')
+    expect((meter('composer')[0]?.tree as { tone: string }).tone).toBe('warn')
+    expect((meter('composer')[0]?.tree as { text: string }).text).toContain('$0.61')
+  })
+
+  test('hands the numbers to the agent as a composer prompt', async () => {
+    await loadExamples()
+    const act = (action: string) =>
+      handleDesktopAction($, { slotId: 'panel', pluginId: 'mod:token-meter', action })
+    expect((await act('explain')).message).toContain('还没有用量')
+    await usage(record())
+    const answer = await act('explain')
+    expect(answer.prompt).toContain('2100 输入')
+    expect(answer.prompt).toContain('上下文用了 6%')
   })
 })
