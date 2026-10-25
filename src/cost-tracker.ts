@@ -49,6 +49,7 @@ import { calculateUSDCost } from './utils/modelCost.js'
 import {
   emitUsageRecord,
   type ModelUsageTotals,
+  type UsageSource,
 } from './services/functionHooks/usageEvents.js'
 export {
   getTotalCostUSD as getTotalCost,
@@ -283,14 +284,20 @@ export function addToTotalSessionCost(
   cost: number,
   usage: Usage,
   model: string,
+  source?: UsageSource,
 ): number {
   const totalCost = recordSessionCost(cost, usage, model)
   // After the advisor's share is in, so the totals a plugin sees are whole.
-  emitUsageRecord(() => usageRecordFor(model, usage, totalCost))
+  emitUsageRecord(() => usageRecordFor(model, usage, totalCost, source))
   return totalCost
 }
 
-function usageRecordFor(model: string, usage: Usage, costUSD: number) {
+function usageRecordFor(
+  model: string,
+  usage: Usage,
+  costUSD: number,
+  source: UsageSource | undefined,
+) {
   const models: Record<string, ModelUsageTotals> = {}
   for (const [name, entry] of Object.entries(getModelUsage())) {
     models[name] = {
@@ -304,6 +311,7 @@ function usageRecordFor(model: string, usage: Usage, costUSD: number) {
   }
   return {
     model,
+    ...(source ? { source } : {}),
     call: {
       inputTokens: usage.input_tokens,
       outputTokens: usage.output_tokens,

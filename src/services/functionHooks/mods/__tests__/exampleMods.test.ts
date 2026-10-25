@@ -269,17 +269,20 @@ describe('desktop-tool-ledger', () => {
 describe('token-meter', () => {
   const meter = (slotId: 'panel' | 'composer') =>
     renderDesktopSlots($)[slotId].filter(c => c.pluginId === 'mod:token-meter')
-  const record = (over: { context?: number; models?: Record<string, number> } = {}) => {
+  const strip = () => JSON.stringify(meter('composer')[0]?.tree ?? null)
+  const record = (over: { gauge?: [number, number, number] | null; models?: Record<string, number> } = {}) => {
     const models = over.models ?? { 'claude-sonnet-4-5': 0.0421 }
+    const [tokens, budget, percentLeft] = over.gauge === undefined ? [575_000, 967_000, 41] : (over.gauge ?? [0, 0, 0])
     return {
       model: Object.keys(models)[0],
+      ...(over.gauge === null ? {} : { context: { tokens, budget, percentLeft } }),
       call: {
         inputTokens: 900,
         outputTokens: 400,
         cacheReadInputTokens: 11000,
         cacheCreationInputTokens: 0,
         costUSD: 0.01,
-        contextTokens: over.context ?? 12300,
+        contextTokens: 12300,
         contextWindow: 200000,
       },
       session: {
@@ -308,28 +311,45 @@ describe('token-meter', () => {
     expect(meter('composer')).toEqual([])
   })
 
-  test('draws the session totals, cost and context fill', async () => {
+  test("draws the terminal's footer gauge above the composer, bar and all", async () => {
     await loadExamples()
-    await usage(record())
-    const strip = meter('composer')[0]?.tree as { text: string; tone: string }
-    // Input counts what the model read, cached or not: 2100 + 11000 + 300.
-    expect(strip.text).toBe('↑ 13.4k · ↓ 1.3k · $0.0421 · 上下文 6%')
-    expect(strip.tone).toBe('muted')
-    const pane = JSON.stringify(meter('panel'))
-    expect(pane).toContain('"value":"$0.0421"')
-    expect(pane).toContain('12.3k / 200k')
-    expect(pane).not.toContain('Table')
+    await usage(record({ models: { 'claude-opus-4-5': 93.81 } }))
+    const tree = meter('composer')[0]?.tree as { children: Record<string, unknown>[] }
+    const [bar, line] = tree.children
+    expect(bar).toMatchObject({ type: 'Progress', tone: 'success' })
+    expect(bar!.value as number).toBeCloseTo(575 / 967, 5)
+    // The footer's text, character for character.
+    expect(line).toMatchObject({ type: 'Text', text: '575k/967k tokens · 41% left · $93.81' })
   })
 
-  test('splits by model once there is more than one, and warns near the limit', async () => {
+  test('turns the bar yellow at a quarter left and red at a tenth', async () => {
     await loadExamples()
-    await usage(record({ context: 170000, models: { 'claude-sonnet-4-5': 0.6, 'claude-haiku-4-5': 0.01 } }))
+    await usage(record({ gauge: [740_000, 967_000, 23] }))
+    expect(strip()).toContain('"tone":"warn"')
+    expect(JSON.stringify(meter('panel'))).toContain('上下文只剩 23%')
+    await usage(record({ gauge: [900_000, 967_000, 7] }))
+    expect(strip()).toContain('"tone":"danger"')
+  })
+
+  test('a side query alone shows totals without a bar, and never moves the bar', async () => {
+    await loadExamples()
+    await usage(record({ gauge: null }))
+    expect(strip()).toContain('↑ 13.4k · ↓ 1.3k · $0.0421')
+    expect(strip()).not.toContain('Progress')
+    await usage(record())
+    await usage(record({ gauge: null }))
+    expect(strip()).toContain('575k/967k tokens')
+  })
+
+  test('keeps the detail in the Plugins tab', async () => {
+    await loadExamples()
+    await usage(record({ models: { 'claude-sonnet-4-5': 0.6, 'claude-haiku-4-5': 0.01 } }))
     const pane = JSON.stringify(meter('panel'))
+    expect(pane).toContain('"type":"Progress"')
+    expect(pane).toContain('"value":"$0.61"')
+    expect(pane).toContain('"label":"上下文剩余","value":"41%"')
     expect(pane).toContain('"type":"Table"')
     expect(pane).toContain('claude-haiku-4-5')
-    expect(pane).toContain('上下文已用 85%')
-    expect((meter('composer')[0]?.tree as { tone: string }).tone).toBe('warn')
-    expect((meter('composer')[0]?.tree as { text: string }).text).toContain('$0.61')
   })
 
   test('hands the numbers to the agent as a composer prompt', async () => {
@@ -340,6 +360,6 @@ describe('token-meter', () => {
     await usage(record())
     const answer = await act('explain')
     expect(answer.prompt).toContain('2100 输入')
-    expect(answer.prompt).toContain('上下文用了 6%')
+    expect(answer.prompt).toContain('上下文还剩 41%')
   })
 })

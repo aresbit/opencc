@@ -39,9 +39,32 @@ export interface ModelUsageTotals extends TokenCounts {
   contextWindow: number
 }
 
+/** Who made the call; absent when the caller did not say (replayed fixtures). */
+export interface UsageSource {
+  querySource: string
+  /** Set for a subagent's call. */
+  agentId?: string
+  /** The foreground conversation, as opposed to a subagent or a side query. */
+  mainThread: boolean
+}
+
+/**
+ * The terminal's context gauge, for a main-thread call: the same three numbers
+ * its footer bar shows ("575k/967k tokens · 41% left"). `budget` is the
+ * auto-compact threshold, the point the conversation gets compacted at.
+ */
+export interface ContextGauge {
+  tokens: number
+  budget: number
+  percentLeft: number
+}
+
 export interface UsageRecordEvent {
   /** The model this response came from, as the caller named it. */
   model: string
+  source?: UsageSource
+  /** Main-thread calls only. */
+  context?: ContextGauge
   /** This one response. */
   call: TokenCounts & {
     costUSD: number
@@ -91,7 +114,53 @@ export function emitUsageRecord(build: () => UsageRecordEvent): void {
     logError(error)
     return
   }
-  void Promise.resolve()
-    .then(() => dispatch($, USAGE_RECORD_EVENT, event, identity))
+  // Queued, not just deferred: a main-thread record waits on the gauge math,
+  // and a later record must not overtake it — a hook keeping "the latest"
+  // would otherwise go back to older totals.
+  queue = queue
+    .then(async () => {
+      if (event.source?.mainThread) {
+        const context = await gaugeFor(event.model, event.call.contextTokens)
+        if (context) event = { ...event, context }
+      }
+      return dispatch($, USAGE_RECORD_EVENT, event, identity)
+    })
     .catch(logError)
+}
+
+let queue: Promise<unknown> = Promise.resolve()
+
+type GaugeMath = (tokens: number, model: string) => ContextGauge
+
+let gaugeMath: GaugeMath | null = null
+
+/** Tests: stand in for the compaction math instead of loading it. */
+export function setGaugeMathForTests(math: GaugeMath | null): void {
+  gaugeMath = math
+}
+
+/**
+ * The footer's own math (Notifications.tsx: getAutoCompactThreshold and
+ * calculateTokenWarningState), so the desktop and the terminal cannot show
+ * different numbers for the same conversation. Imported lazily: the compact
+ * module sits above the cost tracker that calls in here, and by the time a
+ * response has been recorded the API client has long since loaded it.
+ */
+async function gaugeFor(model: string, tokens: number): Promise<ContextGauge | undefined> {
+  try {
+    if (!gaugeMath) {
+      const { calculateTokenWarningState, getAutoCompactThreshold } = await import(
+        '../compact/autoCompact.js'
+      )
+      gaugeMath = (used, name) => ({
+        tokens: used,
+        budget: getAutoCompactThreshold(name),
+        percentLeft: calculateTokenWarningState(used, name).percentLeft,
+      })
+    }
+    return gaugeMath(tokens, model)
+  } catch (error) {
+    logError(error)
+    return undefined
+  }
 }

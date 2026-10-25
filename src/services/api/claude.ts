@@ -160,6 +160,7 @@ import {
   modelSupportsAdvisor,
 } from 'src/utils/advisor.js'
 import { getAgentContext } from 'src/utils/agentContext.js'
+import type { UsageSource } from 'src/services/functionHooks/usageEvents.js'
 import { isClaudeAISubscriber } from 'src/utils/auth.js'
 import {
   getToolSearchBetaHeader,
@@ -387,6 +388,27 @@ export function getCacheControl({
  * The allowlist is cached in STATE for session stability — prevents mixed
  * TTLs when GrowthBook's disk cache updates mid-request.
  */
+/**
+ * Who made a call, for usage.record. "Main thread" is the rule this file
+ * already uses for the foreground conversation (setLastMainRequestId below):
+ * not inside an agent, and a REPL or SDK main-loop source. Only those calls
+ * say how full the conversation's context is.
+ */
+function usageSourceOf(options: {
+  querySource: QuerySource
+  agentId?: string
+}): UsageSource {
+  return {
+    querySource: options.querySource,
+    ...(options.agentId ? { agentId: options.agentId } : {}),
+    mainThread:
+      !options.agentId &&
+      !getAgentContext() &&
+      (options.querySource.startsWith('repl_main_thread') ||
+        options.querySource === 'sdk'),
+  }
+}
+
 function should1hCacheTTL(querySource?: QuerySource): boolean {
   // Global override: force 1h cache TTL for all providers/sources.
   // Useful for controlling cost spikes from 5m idle expiry in long sessions.
@@ -2359,6 +2381,7 @@ async function* queryModel(
               costUSDForPart,
               usage as unknown as BetaUsage,
               options.model,
+              usageSourceOf(options),
             )
 
             const refusalMessage = getErrorMessageIfRefusal(
@@ -2940,6 +2963,7 @@ async function* queryModel(
         fallbackCost,
         fallbackUsage as unknown as BetaUsage,
         options.model,
+        usageSourceOf(options),
       )
     }
   }

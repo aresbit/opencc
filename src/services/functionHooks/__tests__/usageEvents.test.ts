@@ -7,6 +7,7 @@ import {
   attachUsageEngine,
   emitUsageRecord,
   hasUsageListeners,
+  setGaugeMathForTests,
   type UsageRecordEvent,
 } from '../usageEvents.js'
 
@@ -19,6 +20,7 @@ import {
 const $ = {} as EngineInterface
 
 afterEach(() => {
+  setGaugeMathForTests(null)
   attachUsageEngine(null)
   registry.clear()
   resetCostState()
@@ -72,6 +74,31 @@ describe('usage.record', () => {
     })
     expect(second.session.costUSD).toBeCloseTo(0.012, 10)
     expect(Object.keys(second.session.models).sort()).toEqual(['claude-haiku-4-5', 'claude-sonnet-4-5'])
+  })
+
+  test("a main-thread call carries the terminal gauge's numbers; others do not", async () => {
+    attachUsageEngine($)
+    setGaugeMathForTests((tokens, model) => ({
+      tokens,
+      budget: model === 'claude-sonnet-4-5' ? 167_000 : 0,
+      percentLeft: Math.round(((167_000 - tokens) / 167_000) * 100),
+    }))
+    const seen = listen()
+    const main = { querySource: 'sdk', mainThread: true }
+    addToTotalSessionCost(0.01, usage(40_000, 1000, 9000), 'claude-sonnet-4-5', main)
+    addToTotalSessionCost(0.001, usage(500, 20), 'claude-haiku-4-5', {
+      querySource: 'agent:explore',
+      agentId: 'a1',
+      mainThread: false,
+    })
+    await tick()
+
+    const [first, second] = seen as [UsageRecordEvent, UsageRecordEvent]
+    expect(first.source).toEqual(main)
+    expect(first.context).toEqual({ tokens: 50_000, budget: 167_000, percentLeft: 70 })
+    // A subagent's call says nothing about the conversation's context.
+    expect(second.source?.agentId).toBe('a1')
+    expect(second.context).toBeUndefined()
   })
 
   test('builds nothing without a listener or without an engine', async () => {

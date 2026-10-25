@@ -444,9 +444,10 @@ hooks while leaving its `tool.call` and the rest running.
 - **`desktop-tool-ledger`** — the desktop counterpart: a ledger of the calls
   through `tool.call`, drawn as a pane in the HydraHub desktop's Plugins tab
   and a line above its composer. See [Desktop slots](#desktop-slots).
-- **`token-meter`** — the session's tokens, cost and context fill in the
-  desktop, from `usage.record` (below). The desktop has no token display of
-  its own beyond the reply being streamed; this mod is all of it.
+- **`token-meter`** — the terminal's footer gauge above the desktop's
+  composer (bar, `575k/967k tokens · 41% left · $93.81`) and the full
+  breakdown in its Plugins tab, from `usage.record` (below). The desktop has
+  no token display of its own; this mod is all of it, and ships bundled.
 
 None of them spends a model token.
 
@@ -581,9 +582,20 @@ on('usage.record', ($, e, next) => {
   // e.session  the same four counts and costUSD for everything so far, plus
   //            webSearchRequests, apiDurationMs, costMayBeInaccurate and
   //            models: { [name]: counts + costUSD + contextWindow }
+  // e.source   { querySource, agentId?, mainThread }
+  // e.context  main-thread calls only: { tokens, budget, percentLeft }, the
+  //            terminal footer gauge's own numbers ("575k/967k tokens · 41% left")
   return next(e)
 })
 ```
+
+`mainThread` is the foreground conversation: not inside an agent, and a REPL
+or SDK main-loop source. Only those calls carry `context`; a subagent's or a
+side query's usage says nothing about how full the conversation is. `budget`
+is the auto-compact threshold and `percentLeft` comes from the same
+`calculateTokenWarningState` the footer uses, so a desktop bar and the
+terminal's cannot disagree. Records are dispatched in the order they were
+counted.
 
 It is an observer: the answer is ignored and nothing a hook does changes what
 was counted. It costs nothing unless something hooks it — the record is not
