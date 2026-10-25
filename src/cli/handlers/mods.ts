@@ -7,13 +7,19 @@ import figures from 'figures'
 import { errorMessage } from '../../utils/errors.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { cliError, cliOk } from '../exit.js'
-import type { ModScope } from '../../services/functionHooks/mods/manage.js'
+import type { InstallScope, ModScope } from '../../services/functionHooks/mods/manage.js'
 
 type JsonOption = { json?: boolean }
 type ScopeOption = { scope?: string }
 
 function parseScope(value: string | undefined, fallback?: ModScope): ModScope | undefined {
   if (value === undefined) return fallback
+  if (value === 'user' || value === 'project' || value === 'bundled') return value
+  return cliError(`${figures.cross} --scope must be "user", "project" or "bundled", got "${value}"`)
+}
+
+function parseInstallScope(value: string | undefined): InstallScope {
+  if (value === undefined) return 'user'
   if (value === 'user' || value === 'project') return value
   return cliError(`${figures.cross} --scope must be "user" or "project", got "${value}"`)
 }
@@ -70,7 +76,7 @@ export async function modsInstallHandler(
   const { installMod } = await import('../../services/functionHooks/mods/manage.js')
   try {
     const result = await installMod(source, {
-      scope: parseScope(options.scope, 'user'),
+      scope: parseInstallScope(options.scope),
       force: options.force,
     })
     if (options.json) return cliOk(jsonStringify(result, null, 2))

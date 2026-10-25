@@ -16,18 +16,23 @@
 import { cp, mkdir, readFile, rename, stat, writeFile } from 'fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'path'
 import {
+  BUNDLED_OVERRIDES_NAME,
   discoverMods,
   entryFor,
   FILE_EXTENSIONS,
+  getBundledModPaths,
   getProjectModsDir,
   getUserModsDir,
   MANIFEST_NAME,
 } from './discovery.js'
 import { getModResults, getQuarantinedMods, modsDisabled } from './loader.js'
-import type { ModManifest, ModPosition, ModSource } from './types.js'
+import type { ModManifest, ModPosition, ModScope, ModSource } from './types.js'
 import { getPluginStatus, type PluginStatus } from '../plugins/index.js'
 
-export type ModScope = 'user' | 'project'
+export type { ModScope }
+
+/** Where a mod can be installed: bundled mods come with the host. */
+export type InstallScope = Exclude<ModScope, 'bundled'>
 
 /** Why a mod is or is not in the chain, as one word a person can read. */
 export type ModState =
@@ -64,7 +69,7 @@ export interface ModStatus {
 export interface HooksStatus {
   /** `OPENCC_DISABLE_MODS=1`: no mod loads at all. */
   modsDisabled: boolean
-  dirs: { user: string; project: string }
+  dirs: { user: string; project: string; bundled: string[] }
   mods: ModStatus[]
   builtins: PluginStatus[]
 }
@@ -72,13 +77,29 @@ export interface HooksStatus {
 export interface ModRoots {
   userDir?: string
   projectDir?: string
+  /** Defaults to OPENCC_BUNDLED_MODS. */
+  bundledPaths?: string[]
 }
 
-function roots(options: ModRoots): { user: string; project: string } {
+type Roots = { user: string; project: string; bundled: string[] }
+
+function roots(options: ModRoots): Roots {
   return {
     user: resolve(options.userDir ?? getUserModsDir()),
     project: resolve(options.projectDir ?? getProjectModsDir()),
+    bundled: (options.bundledPaths ?? getBundledModPaths()).map(path => resolve(path)),
   }
+}
+
+function discover(dirs: Roots) {
+  return discoverMods({ userDir: dirs.user, projectDir: dirs.project, bundledPaths: dirs.bundled })
+}
+
+/** The root a mod's own files sit in, for telling a one-file mod apart. */
+function rootOf(scope: ModScope, dir: string, dirs: Roots): string {
+  if (scope === 'user') return dirs.user
+  if (scope === 'project') return dirs.project
+  return dirs.bundled.includes(resolve(dir)) ? dirname(resolve(dir)) : resolve(dir)
 }
 
 function shapeOf(entry: string, dir: string, root: string): 'directory' | 'file' {
@@ -109,7 +130,7 @@ export async function collectHooksStatus(
   const quarantined = new Map(getQuarantinedMods().map(q => [q.name, q]))
   const fromResults: ModStatus[] = getModResults().map(result => {
     const manifest: Partial<ModManifest> = result.manifest ?? {}
-    const root = result.scope === 'user' ? dirs.user : dirs.project
+    const root = rootOf(result.scope, result.dir, dirs)
     const q = quarantined.get(result.name)
     let state: ModState
     if (result.skipped === 'disabled') state = 'disabled'
@@ -149,12 +170,12 @@ export async function collectHooksStatus(
   }
 }
 
-async function listOnDisk(dirs: { user: string; project: string }): Promise<ModStatus[]> {
-  const { sources, shadowed } = await discoverMods({ userDir: dirs.user, projectDir: dirs.project })
+async function listOnDisk(dirs: Roots): Promise<ModStatus[]> {
+  const { sources, shadowed } = await discover(dirs)
   const describe = (source: ModSource, state: ModState): ModStatus => ({
     name: source.manifest.name,
     scope: source.scope,
-    shape: shapeOf(source.entry, source.dir, source.scope === 'user' ? dirs.user : dirs.project),
+    shape: shapeOf(source.entry, source.dir, rootOf(source.scope, source.dir, dirs)),
     entry: source.entry,
     dir: source.dir,
     state,
@@ -178,7 +199,7 @@ export class ModManageError extends Error {}
 /** Find a mod by name; with a scope, that scope's copy even if shadowed. */
 async function locate(name: string, scope: ModScope | undefined, options: ModRoots): Promise<ModSource> {
   const dirs = roots(options)
-  const { sources, shadowed } = await discoverMods({ userDir: dirs.user, projectDir: dirs.project })
+  const { sources, shadowed } = await discover(dirs)
   const all = scope ? [...sources, ...shadowed] : sources
   const found = all.find(
     source => source.manifest.name === name && (!scope || source.scope === scope),
@@ -227,6 +248,12 @@ export async function setModEnabled(
 ): Promise<{ name: string; scope: ModScope; dir: string; enabled: boolean }> {
   const source = await locate(name, options.scope, options)
   const dirs = roots(options)
+  if (source.scope === 'bundled') {
+    // The host's files are not ours to edit; the person's choice is kept
+    // with their own mods and applied over the bundled manifest.
+    await setBundledOverride(dirs.user, source.manifest.name, { enabled })
+    return { name, scope: 'bundled', dir: source.dir, enabled }
+  }
   const root = source.scope === 'user' ? dirs.user : dirs.project
   let dir = source.dir
 
@@ -252,6 +279,34 @@ export async function setModEnabled(
   return { name, scope: source.scope, dir, enabled }
 }
 
+async function setBundledOverride(
+  userDir: string,
+  name: string,
+  change: { enabled: boolean },
+): Promise<void> {
+  const path = join(userDir, BUNDLED_OVERRIDES_NAME)
+  let current: Record<string, unknown> = {}
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new ModManageError(`${path} is not a JSON object; fix it by hand first`)
+    }
+    current = parsed as Record<string, unknown>
+  } catch (error) {
+    if (error instanceof ModManageError) throw error
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new ModManageError(`${path} is not valid JSON; fix it by hand first`)
+    }
+  }
+  const previous = current[name]
+  current[name] = {
+    ...(previous && typeof previous === 'object' && !Array.isArray(previous) ? previous : {}),
+    ...change,
+  }
+  await mkdir(userDir, { recursive: true })
+  await writeFile(path, JSON.stringify(current, null, 2) + '\n', 'utf8')
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await stat(path)
@@ -273,8 +328,8 @@ const SKIP_ON_COPY = new Set(['.git', 'node_modules'])
  */
 export async function installMod(
   source: string,
-  options: ModRoots & { scope?: ModScope; force?: boolean } = {},
-): Promise<{ name: string; scope: ModScope; path: string; replaced?: string }> {
+  options: ModRoots & { scope?: InstallScope; force?: boolean } = {},
+): Promise<{ name: string; scope: InstallScope; path: string; replaced?: string }> {
   const scope = options.scope ?? 'user'
   const root = scope === 'user' ? roots(options).user : roots(options).project
   const from = resolve(source)
@@ -356,6 +411,11 @@ export async function uninstallMod(
   options: ModRoots & { scope?: ModScope } = {},
 ): Promise<{ name: string; scope: ModScope; movedTo: string }> {
   const source = await locate(name, options.scope, options)
+  if (source.scope === 'bundled') {
+    throw new ModManageError(
+      `${name} comes with the host (${source.dir}); disable it instead, or install your own copy under the same name to replace it`,
+    )
+  }
   const dirs = roots(options)
   const root = source.scope === 'user' ? dirs.user : dirs.project
   const path = shapeOf(source.entry, source.dir, root) === 'file' ? source.entry : source.dir

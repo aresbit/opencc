@@ -294,7 +294,7 @@ async function loadOne(source: ModSource): Promise<ModLoadResult> {
  * contribute a noun through `engine.create`.
  */
 export async function loadMods(
-  options: { userDir?: string; projectDir?: string } = {},
+  options: { userDir?: string; projectDir?: string; bundledPaths?: string[] } = {},
 ): Promise<ModLoadResult[]> {
   if (modsDisabled()) {
     lastResults = []

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { delimiter, join, resolve } from 'path'
 import { registry } from '../../registry.js'
 import { dispatch } from '../../dispatcher.js'
 import type { EngineInterface, HookFn } from '../../types.js'
-import { discoverMods } from '../discovery.js'
+import { discoverMods, getBundledModPaths } from '../discovery.js'
 import { loadMods, resetMods } from '../loader.js'
 import {
   collectHooksStatus,
@@ -236,5 +236,74 @@ describe('installMod and uninstallMod', () => {
     expect(fileResult.movedTo.endsWith('.ts')).toBe(true)
     expect((await discoverMods(roots)).sources).toEqual([])
     await expect(uninstallMod('trace', roots)).rejects.toThrow('no mod named')
+  })
+})
+
+describe('bundled mods', () => {
+  /** A host's mods live outside both roots and are named one by one. */
+  function bundled() {
+    const roots = tempRoots()
+    const meter = writeDirMod(roots.outside, 'meter', hookSource('usage.record'), { options: { warnAt: 0.8 } })
+    return { roots, meter, all: { ...roots, bundledPaths: [meter] } }
+  }
+
+  test('load by default, below the user and project roots', async () => {
+    const { all } = bundled()
+    const report = await collectHooksStatus({ ...all, load: () => loadMods(all) })
+    const meter = report.mods.find(m => m.name === 'meter')!
+    expect(meter).toMatchObject({ scope: 'bundled', state: 'loaded', shape: 'directory', enabled: true })
+    expect(report.dirs.bundled).toEqual(all.bundledPaths)
+  })
+
+  test("a person's own copy under the same name replaces the bundled one", async () => {
+    const { roots, all } = bundled()
+    writeDirMod(roots.userDir, 'meter', hookSource('usage.record'))
+    const { sources, shadowed } = await discoverMods(all)
+    expect(sources.find(s => s.manifest.name === 'meter')?.scope).toBe('user')
+    expect(shadowed.map(s => s.scope)).toEqual(['bundled'])
+  })
+
+  test("switching one off is kept with the person's mods, never in the host's files", async () => {
+    const { roots, meter, all } = bundled()
+    const before = readFileSync(join(meter, 'mod.json'), 'utf8')
+    const result = await setModEnabled('meter', false, all)
+    expect(result).toMatchObject({ scope: 'bundled', enabled: false })
+    expect(readFileSync(join(meter, 'mod.json'), 'utf8')).toBe(before)
+    expect(JSON.parse(readFileSync(join(roots.userDir, 'bundled.json'), 'utf8'))).toEqual({
+      meter: { enabled: false },
+    })
+
+    const off = await collectHooksStatus({ ...all, load: () => loadMods(all) })
+    expect(off.mods.find(m => m.name === 'meter')).toMatchObject({ state: 'disabled', enabled: false })
+    // The rest of the bundled manifest is still the host's.
+    const { sources } = await discoverMods(all)
+    expect(sources.find(s => s.manifest.name === 'meter')?.manifest.options).toEqual({ warnAt: 0.8 })
+
+    await setModEnabled('meter', true, all)
+    const on = await collectHooksStatus({ ...all, load: () => loadMods(all) })
+    expect(on.mods.find(m => m.name === 'meter')?.state).toBe('loaded')
+  })
+
+  test('cannot be uninstalled, only switched off or replaced', async () => {
+    const { meter, all } = bundled()
+    await expect(uninstallMod('meter', all)).rejects.toThrow(ModManageError)
+    expect(existsSync(join(meter, 'mod.ts'))).toBe(true)
+  })
+
+  test('OPENCC_BUNDLED_MODS is a path list; empty means none', () => {
+    expect(getBundledModPaths({ OPENCC_BUNDLED_MODS: ['/a/meter', ' ', 'rel'].join(delimiter) })).toEqual([
+      '/a/meter',
+      resolve('rel'),
+    ])
+    expect(getBundledModPaths({ OPENCC_BUNDLED_MODS: '' })).toEqual([])
+    expect(getBundledModPaths({})).toEqual([])
+  })
+
+  test('a path that is a root rather than a mod brings every mod in it', async () => {
+    const roots = tempRoots()
+    writeDirMod(roots.outside, 'one', hookSource())
+    writeDirMod(roots.outside, 'two', hookSource())
+    const { sources } = await discoverMods({ ...roots, bundledPaths: [roots.outside] })
+    expect(sources.filter(s => s.scope === 'bundled').map(s => s.manifest.name)).toEqual(['one', 'two'])
   })
 })

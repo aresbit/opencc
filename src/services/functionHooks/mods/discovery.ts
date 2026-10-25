@@ -1,12 +1,19 @@
 /**
  * Finding mods on disk.
  *
- * Two roots, in increasing precedence:
+ * Three roots, in increasing precedence:
  *
- *   ~/.claude/mods/        the person's own, every project
+ *   $OPENCC_BUNDLED_MODS     what the host ships (the desktop's token meter)
+ *   ~/.claude/mods/          the person's own, every project
  *   <project>/.claude/mods/  this repository's, checked in with it
  *
- * A project mod shadows a user mod of the same name rather than both loading.
+ * A later root shadows an earlier one's mod of the same name rather than both
+ * loading. Bundled mods sit at the bottom so a person can replace one by
+ * installing their own copy under the same name.
+ *
+ * A bundled mod's files belong to the host and are never written to. What a
+ * person changes about one — switching it off, its options — lives in their
+ * own mods directory, in `bundled.json`, keyed by the mod's name.
  * Two hooks with the same name in one chain is not a merge, it is a mystery:
  * which one denied the call would depend on load order that nobody chose.
  *
@@ -17,14 +24,31 @@
  */
 
 import { readdir, readFile, stat } from 'fs/promises'
-import { basename, extname, join, resolve } from 'path'
+import { basename, delimiter, extname, join, resolve } from 'path'
 import { getClaudeConfigHomeDir } from '../../../utils/envUtils.js'
 import { getCwd } from '../../../utils/cwd.js'
-import type { ModManifest, ModSource } from './types.js'
+import type { ModManifest, ModScope, ModSource } from './types.js'
 
 export const ENTRY_NAMES = ['mod.ts', 'mod.tsx', 'mod.js', 'mod.mjs', 'index.ts', 'index.js']
 export const FILE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs'])
 export const MANIFEST_NAME = 'mod.json'
+
+/** Path-list (`:`/`;`) of bundled mods: each a mod directory or a root of them. */
+export const BUNDLED_MODS_ENV = 'OPENCC_BUNDLED_MODS'
+
+/** In the user mods root: a person's changes to bundled mods, by name. */
+export const BUNDLED_OVERRIDES_NAME = 'bundled.json'
+
+/** What a person may change about a bundled mod without touching its files. */
+export type BundledOverride = Pick<ModManifest, 'enabled' | 'options'>
+
+export function getBundledModPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  return (env[BUNDLED_MODS_ENV] ?? '')
+    .split(delimiter)
+    .map(path => path.trim())
+    .filter(Boolean)
+    .map(path => resolve(path))
+}
 
 export function getUserModsDir(): string {
   return join(getClaudeConfigHomeDir(), 'mods')
@@ -66,7 +90,7 @@ export async function entryFor(dir: string): Promise<string | undefined> {
 
 async function scanRoot(
   root: string,
-  scope: 'user' | 'project',
+  scope: ModScope,
 ): Promise<ModSource[]> {
   let entries: Awaited<ReturnType<typeof readdir>>
   try {
@@ -109,18 +133,82 @@ async function scanRoot(
   return found
 }
 
+export async function readBundledOverrides(
+  userDir: string,
+): Promise<Record<string, BundledOverride>> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(await readFile(join(userDir, BUNDLED_OVERRIDES_NAME), 'utf8'))
+  } catch {
+    return {}
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  const overrides: Record<string, BundledOverride> = {}
+  for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const { enabled, options } = value as BundledOverride
+    overrides[name] = {
+      ...(typeof enabled === 'boolean' ? { enabled } : {}),
+      ...(options && typeof options === 'object' && !Array.isArray(options) ? { options } : {}),
+    }
+  }
+  return overrides
+}
+
+async function scanBundled(
+  paths: string[],
+  overrides: Record<string, BundledOverride>,
+): Promise<ModSource[]> {
+  const found: ModSource[] = []
+  for (const path of paths) {
+    const entry = await entryFor(path)
+    if (entry) {
+      // A path naming one mod rather than a root: the host lists exactly the
+      // mods it turns on, not every directory beside them.
+      found.push({
+        manifest: { name: basename(path), ...(await readJsonManifest(path)) },
+        entry,
+        dir: path,
+        scope: 'bundled',
+      })
+    } else {
+      found.push(...(await scanRoot(path, 'bundled')))
+    }
+  }
+  return found.map(source => {
+    const override = overrides[source.manifest.name]
+    if (!override) return source
+    const options =
+      override.options || source.manifest.options
+        ? { ...source.manifest.options, ...override.options }
+        : undefined
+    return {
+      ...source,
+      manifest: {
+        ...source.manifest,
+        ...(override.enabled === undefined ? {} : { enabled: override.enabled }),
+        ...(options ? { options } : {}),
+      },
+    }
+  })
+}
+
 /**
- * Every mod on disk, project shadowing user, sorted by name so the chain is
+ * Every mod on disk, later roots shadowing earlier, sorted by name so the chain is
  * the same on every start. Load order decides nesting order, and a chain that
  * reorders itself between runs is one whose behaviour cannot be reproduced.
  */
 export async function discoverMods(
-  options: { userDir?: string; projectDir?: string } = {},
+  options: { userDir?: string; projectDir?: string; bundledPaths?: string[] } = {},
 ): Promise<{ sources: ModSource[]; shadowed: ModSource[] }> {
   const userDir = options.userDir ?? getUserModsDir()
   const projectDir = options.projectDir ?? getProjectModsDir()
+  const bundledPaths = options.bundledPaths ?? getBundledModPaths()
 
-  const [user, project] = await Promise.all([
+  const [bundled, user, project] = await Promise.all([
+    bundledPaths.length
+      ? readBundledOverrides(resolve(userDir)).then(overrides => scanBundled(bundledPaths, overrides))
+      : Promise.resolve([] as ModSource[]),
     scanRoot(resolve(userDir), 'user'),
     // One directory serving as both roots would otherwise load everything in
     // it twice, once per scope.
@@ -131,7 +219,7 @@ export async function discoverMods(
 
   const byName = new Map<string, ModSource>()
   const shadowed: ModSource[] = []
-  for (const source of [...user, ...project]) {
+  for (const source of [...bundled, ...user, ...project]) {
     const existing = byName.get(source.manifest.name)
     if (existing) shadowed.push(existing)
     byName.set(source.manifest.name, source)

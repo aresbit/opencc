@@ -294,14 +294,24 @@ bound on what it could reach through `$`, and no way to see what had loaded.
 ### Where they live
 
 ```
+$OPENCC_BUNDLED_MODS         what the host ships, e.g. the desktop's token-meter
 ~/.claude/mods/              yours, every project
 <project>/.claude/mods/      this repository's, checked in with it
 ```
 
-A project mod shadows a user mod of the same name; both loading would put two
-hooks with one name in the chain, and which of them denied a call would depend
-on an order nobody chose. Mods load in name order so the chain is identical on
-every start.
+A later root shadows an earlier one's mod of the same name; both loading would
+put two hooks with one name in the chain, and which of them denied a call would
+depend on an order nobody chose. Mods load in name order so the chain is
+identical on every start.
+
+`OPENCC_BUNDLED_MODS` is a path list (`:` on Unix, `;` on Windows). Each entry
+is one mod's directory or a root of them; a host names the mods it turns on
+rather than a whole examples folder. Bundled mods are on by default and belong
+to the host: nothing writes to their files. Disabling one records
+`{ "<name>": { "enabled": false } }` in `~/.claude/mods/bundled.json`, which
+may also carry `options` laid over the bundled `mod.json`. They cannot be
+uninstalled; installing a mod of the same name replaces one, and
+`OPENCC_BUNDLED_MODS=` (empty) or `OPENCC_DISABLE_MODS=1` turns them all off.
 
 Two shapes:
 
@@ -591,7 +601,7 @@ must not keep a second copy of these rules. `opencc mods` is that surface, and
 
 ```
 opencc mods list --json                 every built-in and mod, as a session would load them
-opencc mods enable|disable <name>       writes enabled into mod.json (--scope user|project)
+opencc mods enable|disable <name>       writes enabled into mod.json, or bundled.json for a bundled mod (--scope user|project|bundled)
 opencc mods install <dir-or-file>       copies a mod into ~/.claude/mods (--scope project, --force)
 opencc mods uninstall <name>            moves it to <mods>/.uninstalled/, which discovery skips
 ```

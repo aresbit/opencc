@@ -4297,7 +4297,7 @@ async function run(): Promise<CommanderCommand> {
     } = await import('./cli/handlers/mods.js');
     await modsListHandler(options);
   });
-  modsCmd.command('enable <name>').description('Enable a mod (writes enabled: true to its mod.json)').option('-s, --scope <scope>', 'user or project (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
+  modsCmd.command('enable <name>').description('Enable a mod (its mod.json, or bundled.json for a bundled mod)').option('-s, --scope <scope>', 'user, project or bundled (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
     scope?: string;
     json?: boolean;
   }) => {
@@ -4306,7 +4306,7 @@ async function run(): Promise<CommanderCommand> {
     } = await import('./cli/handlers/mods.js');
     await modsSetEnabledHandler(name, true, options);
   });
-  modsCmd.command('disable <name>').description('Disable a mod (writes enabled: false to its mod.json)').option('-s, --scope <scope>', 'user or project (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
+  modsCmd.command('disable <name>').description('Disable a mod (its mod.json, or bundled.json for a bundled mod)').option('-s, --scope <scope>', 'user, project or bundled (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
     scope?: string;
     json?: boolean;
   }) => {
@@ -4325,7 +4325,7 @@ async function run(): Promise<CommanderCommand> {
     } = await import('./cli/handlers/mods.js');
     await modsInstallHandler(source, options);
   });
-  modsCmd.command('uninstall <name>').alias('remove').alias('rm').description('Remove a mod (moved to .uninstalled/ in its mods directory)').option('-s, --scope <scope>', 'user or project (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
+  modsCmd.command('uninstall <name>').alias('remove').alias('rm').description('Remove a mod (moved to .uninstalled/ in its mods directory)').option('-s, --scope <scope>', 'user, project or bundled (default: the copy that loads)').option('--json', 'Output as JSON').action(async (name: string, options: {
     scope?: string;
     json?: boolean;
   }) => {

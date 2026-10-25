@@ -51,6 +51,13 @@ export interface ModManifest {
   options?: Record<string, unknown>
 }
 
+/**
+ * Which search root a mod came from, in increasing precedence. `bundled` is
+ * what the host ships (OPENCC_BUNDLED_MODS); the person's own and the
+ * project's mods shadow it by name.
+ */
+export type ModScope = 'bundled' | 'user' | 'project'
+
 export interface ModSource {
   /** Resolved manifest, after mod.json has overridden anything inline. */
   manifest: ModManifest
@@ -59,7 +66,7 @@ export interface ModSource {
   /** Directory the mod came from, for reporting. */
   dir: string
   /** Which search root found it — a project mod shadows a user mod by name. */
-  scope: 'user' | 'project'
+  scope: ModScope
 }
 
 export interface LoadedMod extends ModSource {
@@ -73,7 +80,7 @@ export interface ModLoadResult {
   entry: string
   /** Directory the mod came from (the mods root itself for a one-file mod). */
   dir: string
-  scope: 'user' | 'project'
+  scope: ModScope
   /**
    * The manifest as the chain sees it: the mod's inline \`manifest\` with
    * mod.json applied over it. Only mod.json is known when the import fails.
