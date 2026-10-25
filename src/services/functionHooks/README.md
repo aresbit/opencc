@@ -410,7 +410,7 @@ hooks while leaving its `tool.call` and the rest running.
 
 ### Worked examples
 
-`examples/mods/` has two, both driven by tests against the real chains:
+`examples/mods/` has these, all driven by tests against the real chains:
 
 - **`subagent-trace`** — the built-in dashboard renders from `AppState.tasks`,
   which knows a subagent exists, its type and its age. It does not know what
@@ -431,8 +431,11 @@ hooks while leaving its `tool.call` and the rest running.
   能落到文件与工具契约上就不要只靠自觉") and then enforces it by prose the
   model read a hundred thousand tokens ago. Two hooks make it a tool
   contract: no Run before `research.md` exists, no deleting a Run afterwards.
+- **`desktop-tool-ledger`** — the desktop counterpart: a ledger of the calls
+  through `tool.call`, drawn as a pane in the HydraHub desktop's Plugins tab
+  and a line above its composer. See [Desktop slots](#desktop-slots).
 
-Neither spends a model token.
+None of them spends a model token.
 
 ### Drawing
 
@@ -497,6 +500,60 @@ model call is involved anywhere, so it costs no tokens per frame. The clock is
 an ordinary `setInterval` — a mod is ordinary code in the process — and
 `bumpEpoch()` is how a tick outside React reaches the screen. The same three
 pieces are what a status panel or an approval widget is built from.
+
+### Desktop slots
+
+The HydraHub desktop runs the engine headless (`--print --output-format
+stream-json`), so nothing drawn with Ink reaches it. What reaches it is data.
+`ctx.desktop` is the same idea as `ctx.ui` for a host in another process:
+
+```ts
+export function register(on, options, ctx) {
+  let count = 0
+  on('tool.call', async ($, e, next) => { count++; ctx.desktop.refresh(); return next(e) })
+
+  ctx.desktop.slot('panel', () => ({
+    title: 'Calls',
+    tree: { type: 'Box', children: [
+      { type: 'Metrics', items: [{ label: 'tool calls', value: count }] },
+      { type: 'Button', label: 'Ask about them', action: { kind: 'plugin', action: 'ask' } },
+    ] },
+  }))
+
+  ctx.desktop.onAction(action =>
+    action === 'ask' ? { prompt: `There have been ${count} tool calls. What were they for?` } : undefined)
+}
+```
+
+| id | where |
+|---|---|
+| `panel` | The Plugins tab, under its header, for the session in view. |
+| `composer` | A strip above the session's composer. Keep it to a line. |
+
+- **Drawing.** `slot(id, render)` hooks `desktop.slot.render` for that slot.
+  `render` returns `{ tree, title?, key? }` or null for nothing. The tree is
+  the declarative pane vocabulary the desktop already draws for MCP apps (Box,
+  Text, Metrics, Table, Callout, Button, Form, …), validated fail-closed on the
+  desktop side: an unknown node becomes text and a malformed tree is refused,
+  so a mod cannot put arbitrary markup on the page.
+- **Pushing.** In stream-json mode the engine watches the same UI epoch the
+  terminal does. When it moves (`refresh()` is `bumpEpoch()`), the slots are
+  re-rendered and, if the result changed, written to stdout as
+  `{ type: 'system', subtype: 'desktop_slots', slots }`, between turns as well
+  as during one.
+- **Answering.** A Button whose action is `{ kind: 'plugin', action }`, or a
+  Form with `submitAction`, comes back as a `desktop_action` control request
+  and reaches only the mod that drew it (`onAction` hooks `desktop.action`
+  matched on its plugin id). Return `{ message }` to show a line under the
+  pane, or `{ prompt }` to put text in the session's composer. The prompt is
+  not sent: the person reads it and sends it. A mod never starts a turn — it
+  serialises what it knows, and a person decides whether that is worth one.
+- **Limits.** A contribution must be JSON and at most 256K characters
+  serialised; a prompt is cut at 16K characters and a message at 500. A render that throws quarantines
+  the mod like any other hook.
+
+The desktop shows a session's slots once its engine is running, which is
+after the session's first turn.
 
 ### Managing mods from outside a session
 

@@ -5,6 +5,7 @@ import { dispatch } from '../../dispatcher.js'
 import { consumesKey, dispatchUISync } from '../../uiDispatcher.js'
 import type { EngineInterface, HookFn } from '../../types.js'
 import { loadMods, resetMods } from '../loader.js'
+import { handleDesktopAction, renderDesktopSlots } from '../../desktopSlots.js'
 
 /**
  * The example mods, driven through the real loader and the real chains.
@@ -44,7 +45,7 @@ describe('the examples load', () => {
     // Asserted as the whole set rather than a subset: an example that stops
     // loading should fail here, and a new one should have to be added
     // deliberately rather than slipping in untested.
-    expect(loaded).toEqual(['quant-lifecycle', 'subagent-trace', 'tetris'])
+    expect(loaded).toEqual(['desktop-tool-ledger', 'quant-lifecycle', 'subagent-trace', 'tetris'])
   })
 })
 
@@ -205,5 +206,62 @@ describe('subagent-trace', () => {
       }),
     )
     expect(rendered).toContain('to expand')
+  })
+})
+
+describe('desktop-tool-ledger', () => {
+  const ledger = (slotId: 'panel' | 'composer') =>
+    renderDesktopSlots($)[slotId].filter(c => c.pluginId === 'mod:desktop-tool-ledger')
+  const act = (action: string, values?: Record<string, unknown>) =>
+    handleDesktopAction($, { slotId: 'panel', pluginId: 'mod:desktop-tool-ledger', action, values })
+
+  test('says so before any call, and keeps the composer clear', async () => {
+    await loadExamples()
+    expect(JSON.stringify(ledger('panel'))).toContain('No tool calls yet')
+    expect(ledger('composer')).toEqual([])
+  })
+
+  test('counts calls into the pane and the composer line', async () => {
+    await loadExamples()
+    await toolCall({ tool_name: 'Read', tool_input: {} })
+    await toolCall({ tool_name: 'Read', tool_input: {} })
+    await toolCall({ tool_name: 'Grep', tool_input: {} })
+
+    const [pane] = ledger('panel') as unknown as [{ tree: { children: { type: string; items?: unknown[] }[] } }]
+    const metrics = pane.tree.children.find(c => c.type === 'Metrics')
+    expect(metrics?.items?.[0]).toEqual({ label: 'Read', value: 2 })
+    expect(JSON.stringify(ledger('composer'))).toContain('3 tool calls')
+  })
+
+  test('sees a guard refuse a call, because it sits outside the guards', async () => {
+    await loadExamples()
+    // A guard registered after the mods sits inside every outer one, where
+    // the built-ins are; an inner ledger would never hear of this call.
+    registry.createRegistrar('guard', 'test:guard')('tool.call', (_$, e, next) =>
+      (e as { tool_name?: string }).tool_name === 'Bash' ? { deny: 'no shell' } : next(e),
+    )
+    await toolCall({ tool_name: 'Bash', tool_input: { command: 'rm -rf /' } })
+    const pane = JSON.stringify(ledger('panel'))
+    expect(pane).toContain('1 denied')
+    expect(pane).toContain('Callout')
+  })
+
+  test('hands the ledger to the agent as a prompt, never as a turn', async () => {
+    await loadExamples()
+    await toolCall({ tool_name: 'Read', tool_input: {} })
+    const summary = await act('summary')
+    expect(summary.handled).toBe(true)
+    expect(summary.prompt).toContain('- Read: 1')
+    const ask = await act('ask', { tool: 'Read' })
+    expect(ask.prompt).toContain('The Read tool was called 1 time')
+    expect((await act('ask', { tool: 'Bash' })).message).toContain('No Bash calls')
+  })
+
+  test('reset clears it and an unknown action is left unhandled', async () => {
+    await loadExamples()
+    await toolCall({ tool_name: 'Read', tool_input: {} })
+    expect((await act('reset')).message).toBe('Ledger cleared.')
+    expect(ledger('composer')).toEqual([])
+    expect(await act('nonsense')).toEqual({ handled: false })
   })
 })

@@ -86,7 +86,7 @@ describe('rendering', () => {
     // Registered after the mods but prepended: it wraps them, like any outer hook.
     const on = registry.createRegistrar('censor', 'builtin:censor')
     on('desktop.slot.render', { slotId: 'panel' }, ($, e, next) => {
-      const inner = next(e) as unknown[]
+      const inner = next(e) as unknown as unknown[]
       return inner.filter(() => false)
     })
     const mine = registry.getAll().filter(h => h.pluginId === 'builtin:censor')

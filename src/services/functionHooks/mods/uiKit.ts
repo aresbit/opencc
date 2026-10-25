@@ -63,8 +63,9 @@ export interface ModDesktopKit {
    */
   slot: (slotId: DesktopSlotId, render: () => DesktopContribution | null | undefined) => void
   /**
-   * Receive the actions this mod's panes name. Return `{ prompt }` to have the
-   * host submit text to the session, `{ message }` to show a line, or nothing.
+   * Receive the actions this mod's panes name. Return `{ prompt }` to put text
+   * in the session's composer (the person sends it; a mod never starts a
+   * turn), `{ message }` to show a line, or nothing.
    */
   onAction: (
     handler: (

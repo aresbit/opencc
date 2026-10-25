@@ -22,9 +22,9 @@
  * The host answers through `desktop.action`: a button or form in a pane names
  * an action, the host sends it back as a `desktop_action` control request, and
  * the owning plugin's hook decides what it means. Returning `{ prompt }` asks
- * the host to submit that text to the session as a user turn — how a plugin
- * hands an object it serialised to the agent, without the plugin driving the
- * model itself.
+ * the host to put that text in the session's composer — how a plugin hands an
+ * object it serialised to the agent. The person sends it; a plugin never
+ * drives the model itself.
  *
  * Slots are re-rendered whenever the UI epoch moves (`bumpEpoch()`), and a
  * frame is emitted only when what they render changed, so a session with no
