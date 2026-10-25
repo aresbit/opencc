@@ -628,6 +628,18 @@ export async function runHeadless(
     }
   }
 
+  if (options.outputFormat === 'stream-json') {
+    // Desktop slots: mods' declarative panes for a host that is not this
+    // terminal. Emits system/desktop_slots only when a slot's content changes.
+    const [{ startDesktopSlotHost }, { initEngine }] = await Promise.all([
+      import('../services/functionHooks/desktopSlots.js'),
+      import('../services/functionHooks/bridge.js'),
+    ])
+    startDesktopSlotHost(initEngine, frame => {
+      void structuredIO.write(frame as unknown as StdoutMessage)
+    })
+  }
+
   if (options.outputFormat === 'stream-json' && options.verbose) {
     registerHookEventHandler(event => {
       const message: StdoutMessage = (() => {
@@ -4067,6 +4079,24 @@ function runHeadlessStreaming(
             }
             sendControlResponseSuccess(message)
           }
+        } else if (
+          (message.request as { subtype: string }).subtype === 'desktop_action'
+        ) {
+          // A button or form in a plugin's desktop pane. Detached so a slow
+          // plugin cannot hold up the next user message on this input loop.
+          const request = message
+          void (async () => {
+            try {
+              const [{ initEngine }, { handleDesktopAction }] = await Promise.all([
+                import('../services/functionHooks/bridge.js'),
+                import('../services/functionHooks/desktopSlots.js'),
+              ])
+              const result = await handleDesktopAction(await initEngine(), request.request)
+              sendControlResponseSuccess(request, { ...result })
+            } catch (err) {
+              sendControlResponseError(request, errorMessage(err))
+            }
+          })()
         } else {
           // Unknown control request subtype — send an error response so
           // the caller doesn't hang waiting for a reply that never comes.

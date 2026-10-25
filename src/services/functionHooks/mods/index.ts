@@ -20,7 +20,13 @@ export {
   resetMods,
   unloadMod,
 } from './loader.js'
-export { buildModContext, type ModContext, type ModUIKit } from './uiKit.js'
+export {
+  buildModContext,
+  type DesktopContribution,
+  type ModContext,
+  type ModDesktopKit,
+  type ModUIKit,
+} from './uiKit.js'
 export type {
   LoadedMod,
   ModLoadResult,

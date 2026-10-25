@@ -258,7 +258,7 @@ async function loadOne(source: ModSource): Promise<ModLoadResult> {
       register(
         on,
         manifest.options as Record<string, unknown> | undefined,
-        buildModContext(name),
+        buildModContext(name, on, pluginId),
       )
     } catch (error) {
       registry.removePlugin(pluginId)
