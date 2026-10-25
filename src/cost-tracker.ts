@@ -46,6 +46,10 @@ import { formatDuration, formatNumber } from './utils/format.js'
 import type { FpsMetrics } from './utils/fpsTracker.js'
 import { getCanonicalName } from './utils/model/model.js'
 import { calculateUSDCost } from './utils/modelCost.js'
+import {
+  emitUsageRecord,
+  type ModelUsageTotals,
+} from './services/functionHooks/usageEvents.js'
 export {
   getTotalCostUSD as getTotalCost,
   getTotalDuration,
@@ -280,6 +284,60 @@ export function addToTotalSessionCost(
   usage: Usage,
   model: string,
 ): number {
+  const totalCost = recordSessionCost(cost, usage, model)
+  // After the advisor's share is in, so the totals a plugin sees are whole.
+  emitUsageRecord(() => usageRecordFor(model, usage, totalCost))
+  return totalCost
+}
+
+function usageRecordFor(model: string, usage: Usage, costUSD: number) {
+  const models: Record<string, ModelUsageTotals> = {}
+  for (const [name, entry] of Object.entries(getModelUsage())) {
+    models[name] = {
+      inputTokens: entry.inputTokens,
+      outputTokens: entry.outputTokens,
+      cacheReadInputTokens: entry.cacheReadInputTokens,
+      cacheCreationInputTokens: entry.cacheCreationInputTokens,
+      costUSD: entry.costUSD,
+      contextWindow: entry.contextWindow,
+    }
+  }
+  return {
+    model,
+    call: {
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
+      cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
+      costUSD,
+      // utils/tokens' getTokenCountFromUsage, inlined: importing it here would
+      // pull utils/messages into the tracker's import graph.
+      contextTokens:
+        usage.input_tokens +
+        (usage.cache_creation_input_tokens ?? 0) +
+        (usage.cache_read_input_tokens ?? 0) +
+        usage.output_tokens,
+      contextWindow: models[model]?.contextWindow ?? 0,
+    },
+    session: {
+      inputTokens: getTotalInputTokens(),
+      outputTokens: getTotalOutputTokens(),
+      cacheReadInputTokens: getTotalCacheReadInputTokens(),
+      cacheCreationInputTokens: getTotalCacheCreationInputTokens(),
+      costUSD: getTotalCostUSD(),
+      webSearchRequests: getTotalWebSearchRequests(),
+      apiDurationMs: getTotalAPIDuration(),
+      costMayBeInaccurate: hasUnknownModelCost(),
+      models,
+    },
+  }
+}
+
+function recordSessionCost(
+  cost: number,
+  usage: Usage,
+  model: string,
+): number {
   const modelUsage = addToTotalModelUsage(cost, usage, model)
   addToTotalCostState(cost, modelUsage, model)
 
@@ -313,7 +371,7 @@ export function addToTotalSessionCost(
         advisorUsage.cache_creation_input_tokens ?? 0,
       cost_usd_micros: Math.round(advisorCost * 1_000_000),
     })
-    totalCost += addToTotalSessionCost(
+    totalCost += recordSessionCost(
       advisorCost,
       advisorUsage,
       advisorUsage.model,

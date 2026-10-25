@@ -75,6 +75,7 @@ export type FunctionHookEvent =
   | 'scheduler.route'
   | 'budget.check'
   | 'budget.exceed'
+  | 'usage.record'
   | 'rsi.antibody.compile'
   | 'rsi.antibody.match'
   | 'rsi.antibody.block'

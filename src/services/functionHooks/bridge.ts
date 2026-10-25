@@ -24,6 +24,7 @@ import {
   resetDefaultProvidersForTests,
 } from 'src/services/speechToText/index.js'
 import { loadMods, resetMods } from './mods/index.js'
+import { attachUsageEngine } from './usageEvents.js'
 import { logError } from 'src/utils/log.js'
 
 let engineInterface: EngineInterface | null = null
@@ -103,6 +104,7 @@ export async function initEngine(): Promise<EngineInterface> {
     .then(() => buildEngineInterface(buildCoreNouns()))
     .then(iface => {
       engineInterface = iface
+      attachUsageEngine(iface)
       return iface
     })
 
@@ -121,6 +123,7 @@ export function getEngine(): EngineInterface | null {
  */
 export function resetEngine(): void {
   engineInterface = null
+  attachUsageEngine(null)
   engineInitPromise = null
   resetBuiltinPlugins()
   resetDefaultProvidersForTests()
