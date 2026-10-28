@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import stripAnsi from 'strip-ansi'
 import { InputEvent } from '../events/input-event.js'
+import { KeyboardEvent } from '../events/keyboard-event.js'
 import { INITIAL_STATE, parseMultipleKeypresses } from '../parse-keypress.js'
 
 /**
@@ -131,5 +132,31 @@ describe('plain text is unchanged', () => {
     expect(key.text).toBeUndefined()
     expect(key.text ?? key.sequence).toBe('zhong')
     expect(stripAnsi(key.text ?? key.sequence)).toBe('zhong')
+  })
+})
+
+describe('legacy ESC-prefixed meta (terminals without extended keys)', () => {
+  // VTE/GNOME Terminal sends Alt+k as ESC k. The parser keeps sequence
+  // "\x1bk" and sets meta; KeyboardEvent.key must still be 'k' (browser
+  // semantics), or alt+letter bindings — voice push-to-talk included —
+  // never match.
+  function keyOf(chunk: string) {
+    const [keys] = parseMultipleKeypresses(
+      { ...INITIAL_STATE, _tokenizer: undefined },
+      chunk,
+    )
+    const key = keys.find(k => k.kind === 'key') as any
+    return new KeyboardEvent(key)
+  }
+
+  test('ESC k → key "k" with meta', () => {
+    const e = keyOf('\x1bk')
+    expect(e.key).toBe('k')
+    expect(e.meta).toBe(true)
+  })
+
+  test('special keys keep their name: ESC backspace / ESC ESC', () => {
+    expect(keyOf('\x1b\x7f').key).toBe('backspace')
+    expect(keyOf('\x1b\x1b').key).toBe('escape')
   })
 })

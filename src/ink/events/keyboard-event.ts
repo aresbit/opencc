@@ -42,6 +42,18 @@ function keyFromParsed(parsed: ParsedKey): string {
   // non-ASCII, where `name` is empty. Browsers report e.key as the char.
   if (parsed.text) return parsed.text
 
+  // Legacy ESC-prefixed meta: terminals without Kitty/modifyOtherKeys (e.g.
+  // VTE/GNOME Terminal) report Alt+<char> as `ESC <char>`. The parser records
+  // sequence "\x1bk", name "", meta true. Browsers report key === 'k' with
+  // metaKey true, so strip the ESC here; otherwise e.key is the two-byte
+  // string and every alt+letter binding (voice push-to-talk included) misses.
+  // Require an empty name and a printable second byte so ESC-backspace,
+  // ESC-ESC (escape) and other special keys keep using the name branch below.
+  if (parsed.meta && !name && seq.length === 2 && seq.charCodeAt(0) === 0x1b) {
+    const char = seq[1]!
+    if (char.charCodeAt(0) >= 0x20) return char
+  }
+
   // Single printable char (space through ~, plus anything above ASCII):
   // use the literal char. Browsers report e.key === '3', not 'Digit3'.
   if (seq.length === 1) {
