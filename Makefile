@@ -90,6 +90,54 @@ BUILD_TARGET := bun
 BUNDLE_ENTRY := src/entrypoints/cli.tsx
 BUNDLE_OUTDIR := $(DIST_DIR)
 
+# A Bun-compiled standalone executable: the JS bundle plus the Bun runtime in
+# one ELF binary. This is what the .deb ships — no src/, no node_modules/.
+COMPILED_BIN := $(DIST_DIR)/$(PROJECT_NAME)
+
+# ============================================================================
+# Debian package (.deb) configuration
+# ============================================================================
+#
+# The .deb distributes the *runtime only*: a compiled binary, the browser
+# helper script and documentation. Override any of these on the command line:
+#
+#   make deb DEB_REVISION=2
+#
+# Compatibility with other `opencc` installations:
+#   * The command stays `opencc` (DEB_COMMAND).
+#   * The package is named `opencc-cli`, NOT `opencc`, so it can coexist with
+#     Debian/Ubuntu's Open Chinese Convert package, which is also called
+#     `opencc` and also owns /usr/bin/opencc.
+#   * On first install, any existing /usr/bin/opencc (from the distro package
+#     or a manual install) is moved aside with dpkg-divert to
+#     /usr/bin/opencc.distrib; both stay installed. On removal it is restored.
+#   * The legacy `make install` wrapper in /usr/local/bin is renamed to
+#     `opencc.legacy` if it is recognisably ours, otherwise a warning is shown.
+#   * Configuration is shared automatically: both versions use ~/.claude.
+DEB_PACKAGE    ?= opencc-cli
+DEB_COMMAND    ?= $(PROJECT_NAME)
+DEB_VERSION    ?= $(VERSION)
+DEB_REVISION   ?= 1
+DEB_ARCH       ?= $(shell dpkg --print-architecture 2>/dev/null || echo amd64)
+DEB_SECTION    ?= devel
+DEB_DEPENDS    ?= libc6 (>= 2.31), ca-certificates
+DEB_RECOMMENDS ?= ripgrep
+DEB_HOMEPAGE   ?= https://github.com/aresbit/opencc
+DEB_MAINTAINER ?= $(shell n=$$(git config user.name 2>/dev/null); e=$$(git config user.email 2>/dev/null); echo "$${n:-OpenCC Maintainer} <$${e:-maintainer@example.com}>")
+
+# Filesystem layout inside the package. The binary lives under /usr/lib so the
+# /usr/bin entry point can stay a tiny wrapper (it pins OPENCC_CDP_SCRIPT).
+PACKAGING_DIR  := packaging
+DEB_LIBDIR     := /usr/lib/$(DEB_PACKAGE)
+DEB_STAGE_DIR  := $(BUILD_DIR)/deb/$(DEB_PACKAGE)_$(DEB_VERSION)-$(DEB_REVISION)_$(DEB_ARCH)
+DEB_OUT        := $(BUILD_DIR)/$(DEB_PACKAGE)_$(DEB_VERSION)-$(DEB_REVISION)_$(DEB_ARCH).deb
+
+# Map the Debian architecture to @vscode/ripgrep's platform package name. The
+# rg binary itself is resolved inside the recipe, after check-deps has had a
+# chance to install it — a parse-time $(wildcard ...) would miss it on a clean
+# checkout where node_modules does not exist yet.
+DEB_RG_ARCH    := $(if $(filter amd64,$(DEB_ARCH)),x64,$(if $(filter arm64,$(DEB_ARCH)),arm64,$(if $(filter armhf,$(DEB_ARCH)),arm,$(if $(filter i386,$(DEB_ARCH)),ia32,))))
+
 # ============================================================================
 # Source Files Detection (Unix only - Windows uses different mechanism)
 # ============================================================================
@@ -104,7 +152,7 @@ endif
 # Phony targets
 # ============================================================================
 
-.PHONY: all build ant ensure-dist install install-local uninstall uninstall-local clean dev test lint format check-deps help info
+.PHONY: all build compile ant deb deb-clean ensure-dist install install-local uninstall uninstall-local clean dev test lint format check-deps help info
 
 # ============================================================================
 # Main targets
@@ -148,6 +196,22 @@ else
 	@$(MKDIR) $(DIST_DIR)
 	@$(CP) "$(ANT_WORK_DIR)/dist/cli.js" "$(DIST_DIR)/cli.js"
 	@echo "Ant build complete: $(DIST_DIR)/cli.js"
+endif
+
+# Build a self-contained standalone executable (JS bundle + Bun runtime).
+# This artifact is what gets packaged for distribution; it contains no source.
+compile: check-deps
+ifeq ($(DETECTED_OS),Windows)
+	@echo "Error: 'make compile' produces a Linux/macOS native binary and is not supported on Windows."
+	@exit 1
+else
+	@echo "Compiling standalone runtime: $(COMPILED_BIN)"
+	@$(BUN) build $(BUNDLE_ENTRY) --compile --outfile $(COMPILED_BIN) \
+		--target $(BUILD_TARGET) \
+		--external @firecrawl/anydoc \
+		--minify-whitespace --minify-syntax \
+		--feature VOICE_MODE
+	@echo "Compiled runtime ready: $(COMPILED_BIN)"
 endif
 
 # Ensure build artifact exists before install (no implicit rebuild)
@@ -302,6 +366,97 @@ else
 	echo "Uninstall complete."
 endif
 
+# ============================================================================
+# Debian package (.deb)
+# ============================================================================
+#
+# Produces $(DEB_OUT) containing only the compiled runtime, a /usr/bin wrapper
+# and documentation. No source files are copied into the package.
+
+deb: compile
+ifeq ($(DETECTED_OS),Windows)
+	@echo "Error: .deb packaging requires dpkg-deb; build on Debian/Ubuntu."
+	@exit 1
+else
+	@command -v dpkg-deb >/dev/null 2>&1 || { \
+		echo "Error: dpkg-deb not found. Install 'dpkg-dev' on the build host."; \
+		exit 1; \
+	}
+	@echo "Packaging $(DEB_PACKAGE) $(DEB_VERSION)-$(DEB_REVISION) ($(DEB_ARCH))..."
+	@$(RM) "$(DEB_STAGE_DIR)" "$(DEB_OUT)"
+	@$(MKDIR) \
+		"$(DEB_STAGE_DIR)/DEBIAN" \
+		"$(DEB_STAGE_DIR)/usr/bin" \
+		"$(DEB_STAGE_DIR)$(DEB_LIBDIR)/scripts" \
+		"$(DEB_STAGE_DIR)/usr/share/doc/$(DEB_PACKAGE)"
+	@install -m 0755 "$(COMPILED_BIN)" "$(DEB_STAGE_DIR)$(DEB_LIBDIR)/$(PROJECT_NAME)"
+	@install -m 0644 "$(SCRIPTS_DIR)/cdp.mjs" "$(DEB_STAGE_DIR)$(DEB_LIBDIR)/scripts/cdp.mjs"
+	@for f in preinst postinst postrm; do \
+		sed -e 's|@PACKAGE@|$(DEB_PACKAGE)|g' \
+			-e 's|@COMMAND@|$(DEB_COMMAND)|g' \
+			-e 's|@PROJECT@|$(PROJECT_NAME)|g' \
+			"$(PACKAGING_DIR)/debian/$$f" > "$(DEB_STAGE_DIR)/DEBIAN/$$f"; \
+		chmod 0755 "$(DEB_STAGE_DIR)/DEBIAN/$$f"; \
+	done
+	@RG_SRC=$$(find node_modules/.bun -path "*@vscode/ripgrep-linux-$(DEB_RG_ARCH)/bin/rg" -type f 2>/dev/null | head -n1); \
+	if [ -z "$$RG_SRC" ]; then \
+		echo "Error: bundled ripgrep for $(DEB_ARCH) not found under node_modules."; \
+		echo "       Run 'bun install' and retry, or use a supported DEB_ARCH."; \
+		exit 1; \
+	fi; \
+	install -m 0755 "$$RG_SRC" "$(DEB_STAGE_DIR)$(DEB_LIBDIR)/rg"
+	@printf '%s\n' \
+		'#!/bin/sh' \
+		'set -e' \
+		'OPENCC_CDP_SCRIPT="$${OPENCC_CDP_SCRIPT:-$(DEB_LIBDIR)/scripts/cdp.mjs}"' \
+		'export OPENCC_CDP_SCRIPT' \
+		'exec "$(DEB_LIBDIR)/$(PROJECT_NAME)" "$$@"' \
+		> "$(DEB_STAGE_DIR)/usr/bin/$(DEB_COMMAND)"
+	@chmod 0755 "$(DEB_STAGE_DIR)/usr/bin/$(DEB_COMMAND)"
+	@SIZE=$$(du -sk "$(DEB_STAGE_DIR)/usr" | cut -f1); \
+	{ \
+		echo "Package: $(DEB_PACKAGE)"; \
+		echo "Version: $(DEB_VERSION)-$(DEB_REVISION)"; \
+		echo "Architecture: $(DEB_ARCH)"; \
+		echo "Maintainer: $(DEB_MAINTAINER)"; \
+		echo "Installed-Size: $$SIZE"; \
+		echo "Depends: $(DEB_DEPENDS)"; \
+		echo "Recommends: $(DEB_RECOMMENDS)"; \
+		echo "Section: $(DEB_SECTION)"; \
+		echo "Priority: optional"; \
+		echo "Homepage: $(DEB_HOMEPAGE)"; \
+		echo "Description: OpenCC terminal AI coding assistant (compiled runtime)"; \
+		echo " OpenCC is a terminal-based AI coding assistant. This package ships"; \
+		echo " the self-contained compiled runtime only; no source code is included."; \
+	} > "$(DEB_STAGE_DIR)/DEBIAN/control"
+	@{ \
+		echo "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/"; \
+		echo "Upstream-Name: $(PROJECT_NAME)"; \
+		echo "Source: $(DEB_HOMEPAGE)"; \
+		echo ""; \
+		echo "Files: *"; \
+		echo "Copyright: $$(date +%Y) $(DEB_MAINTAINER)"; \
+		echo "License: Proprietary"; \
+		echo " This package distributes the compiled OpenCC runtime. Source code is"; \
+		echo " not included; redistribution is permitted only as provided by the"; \
+		echo " vendor."; \
+	} > "$(DEB_STAGE_DIR)/usr/share/doc/$(DEB_PACKAGE)/copyright"
+	@{ \
+		echo "$(DEB_PACKAGE) ($(DEB_VERSION)-$(DEB_REVISION)) unstable; urgency=medium"; \
+		echo ""; \
+		echo "  * Compiled runtime release $(DEB_VERSION)."; \
+		echo ""; \
+		echo " -- $(DEB_MAINTAINER)  $$(date -R)"; \
+	} | gzip -9n > "$(DEB_STAGE_DIR)/usr/share/doc/$(DEB_PACKAGE)/changelog.Debian.gz"
+	@dpkg-deb --build --root-owner-group "$(DEB_STAGE_DIR)" "$(DEB_OUT)"
+	@dpkg-deb --info "$(DEB_OUT)" | sed 's/^/  /'
+	@echo "Package ready: $(DEB_OUT)"
+endif
+
+# Remove the staging tree and the built .deb (keeps the compiled runtime).
+deb-clean:
+	@$(RM) "$(BUILD_DIR)/deb" "$(DEB_OUT)"
+
 # Clean build artifacts
 clean:
 ifeq ($(DETECTED_OS),Windows)
@@ -365,7 +520,9 @@ else
 	@echo ""
 	@echo "Usage:"
 	@echo "  make build           Build the project"
+	@echo "  make compile         Build a standalone runtime executable"
 	@echo "  make ant             Build ant variant in isolated temp workspace"
+	@echo "  make deb             Build a .deb package with the compiled runtime"
 	@echo "  make run             Run the built application"
 	@echo "  make install         Install system-wide (requires sudo)"
 	@echo "  make install-local   Install to user directory (~/.local/)"
@@ -384,6 +541,11 @@ else
 	@echo ""
 	@echo "Variables:"
 	@echo "  PREFIX=/custom/path  Change installation prefix"
+	@echo "  DEB_PACKAGE=name     Debian package name (default: $(DEB_PACKAGE))"
+	@echo "  DEB_COMMAND=cmd      Installed command name (default: $(DEB_COMMAND))"
+	@echo "  DEB_VERSION=x.y.z    Debian upstream version (default: $(VERSION))"
+	@echo "  DEB_REVISION=n       Debian revision (default: 1)"
+	@echo "  DEB_ARCH=arch        Package architecture (default: host dpkg arch)"
 	@echo ""
 	@echo "Platform: $(DETECTED_OS)"
 endif

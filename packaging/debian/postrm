@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+PACKAGE='@PACKAGE@'
+COMMAND='@COMMAND@'
+TARGET="/usr/bin/$COMMAND"
+DIVERTED="/usr/bin/$COMMAND.distrib"
+
+case "$1" in
+    remove|purge)
+        # Restore any binary this package moved aside on first install. Doing
+        # this only on removal keeps an upgrade from resurrecting a stale file
+        # in the middle of the unpack.
+        if dpkg-divert --package "$PACKAGE" --list "$TARGET" 2>/dev/null | grep -qF "$TARGET"; then
+            dpkg-divert --package "$PACKAGE" --divert "$DIVERTED" --rename --remove "$TARGET"
+        fi
+        ;;
+esac
+
+exit 0

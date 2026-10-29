@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+
+PACKAGE='@PACKAGE@'
+COMMAND='@COMMAND@'
+PROJECT='@PROJECT@'
+DIVERTED="/usr/bin/$COMMAND.distrib"
+
+if [ -x "$DIVERTED" ]; then
+    echo "$PACKAGE: another '$COMMAND' was preserved as '$DIVERTED'." >&2
+fi
+
+if [ -x "/usr/local/bin/$COMMAND" ]; then
+    echo "$PACKAGE: warning: /usr/local/bin/$COMMAND shadows /usr/bin/$COMMAND." >&2
+    echo "$PACKAGE:          remove it (or run 'make uninstall') to use the packaged command." >&2
+fi
+
+if [ -d "/usr/local/share/$PROJECT" ]; then
+    echo "$PACKAGE: legacy files remain in /usr/local/share/$PROJECT;" >&2
+    echo "$PACKAGE:          remove them if the source install is no longer needed." >&2
+fi
+
+exit 0

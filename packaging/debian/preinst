@@ -1,0 +1,33 @@
+#!/bin/sh
+set -e
+
+PACKAGE='@PACKAGE@'
+COMMAND='@COMMAND@'
+PROJECT='@PROJECT@'
+TARGET="/usr/bin/$COMMAND"
+DIVERTED="/usr/bin/$COMMAND.distrib"
+OUR_BIN="/usr/lib/$PACKAGE/$PROJECT"
+
+# First install only: take over /usr/bin/$COMMAND. If another program already
+# owns that path (for example Debian's Open Chinese Convert, whose binary is
+# also called `opencc`), move it aside with dpkg-divert. Both packages then
+# stay installed; the original is still available as `$COMMAND.distrib`.
+# On upgrade/reinstall OUR_BIN already exists, so this block is skipped and
+# our own binary is never diverted.
+if [ ! -e "$OUR_BIN" ] && { [ -e "$TARGET" ] || [ -L "$TARGET" ]; }; then
+    if [ -e "$DIVERTED" ] || [ -L "$DIVERTED" ]; then
+        : # already diverted; leave the existing diversion alone
+    else
+        dpkg-divert --package "$PACKAGE" --divert "$DIVERTED" --rename "$TARGET"
+    fi
+fi
+
+# Retire the legacy `make install` wrapper. It lives in /usr/local/bin, which
+# precedes /usr/bin in PATH, so leaving it in place would silently shadow the
+# packaged command. Only move files that are recognisably our old wrapper.
+LEGACY="/usr/local/bin/$COMMAND"
+if [ -f "$LEGACY" ] && grep -q "share/$PROJECT/cli.js" "$LEGACY" 2>/dev/null; then
+    mv -f "$LEGACY" "$LEGACY.legacy"
+fi
+
+exit 0
