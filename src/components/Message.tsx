@@ -8,11 +8,11 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { Box } from '../ink.js';
 import type { Tools } from '../Tool.js';
 import { type ConnectorTextBlock, isConnectorTextBlock } from '../types/connectorText.js';
-import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../types/message.js';
+import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, FoldedToolCallsGroup as FoldedToolCallsGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../types/message.js';
 import { type AdvisorBlock, isAdvisorBlock } from '../utils/advisor.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
 import { logError } from '../utils/log.js';
-import type { buildMessageLookups } from '../utils/messages.js';
+import { type buildMessageLookups, getProgressMessagesFromLookup } from '../utils/messages.js';
 import { CompactSummary } from './CompactSummary.js';
 import { AdvisorMessage } from './messages/AdvisorMessage.js';
 import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage.js';
@@ -21,6 +21,7 @@ import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage.js
 import { AssistantToolUseMessage } from './messages/AssistantToolUseMessage.js';
 import { AttachmentMessage } from './messages/AttachmentMessage.js';
 import { CollapsedReadSearchContent } from './messages/CollapsedReadSearchContent.js';
+import { FoldedToolCallsSummary } from './messages/FoldedToolCallsContent.js';
 import { CompactBoundaryMessage } from './messages/CompactBoundaryMessage.js';
 import { GroupedToolUseContent } from './messages/GroupedToolUseContent.js';
 import { SystemTextMessage } from './messages/SystemTextMessage.js';
@@ -30,7 +31,7 @@ import { UserToolResultMessage } from './messages/UserToolResultMessage/UserTool
 import { OffscreenFreeze } from './OffscreenFreeze.js';
 import { ExpandShellOutputProvider } from './shell/ExpandShellOutputContext.js';
 export type Props = {
-  message: NormalizedUserMessage | AssistantMessage | AttachmentMessageType | SystemMessage | GroupedToolUseMessageType | CollapsedReadSearchGroupType;
+  message: NormalizedUserMessage | AssistantMessage | AttachmentMessageType | SystemMessage | GroupedToolUseMessageType | CollapsedReadSearchGroupType | FoldedToolCallsGroupType;
   lookups: ReturnType<typeof buildMessageLookups>;
   // TODO: Find a way to remove this, and leave spacing to the consumer
   /** Absolute width for the container Box. When provided, eliminates a wrapper Box in the caller. */
@@ -72,6 +73,7 @@ function MessageImpl(t0) {
     style,
     width,
     isTranscriptMode,
+    isStatic,
     onOpenRateLimitOptions,
     isActiveCollapsedGroup,
     isUserContinuation: t1,
@@ -350,6 +352,16 @@ function MessageImpl(t0) {
           t3 = $[93];
         }
         return t3;
+      }
+    case "folded_tool_calls":
+      {
+        if (!(verbose || isTranscriptMode)) {
+          return <FoldedToolCallsSummary message={message} />;
+        }
+        // Expanded: re-render every row the fold swallowed, through the same
+        // component that would have rendered it. The group carries the rows,
+        // so this is the original view, not a summary of it.
+        return <Box flexDirection="column">{message.messages.map(m => <Message key={m.uuid} message={m} lookups={lookups} containerWidth={containerWidth} addMargin={false} tools={tools} commands={commands} verbose={true} inProgressToolUseIDs={inProgressToolUseIDs} progressMessagesForMessage={getProgressMessagesFromLookup(m, lookups)} shouldAnimate={false} shouldShowDot={shouldShowDot} isTranscriptMode={isTranscriptMode} isStatic={isStatic} onOpenRateLimitOptions={onOpenRateLimitOptions} />)}</Box>;
       }
   }
 }

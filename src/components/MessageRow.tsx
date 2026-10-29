@@ -297,6 +297,8 @@ function _temp(c) {
   return c.type === "text";
 }
 export function isMessageStreaming(msg: RenderableMessage, streamingToolUseIDs: Set<string>): boolean {
+  // A fold only ever holds calls that already finished.
+  if (msg.type === 'folded_tool_calls') return false;
   if (msg.type === 'grouped_tool_use') {
     return msg.messages.some(m => {
       const content = (m.message.content as ContentBlockLike[])[0];
@@ -316,6 +318,7 @@ export function isMessageStreaming(msg: RenderableMessage, streamingToolUseIDs: 
  * Exported for testing.
  */
 export function allToolsResolved(msg: RenderableMessage, resolvedToolUseIDs: Set<string>): boolean {
+  if (msg.type === 'folded_tool_calls') return true;
   if (msg.type === 'grouped_tool_use') {
     return msg.messages.every(m => {
       const content = (m.message.content as ContentBlockLike[])[0];

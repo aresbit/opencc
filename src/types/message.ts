@@ -123,11 +123,35 @@ export type RenderableMessage =
   | (Message & { type: 'progress' })
   | GroupedToolUseMessage
   | CollapsedReadSearchGroup
+  | FoldedToolCallsGroup
 
 export type CollapsibleMessage =
   | AssistantMessage
   | UserMessage
   | GroupedToolUseMessage
+
+/**
+ * A run of older tool calls inside one turn, folded into a single line.
+ *
+ * Nothing is thrown away: `messages` holds every row the group replaced, so
+ * expanding (ctrl+o / the transcript screen / clicking the row) re-renders
+ * exactly what would have been there. The newest calls in the run stay
+ * visible, so the fold never hides what is happening right now.
+ */
+export type FoldedToolCallsGroup = {
+  type: 'folded_tool_calls'
+  uuid: UUID
+  timestamp?: unknown
+  /** Rows folded away, calls and their results together. */
+  messageCount: number
+  /** Tool calls folded away (a done call is two rows, so this is the smaller of the two). */
+  toolCallCount: number
+  /** Failed results among the folded calls. */
+  errorCount: number
+  /** The most recent folded tool's name, for a one-word hint. */
+  latestToolName?: string
+  messages: Array<CollapsibleMessage | CollapsedReadSearchGroup>
+}
 
 export type CollapsedReadSearchGroup = {
   type: 'collapsed_read_search'

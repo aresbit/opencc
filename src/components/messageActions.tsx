@@ -50,6 +50,7 @@ export function isNavigableMessage(msg: NavigableMessage): boolean {
       return true;
     case 'grouped_tool_use':
     case 'collapsed_read_search':
+    case 'folded_tool_calls':
       return true;
     case 'attachment':
       switch (msg.attachment.type) {
@@ -422,6 +423,9 @@ export function copyTextOf(msg: NavigableMessage): string {
       }
     case 'grouped_tool_use':
       return msg.results.map(toolResultText).filter(Boolean).join('\n\n');
+    case 'folded_tool_calls':
+      // Copying a fold yields what it hid — the rows are still here.
+      return msg.messages.flatMap(m => m.type === 'user' ? [toolResultText(m)] : m.type === 'grouped_tool_use' ? m.results.map(toolResultText) : []).filter(Boolean).join('\n\n');
     case 'collapsed_read_search':
       return msg.messages.flatMap(m => m.type === 'user' ? [toolResultText(m)] : m.type === 'grouped_tool_use' ? m.results.map(toolResultText) : []).filter(Boolean).join('\n\n');
     case 'system':

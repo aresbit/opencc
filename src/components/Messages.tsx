@@ -23,6 +23,7 @@ import { type AdvisorBlock, isAdvisorBlock } from '../utils/advisor.js';
 import { collapseBackgroundBashNotifications } from '../utils/collapseBackgroundBashNotifications.js';
 import { collapseHookSummaries } from '../utils/collapseHookSummaries.js';
 import { collapseReadSearchGroups } from '../utils/collapseReadSearch.js';
+import { collapseToolCallRuns } from '../utils/collapseToolCalls.js';
 import { collapseTeammateShutdowns } from '../utils/collapseTeammateShutdowns.js';
 import { getGlobalConfig } from '../utils/config.js';
 import { isEnvTruthy } from '../utils/envUtils.js';
@@ -526,7 +527,14 @@ const MessagesImpl = ({
     const {
       messages: groupedMessages
     } = applyGrouping(messagesToShow, tools, verbose);
-    const collapsed = collapseBackgroundBashNotifications(collapseHookSummaries(collapseTeammateShutdowns(collapseReadSearchGroups(groupedMessages, tools))), verbose);
+    const collapsedGroups = collapseBackgroundBashNotifications(collapseHookSummaries(collapseTeammateShutdowns(collapseReadSearchGroups(groupedMessages, tools))), verbose);
+    // Fold, last: only the older calls of a run, and never in verbose /
+    // transcript view — those are the ways the folded rows are read.
+    const streamingIds = syntheticStreamingToolUseMessages.map(m => getToolUseID(m)).filter((id): id is string => id !== null);
+    const collapsed = verbose || isTranscriptMode ? collapsedGroups : collapseToolCallRuns(collapsedGroups, {
+      inProgressToolUseIDs,
+      streamingToolUseIDs: new Set(streamingIds)
+    });
     const lookups = buildMessageLookups(normalizedMessages, messagesToShow);
     const hiddenMessageCount = messagesToShowNotTruncated.length - MAX_MESSAGES_TO_SHOW_IN_TRANSCRIPT_MODE;
     return {
@@ -535,7 +543,7 @@ const MessagesImpl = ({
       hasTruncatedMessages,
       hiddenMessageCount
     };
-  }, [verbose, normalizedMessages, isTranscriptMode, syntheticStreamingToolUseMessages, shouldTruncate, tools, isBriefOnly]);
+  }, [verbose, normalizedMessages, isTranscriptMode, syntheticStreamingToolUseMessages, shouldTruncate, tools, isBriefOnly, inProgressToolUseIDs]);
 
   // Cheap slice — only runs when scroll range or slice config changes.
   const renderableMessages = useMemo(() => {
@@ -589,7 +597,7 @@ const MessagesImpl = ({
   const lookupsRef = useRef(lookups_0);
   lookupsRef.current = lookups_0;
   const isItemClickable = useCallback((msg_6: RenderableMessage): boolean => {
-    if (msg_6.type === 'collapsed_read_search') return true;
+    if (msg_6.type === 'collapsed_read_search' || msg_6.type === 'folded_tool_calls') return true;
     if (msg_6.type === 'assistant') {
       const b = msg_6.message.content[0] as unknown as AdvisorBlock | undefined;
       return b != null && isAdvisorBlock(b) && b.type === 'advisor_tool_result' && b.content.type === 'advisor_result';
@@ -831,6 +839,12 @@ export function shouldRenderStatically(message: RenderableMessage, streamingTool
           return content?.type === 'tool_use' && lookups.resolvedToolUseIDs.has(content.id!);
         });
         return allResolved;
+      }
+    case 'folded_tool_calls':
+      {
+        // A fold only ever holds finished calls (collapseToolCalls never folds
+        // a live one), so the row cannot change while it is on screen.
+        return true;
       }
     case 'collapsed_read_search':
       {

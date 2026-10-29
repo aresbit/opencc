@@ -94,6 +94,7 @@ bun run build
 - **远程开发与群体协作：** `SSHRemoteTool` 提供受工作区约束的远程文件和命令操作；`WideResearchTool` 可把研究问题并行分发给 Agent；`ActorTool` 提供可见的跨目录 tx/rx 与共享计算资源租约，`EvalApplyTool` 提供 SICP 式持久元解释器。
 - **研究与验证：** `AutoresearchTool`、`SelfImproveTool`（`rsi`）和 `LearnTool` 组成“试验—比较—归因—沉淀”闭环；`Paper2CodeTool`、`SoftwareAnalysisTool`、`QuantOrientTool`、`QuantVerifyTool` 分别覆盖论文落地、软件分析、量化研究阶段判定与结果复核。
 - **AWR 工作流：** `AwrOpsTool` 提供部署、刷写与真机验证所需的指南/脚本资产；`AwrStRunTool` 负责把多机 ST 任务编排给 Agent。真正执行时仍依赖可访问的开发板、SSH 环境及人工安全步骤。
+- **对话视图的工具折叠：** 一轮里连续的工具调用只保留最新 5 个，更早的收成一行 `… 3 earlier tool calls folded (1 failed)`。折叠不是丢弃——被折叠的行原样存在组里，`ctrl+o`、transcript 屏或直接点这一行都能展开回原样；进行中的调用永不折叠。实现见 `src/utils/collapseToolCalls.ts` 与 `src/components/messages/FoldedToolCallsContent.tsx`（语义对齐 MateBot 飞书卡片的 `MAX_VISIBLE_TOOL_CALLS = 5`）。
 
 上面列出的是源码当前具备的能力。某项工具是否会出现在一次会话中，还取决于运行模式、feature flag、环境变量、外部服务和本机运行时；具体边界见下方能力清单。
 

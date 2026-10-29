@@ -110,6 +110,15 @@ function computeSearchText(msg: RenderableMessage): string {
       }
       break
     }
+    case 'folded_tool_calls': {
+      // Folded rows are hidden in the collapsed line but revealed by ctrl+o /
+      // transcript / click, so they stay searchable — a hit is a real hit.
+      raw = msg.messages
+        .map(m => renderableSearchText(m))
+        .filter(Boolean)
+        .join('\n')
+      break
+    }
     default:
       // grouped_tool_use, system — no text content
       break
