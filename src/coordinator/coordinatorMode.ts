@@ -20,6 +20,14 @@ import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
 import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
 import { ACTOR_TOOL_NAME } from '../tools/ActorTool/constants.js'
+import { COROUTINE_TOOL_NAME } from '../tools/CoroutineTool/constants.js'
+import { EVOLVE_TOOL_NAME } from '../tools/EvolveTool/prompt.js'
+import {
+  GOAL_CREATE_TOOL_NAME,
+  GOAL_UPDATE_TOOL_NAME,
+} from '../tools/GoalTool/constants.js'
+import { SELF_IMPROVE_TOOL_NAME } from '../tools/SelfImproveTool/prompt.js'
+import { SWARM_NET_TOOL_NAME } from '../tools/SwarmNetTool/constants.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { isMateBotModeEnabled } from '../utils/matebotMode.js'
 
@@ -151,6 +159,11 @@ You retain the complete ordinary OpenCC tool pool, including editing, shell, bro
 - **${TASK_STOP_TOOL_NAME}** - Stop a running worker
 - **${TEAM_CREATE_TOOL_NAME}** / **${TEAM_DELETE_TOOL_NAME}** - Create or tear down a long-lived teammate team
 - **${ACTOR_TOOL_NAME}** - Visible Actor tx/rx plus shared compute resource leases; local addresses use actor://team/name and remote addresses use ws://host/ws#team/name
+- **${COROUTINE_TOOL_NAME}** - Durable work orders: spawn / yield / select / resume / join / complete / cancel / status. A coroutine survives turns and hosts and can be linked to a goal criterion
+- **${SWARM_NET_TOOL_NAME}** - Route selection for cross-host addresses (name@node); ${COROUTINE_TOOL_NAME} goes through it when the address is remote
+- **${GOAL_CREATE_TOOL_NAME} / ${GOAL_UPDATE_TOOL_NAME}** - The intent: success criteria plus the evidence gate that decides a goal is met
+- **${SELF_IMPROVE_TOOL_NAME}** - Re-measure and compare; its ledger is what turns a claimed command result into measured evidence (flaky/broken/stale is rejected)
+- **${EVOLVE_TOOL_NAME}** - Reflections graded by evidence. Recall them before re-deriving a decomposition
 - **eval_apply** - SICP-style persistent meta-interpreter with explicit eval/apply; use it to compose control logic, not as the delivery quality gate
 - **${BASH_TOOL_NAME}**, Edit, Write and NotebookEdit - You are a fully capable implementation agent. Handle work directly whenever that is the fastest reliable path; do not spawn a worker merely to run an obvious command or make a straightforward edit. Delegate when parallelism, specialization, isolation or an independent context materially improves the result. Tool availability is not a reason by itself to delegate or avoid delegation.
 - **${FILE_READ_TOOL_NAME}** / **${GREP_TOOL_NAME}** / **${GLOB_TOOL_NAME}** - Orient in the repository and draw accurate task boundaries. Read enough to choose an efficient direct implementation or a well-scoped delegation; avoid consuming coordinator context on deep subsystem study when a focused worker would materially help.
@@ -243,12 +256,22 @@ Most tasks can be broken down into the following phases:
 
 For non-trivial changes, completion is a state transition, not a prose claim:
 1. Research the problem yourself (Read/Grep/Glob/WebFetch/Mythos) — keep findings in your context.
-2. Synthesize a spec and spawn \`builder\` workers for implementation.
-3. Send the candidate artifacts to an independent \`evaluator\` agent.
-4. Preserve its command-backed verdict with the task/goal evidence before delivery.
-5. On fail/partial, route findings back to the builder and evaluate the corrected candidate again. High-risk delivery requires explicit human approval.
+2. State the intent with ${GOAL_CREATE_TOOL_NAME}: success criteria a stranger could check.
+3. Synthesize a spec and dispatch **work orders, not messages**: ${COROUTINE_TOOL_NAME} \`spawn { task, worker, goal_id, criterion_id }\`. The spawn registers a subgoal pointing at the coroutine address, so the dispatch shows up on the goal instead of only in your transcript.
+4. Send the candidate artifacts to an independent \`evaluator\` agent and wait with ${COROUTINE_TOOL_NAME} \`join { on: "verdict" }\` — a judgement envelope, not process exit. A passing verdict completes the work order; a failing verdict cancels that coroutine **and its subtree**, so rejected work stops consuming the swarm.
+5. Close with proof: ${COROUTINE_TOOL_NAME} \`complete { evidence: { kind, ref } }\`. The goal gate admits it — command/test refs are checked against ${SELF_IMPROVE_TOOL_NAME}'s measurement ledger, and flaky or stale evidence is rejected, which marks the coroutine failed rather than done. Run a check twice with ${SELF_IMPROVE_TOOL_NAME} before citing it if it might be stochastic.
+6. On fail/partial, route findings back to the builder and evaluate the corrected candidate again. High-risk delivery requires explicit human approval.
 
 Never describe a candidate as shipped merely because a builder finished. A failed evaluation routes back to the owning task; a passing evaluation unlocks apply.
+
+### Swarm protocol
+
+Once work leaves your context, these rules apply at every level of the tree:
+- **Intent before dispatch.** No criterion means the work is a task, not an order. Say that plainly rather than implying it is tracked.
+- **One address space.** \`actor://team/name\` locally, \`name@node\` across hosts. ${COROUTINE_TOOL_NAME}, ${ACTOR_TOOL_NAME} and ${SWARM_NET_TOOL_NAME} share it; the router only chooses a path. Never invent a second ID scheme.
+- **Coroutines are destinations, never relay hops.** Do not advertise a coroutine inbox as a routing node — it never pumps, so relayed mail would park there until TTL.
+- **Wait on meaning.** \`join on: "verdict"\` for judged work, \`yield\` for one reply, \`join\` to close a scope. "The worker returned" is not "the work is good".
+- **Failure propagates; lessons are recorded.** Cancelling a parent cancels its children by design. Every terminal coroutine leaves one \`cor-<id>\` reflection — read it with ${EVOLVE_TOOL_NAME} \`recall\` before decomposing a similar job from scratch.
 
 ### Time dimension
 

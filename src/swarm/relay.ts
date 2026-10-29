@@ -154,6 +154,7 @@ export async function sendRouted(input: {
   payload: unknown
   kind?: string
   correlationId?: string
+  replyTo?: string
   ttlMs?: number
   metadata?: Record<string, unknown>
   maxHops?: number
@@ -182,6 +183,7 @@ export async function sendRouted(input: {
       kind,
       payload: input.payload,
       correlationId: input.correlationId,
+      replyTo: input.replyTo,
       ttlMs,
       metadata: {
         ...input.metadata,
@@ -246,6 +248,7 @@ export async function sendRouted(input: {
       finalPayload: input.payload,
     },
     correlationId: input.correlationId,
+    replyTo: input.replyTo,
     ttlMs,
     metadata: {
       ...input.metadata,
@@ -398,6 +401,7 @@ export async function pumpOnce(
           kind: meta.finalKind,
           payload: (envelope.payload as { finalPayload?: unknown }).finalPayload,
           correlationId: envelope.correlationId,
+          replyTo: envelope.replyTo,
           ttlMs: envelope.ttlMs,
           metadata: {
             ...envelope.metadata,
@@ -453,6 +457,7 @@ export async function pumpOnce(
           kind: RELAY_KIND,
           payload: envelope.payload,
           correlationId: envelope.correlationId,
+          replyTo: envelope.replyTo,
           ttlMs: envelope.ttlMs,
           metadata: {
             ...envelope.metadata,
