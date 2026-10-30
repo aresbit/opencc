@@ -18,10 +18,13 @@ To hand one to every user of the desktop instead of one machine, add its name to
 `DESKTOP_BUNDLED_MODS` in
 `apps/desktop/backend/src/autoagent_backend/adapters/engine/bundled_mods.py`:
 every session the desktop starts then gets it from `OPENCC_BUNDLED_MODS`, and a
-person can still switch it off in the Plugins panel. The operational mods below
-(`kill-guard`, `cache-stats`, `swarm-dashboard`, `skill-index`, `awr-fleet`) are
-deliberately *not* on that list — a guard, a roster and an index are choices a
-line has to make, not defaults to impose.
+person can still switch it off in the Plugins panel.
+
+The operational mods below split two ways. `swarm-dashboard` and `cache-stats`
+are worth shipping: an invisible swarm and an unmeasured cache ratio are costs
+every session pays, and a blank panel is not a choice, it is a missing default.
+`kill-guard`, `skill-index` and `awr-fleet` are deliberately opt-in — a guard, an
+index and a roster are choices a line has to make.
 
 | mod | what it does |
 |---|---|
