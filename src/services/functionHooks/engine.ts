@@ -258,12 +258,55 @@ export function buildCoreNouns(): Record<
         return listMods().map(mod => ({
           name: mod.manifest.name,
           description: mod.manifest.description ?? '',
+          doc: mod.manifest.doc ?? '',
           scope: mod.scope,
           position: mod.manifest.position ?? 'inner',
           capabilities: mod.manifest.capabilities ?? [],
+          commands: mod.commands.map(c => ({
+            name: c.name,
+            title: c.title ?? c.name,
+            ...(c.key ? { key: c.key } : {}),
+          })),
           events: mod.events,
           entry: mod.entry,
         }))
+      },
+      /**
+       * Every command every loaded mod offers — the M-x candidate list.
+       * `mods.run` invokes one; a key bound in the manifest does the same
+       * thing without going through here.
+       */
+      commands: async () => {
+        const { listCommands } = await import('./mods/index.js')
+        return listCommands()
+      },
+      /** Invoke a command by name. Same path a bound key takes. */
+      run: async (e: { mod: string; command: string; values?: Record<string, unknown> }) => {
+        const { invokeCommand, listMods } = await import('./mods/index.js')
+        const owner = listMods().find(m => m.manifest.name === e.mod)
+        if (!owner) {
+          return { ok: false, reason: `no loaded mod named "${e.mod}"` }
+        }
+        if (!owner.commands.some(c => c.name === e.command)) {
+          return {
+            ok: false,
+            reason: `${e.mod} has no command "${e.command}" (has: ${
+              owner.commands.map(c => c.name).join(', ') || 'none'
+            })`,
+          }
+        }
+        // The verb dispatches through the same chain a key press does, so it
+        // is the same $ the hooks were scoped against. Looked up lazily:
+        // importing the bridge at module scope would close a cycle with it.
+        const { getEngine } = await import('./bridge.js')
+        const live = getEngine()
+        if (!live) return { ok: false, reason: 'the engine is not initialised' }
+        return invokeCommand(live, {
+          command: e.command,
+          mod: e.mod,
+          source: 'api',
+          ...(e.values ? { values: e.values } : {}),
+        })
       },
       /**
        * Every mod found on disk, including the ones that are not running.
@@ -273,6 +316,44 @@ export function buildCoreNouns(): Record<
       status: async () => {
         const { getModResults } = await import('./mods/index.js')
         return getModResults()
+      },
+      /**
+       * Services currently published by mods: `[{ name, providedBy }]`.
+       * A read-only view of the service table mods populate with `provide`.
+       */
+      services: async () => {
+        const { listServices } = await import('./mods/index.js')
+        return listServices()
+      },
+      /**
+       * Resolve a service by name to `{ found, name, providedBy, value }` (or
+       * `{ found: false, reason }`). The query-side counterpart to `provide`.
+       */
+      inject: async (e: { name: string }) => {
+        const { resolveService } = await import('./mods/index.js')
+        return resolveService(e.name)
+      },
+    },
+    describe: {
+      /**
+       * What a mod is for, what it hooks, where those hooks sit, what it may
+       * touch, and — if it is not in the chain — which of the four absences
+       * applies. Never throws on an unknown name: `{ found: false }` with
+       * candidates is the answer a typo deserves.
+       */
+      mod: async (e: { name: string }) => {
+        const { describeMod } = await import('./mods/index.js')
+        return describeMod(e.name)
+      },
+      /** The ordered chain for one event, built-ins and mods together. */
+      hook: async (e: { event: string }) => {
+        const { describeEvent } = await import('./mods/index.js')
+        return describeEvent(e.event)
+      },
+      /** Who answers this key: a mod command, the built-ins, or nobody. */
+      key: async (e: { binding: string }) => {
+        const { describeKey } = await import('./mods/index.js')
+        return describeKey(e.binding)
       },
     },
     perf: {

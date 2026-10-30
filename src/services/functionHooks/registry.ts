@@ -122,6 +122,13 @@ export class HookRegistry {
     this.hooks.push(...registrations)
   }
 
+  /** Replace the whole chain. Used by the loader's layout pass and for exact
+   * rollback after a failed reload — restoring the previous array is the only
+   * way to put every registration back at the same relative position. */
+  setAll(registrations: HookRegistration[]): void {
+    this.hooks = registrations.slice()
+  }
+
   /** Remove all hooks from a specific plugin. */
   removePlugin(pluginId: string): void {
     this.hooks = this.hooks.filter(h => h.pluginId !== pluginId)

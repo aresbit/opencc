@@ -393,6 +393,41 @@ describe('a mod that throws', () => {
     expect(result).toMatchObject({ output: 'ran' })
   })
 
+  test('a tool failure propagated by a mod is not a mod fault', async () => {
+    const { userDir, projectDir } = tempRoots()
+    writeMod(
+      userDir,
+      'propagator',
+      `export function register(on) {
+         on('tool.invoke', async ($, e, next) => {
+           try {
+             return await next(e)
+           } catch (error) {
+             // Clear the mod's own lock, then let the real tool error win.
+             throw error
+           }
+         })
+       }`,
+    )
+    await loadMods({ userDir, projectDir })
+
+    let executions = 0
+    await expect(
+      dispatch(
+        {} as EngineInterface,
+        'tool.invoke',
+        { tool: 'replace_selection', input: {} },
+        (() => {
+          executions++
+          throw new Error('tool rejected the patch')
+        }) as HookFn,
+      ),
+    ).rejects.toThrow('tool rejected the patch')
+
+    expect(executions).toBe(1)
+    expect(getQuarantinedMods()).toHaveLength(0)
+  })
+
   test('reloading clears the quarantine', async () => {
     const { userDir, projectDir } = tempRoots()
     writeMod(userDir, 'fixme', `export function register(on) {

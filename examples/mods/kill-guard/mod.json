@@ -1,0 +1,19 @@
+{
+  "name": "kill-guard",
+  "version": "0.1.0",
+  "description": "Refuses process-killing commands that match the ways this machine has actually been broken",
+  "doc": "Three rules, each from a real incident. (1) A numeric PID may only be killed when the same command shows it was looked up with `ps -p` first. (2) `pkill -f` must use the bracket trick (`[/]opt/...`) so the pattern cannot match the shell that is running it. (3) systemd, systemd --user, gdm, dbus-daemon and feishu_bridge.py are never killable by name — that one took the whole session down for three hours. Denials are decisions, not suggestions: the tool call does not run.",
+  "position": "outer",
+  "capabilities": ["*"],
+  "commands": [
+    {
+      "name": "rules",
+      "title": "Print the three rules",
+      "doc": "Shows what this mod refuses and why, so a denial is explainable without reading the source."
+    }
+  ],
+  "options": {
+    "strictPkill": true,
+    "requirePsCheck": true
+  }
+}

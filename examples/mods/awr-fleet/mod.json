@@ -1,0 +1,20 @@
+{
+  "name": "awr-fleet",
+  "version": "0.1.0",
+  "description": "Robot roster as a service and a panel: who exists, who is busy, whose OTA is mid-flight",
+  "doc": "Reads the AWR roster (~/.awr/robots.json, or $AWR_ROSTER) and publishes it as `awr.fleet`: list() returns every robot, get(serial) one, stale() whether the roster itself is old. A panel shows the fleet with its OTA stage, and a `fleet` command prints the same table. The roster is marked `sample: true` while it is placeholder data, and the panel says so rather than letting invented robots look real. Another mod (e.g. an OTA gate) consumes this service instead of re-reading the file. Read-only.",
+  "position": "inner",
+  "capabilities": ["*"],
+  "provides": ["awr.fleet"],
+  "commands": [
+    {
+      "name": "fleet",
+      "title": "Print the robot roster",
+      "doc": "Table of serial, status, job, workspace, board and OTA stage, plus how old the roster is."
+    }
+  ],
+  "options": {
+    "staleAfterMs": 600000,
+    "refreshMs": 15000
+  }
+}

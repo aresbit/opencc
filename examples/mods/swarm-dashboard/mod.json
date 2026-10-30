@@ -1,0 +1,20 @@
+{
+  "name": "swarm-dashboard",
+  "version": "0.1.0",
+  "description": "A live panel of coroutines and actor peers, read from the on-disk swarm state",
+  "doc": "Coroutines and actors already persist everything that matters — <config>/coroutines/<team>/state.json and <config>/actors/<team>/*.presence.json — but nothing shows it, so the swarm is only visible through `CoroutineTool status` one team at a time. This mod reads both roots on a timer and contributes a panel: coroutine counts by state, the non-terminal ones with their worker and recovery attempts, and which actors have a fresh heartbeat. It also publishes the same data as the `swarm.state` service for other mods. Read-only: it never writes to the swarm directories.",
+  "position": "inner",
+  "capabilities": ["*"],
+  "provides": ["swarm.state"],
+  "commands": [
+    {
+      "name": "show",
+      "title": "Print the swarm snapshot as JSON",
+      "doc": "One shot, no panel: coroutine counts, non-terminal coroutines, live and stale actors."
+    }
+  ],
+  "options": {
+    "staleAfterMs": 300000,
+    "refreshMs": 5000
+  }
+}

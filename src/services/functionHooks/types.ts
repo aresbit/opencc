@@ -17,6 +17,13 @@ export type FunctionHookEvent =
   | 'tool.result'
   | 'tool.content'
   | 'tool.error'
+  /**
+   * A command the mod's manifest declared under `commands`, invoked by its
+   * key, by `$.mods.run()` or by `opencc mods run`. The payload is
+   * `{ command, mod, source }`; a hook matches on `{ command }` the way a
+   * desktop pane matches on `{ pluginId }`.
+   */
+  | 'command.invoke'
   | 'prompt.submit'
   | 'session.start'
   | 'session.end'

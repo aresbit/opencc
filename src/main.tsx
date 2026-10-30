@@ -4334,6 +4334,47 @@ async function run(): Promise<CommanderCommand> {
     } = await import('./cli/handlers/mods.js');
     await modsUninstallHandler(name, options);
   });
+  modsCmd.command('describe <name>').description('Everything known about one mod: what it hooks, what it may touch, and why it is not running').option('--json', 'Output as JSON').action(async (name: string, options: {
+    json?: boolean;
+  }) => {
+    const {
+      modsDescribeHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsDescribeHandler(name, options);
+  });
+  modsCmd.command('commands').description('Every command the loaded mods offer (the M-x candidate list)').option('--json', 'Output as JSON').action(async (options: {
+    json?: boolean;
+  }) => {
+    const {
+      modsCommandsHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsCommandsHandler(options);
+  });
+  modsCmd.command('hooks [event]').description('The ordered hook chain, for one event or all of them').option('--json', 'Output as JSON').action(async (event: string | undefined, options: {
+    json?: boolean;
+  }) => {
+    const {
+      modsHooksHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsHooksHandler(event, options);
+  });
+  modsCmd.command('reload [name]').description('Re-read the mods directory and reload one mod, or all of them, in-session').option('--json', 'Output as JSON').action(async (name: string | undefined, options: {
+    json?: boolean;
+  }) => {
+    const {
+      modsReloadHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsReloadHandler(name, options);
+  });
+  modsCmd.command('run <mod> <command>').description('Invoke a mod command by name, the way its key would').option('--arg <key=value>', 'Pass an argument to the command (repeatable)', (value: string, previous: string[] = []) => [...previous, value], []).option('--json', 'Output as JSON').action(async (mod: string, command: string, options: {
+    arg?: string[];
+    json?: boolean;
+  }) => {
+    const {
+      modsRunHandler
+    } = await import('./cli/handlers/mods.js');
+    await modsRunHandler(mod, command, options);
+  });
   // END ANT-ONLY
 
   // Setup token command

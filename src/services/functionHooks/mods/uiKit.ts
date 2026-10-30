@@ -25,6 +25,7 @@ import type {
   DesktopActionRequest,
   DesktopActionResult,
   DesktopSlotId,
+  NativeSlotContribution,
 } from '../desktopSlots.js'
 import type { OnRegistrar } from '../types.js'
 
@@ -46,7 +47,9 @@ export interface ModUIKit {
 /** What a mod contributes to one desktop slot. */
 export interface DesktopContribution {
   /** A declarative pane tree (Box, Text, Button, Form, …). */
-  tree: unknown
+  tree?: unknown
+  /** A host-rendered native pane (e.g. the whiteboard). Takes precedence. */
+  native?: NativeSlotContribution
   title?: string
   /** Defaults to the mod's name; distinguishes several panes from one mod. */
   key?: string
@@ -83,15 +86,38 @@ export interface ModContext {
   name: string
   ui: ModUIKit
   desktop: ModDesktopKit
+  /**
+   * Publish a service for other mods to depend on. The loader records it and
+   * fails the mod if the manifest declared a `provides` name that never
+   * arrives.
+   */
+  provide: (name: string, value: unknown) => void
+  /**
+   * Read a service this mod declared in `inject`. Throws unless the name is in
+   * this mod's `inject` and a provider has already loaded — a missing
+   * dependency is a load-order bug, and returning undefined would surface it
+   * three frames later as a TypeError about something else.
+   */
+  require: (name: string) => unknown
+}
+
+/** The loader's service table, handed in so a mod can publish and consume. */
+export interface ModServiceHooks {
+  provide: (name: string, value: unknown) => void
+  require: (name: string) => unknown
 }
 
 export function buildModContext(
   name: string,
   on?: OnRegistrar,
   pluginId = `mod:${name}`,
+  services?: ModServiceHooks,
 ): ModContext {
   const unavailable = () => {
     throw new Error(`${name}: desktop slots need the mod loader's registrar`)
+  }
+  const noLoader = (what: string) => () => {
+    throw new Error(`${name}: ${what} needs the mod loader's context`)
   }
   return {
     name,
@@ -109,8 +135,16 @@ export function buildModContext(
               const inner = next(e)
               const mine = render()
               const rest = Array.isArray(inner) ? inner : []
-              if (!mine || mine.tree === undefined) return rest
-              return [...rest, { pluginId, key: mine.key ?? name, title: mine.title, tree: mine.tree }]
+              if (!mine || (mine.tree === undefined && mine.native === undefined)) return rest
+              return [
+                ...rest,
+                {
+                  pluginId,
+                  key: mine.key ?? name,
+                  title: mine.title,
+                  ...(mine.native !== undefined ? { native: mine.native } : { tree: mine.tree }),
+                },
+              ]
             })
           }
         : unavailable,
@@ -127,5 +161,7 @@ export function buildModContext(
         : unavailable,
       refresh: bumpUIEpoch,
     },
+    provide: services ? services.provide : noLoader('provide'),
+    require: services ? services.require : noLoader('require'),
   }
 }

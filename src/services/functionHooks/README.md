@@ -349,14 +349,22 @@ same rule that a value the event cannot carry is dropped.
 |---|---|
 | `name` | Directory name by default. Unique across both roots. |
 | `description` | One line, shown in `$.mods.list()`. |
+| `doc` | Long-form manual: what it hooks, what it needs, how to drive it. Printed by `mods describe`. |
+| `examples` | Lines shown under "Examples" by `mods describe` — commands a person can paste. |
+| `commands` | Named verbs, optionally bound to keys. See [Commands](#commands). |
 | `enabled` | `false` keeps it out of the chain. |
 | `position` | `inner` (default, append) or `outer` (prepend). |
+| `order` | `{ before: string[], after: string[] }` — placement relative to other mods/hooks. See [Order and dependencies](#order-and-dependencies). |
+| `provides` | Service names this mod offers to other mods, registered with `ctx.provide`. |
+| `inject` | Dependencies: `hook:<event>` for placement, or a bare service name for a hard dependency. |
 | `capabilities` | Which `$` nouns it may touch. `['*']` for all. |
 | `options` | Passed as the second argument to `register`. |
 
 `mod.json` is read first and applied last, so it overrides anything the mod
 says about itself in `export const manifest`. That is deliberate: it is the
-channel an admin has that does not involve editing the mod.
+channel an admin has that does not involve editing the mod. One exception:
+`name: "init"` (below) is configuration, not a mod to switch off — its switch
+lives in the file.
 
 ### Position
 
@@ -366,6 +374,43 @@ Registration order is nesting order, so this is the whole of it:
   above it allowed it through. The right place for a default.
 - `outer` — wrapping the built-ins. The mod sees the event first and can
   refuse it before anything else spends work. The control position.
+
+### Order and dependencies
+
+`position` is a coarse two-valued answer; `order` and `inject` say precisely
+where a mod belongs and what it needs from its neighbours. Both are resolved
+before anything registers, by a topological pass over the discovered mods, and
+both name either another mod or a built-in plugin.
+
+```ts
+export const manifest = {
+  order: { after: ['compress'], before: ['trace-recorder'] },
+  inject: ['hook:context-handle', 'acme.index'],
+  provides: ['acme.ledger'],
+}
+```
+
+- `order.before` / `order.after` place this mod's whole segment relative to the
+  named one. `inject: ['hook:<name>']` is the same edge stated as a
+  dependency: this mod runs **after** `<name>`.
+- A **cycle** is unsolvable and is a hard refusal: the mods in the cycle do not
+  load, and `mods list` reports the offending edges. Mods merely ordered after a
+  bad one are unaffected.
+- An **unknown target** is not a dependency, only a misplaced hint — the peer
+  may simply not be installed. It produces a warning and the mod still loads,
+  with load order deciding. Refusing here would brick a mod because a neighbour
+  it wanted to sit beside was uninstalled.
+- A **service** in `inject` (a bare name, not `hook:`) *is* a hard dependency.
+  The provider declares it in `provides`, registers it with `ctx.provide(name,
+  value)`, and a consumer reads it with `ctx.require(name)`. If no loaded mod
+  provides it, the consumer is **`pending`** — a fifth absence, distinct from
+  disabled, shadowed, error and quarantined. It is not an error: when the
+  provider loads, the loader activates every mod that was waiting on it,
+  without a restart.
+
+`mods describe <name>` reports `Provides`, `Injects`, `Order`, `Skipped` and
+`Waiting on` from the live chain, so "why is this not running" is answerable
+without reading the loader.
 
 ### Capabilities
 
@@ -448,6 +493,12 @@ hooks while leaving its `tool.call` and the rest running.
   composer (bar, `575k/967k tokens · 41% left · $93.81`) and the full
   breakdown in its Plugins tab, from `usage.record` (below). The desktop has
   no token display of its own; this mod is all of it, and ships bundled.
+- **`awr-panel`** — the first mod whose interface is a *command*: `ctrl+shift+r`
+  is declared in the manifest and bound by the loader, `refresh` is invokable
+  from the CLI and from another mod, and both land in one handler. It also
+  models the honesty rule for panels fed by systems the engine cannot reach:
+  the process has no ROS 2 client, so the mod reads a snapshot and renders
+  "no snapshot" rather than an empty robot list.
 
 None of them spends a model token.
 
@@ -494,6 +545,72 @@ emitter stops at the first listener to call `stopImmediatePropagation`.
 **ctrl+c is never consumable.** It is how a person leaves a mod that has gone
 wrong, and a mod that could swallow it could trap them there. `consumesKey`
 refuses it regardless of what the hook returns.
+
+### Commands
+
+A key was the whole interface before this: a mod could take one through
+`ui.press`, but the key had no name, nothing could list it, and nothing except
+the focused terminal could invoke it. A command gives the behaviour a name:
+
+```ts
+export const manifest = {
+  description: 'AWR robot line status in an overlay.',
+  commands: [
+    { name: 'toggle', title: 'Toggle the panel', key: 'ctrl+shift+r', doc: '…' },
+    { name: 'refresh', title: 'Re-read the snapshot' },
+  ],
+}
+
+export function register(on) {
+  on('command.invoke', { command: 'toggle' }, ($, e) => {
+    visible = !visible
+    return { ok: true, value: { visible } }
+  })
+  on('command.invoke', { command: 'refresh' }, () => ({ ok: true, value: { robots: n } }))
+}
+```
+
+The manifest carries metadata; the handler is an ordinary hook matched on
+`{ command }`. The loader binds a declared `key` with one `ui.press` hook
+registered through the mod's own scoped registrar, so a key-bound command is
+quarantined on throw and capability-scoped exactly like any other hook — no
+second dispatch mechanism. One implementation, three doors:
+
+```
+ctrl+shift+r                                        (the key)
+opencc mods run awr-panel refresh                   (the CLI)
+await $.mods.run({ mod: 'awr-panel', command: 'refresh' })   (another mod)
+```
+
+Rules, all reported as **warnings** on the load result rather than rejecting
+the mod (a bad command is a bad command, not a bad mod):
+
+- names match `^[a-z0-9][a-z0-9._-]*$`;
+- a `key` is a single keystroke — chords are refused rather than silently
+  truncated to their last segment;
+- `ctrl+c` / `ctrl+d` / `ctrl+m` cannot be claimed;
+- a key already taken by an earlier mod is refused (first wins, by load order,
+  the same rule that makes discovery reproducible); the command survives
+  without its key;
+- a command with no key is still invocable by name.
+
+`opencc mods commands` is the M-x list. `opencc mods describe <name>` prints
+the manual, the hooks and their chain positions, the commands with the keys
+actually bound, and any warnings.
+
+### `init.ts`
+
+A file mod named `init` in either mods root is the config entry point. It is
+discovered like any other mod and obeys the same rules, with four differences:
+
+- it sorts first, so later mods can read configuration it sets;
+- `position` defaults to `outer` — it wraps rather than sits underneath;
+- a *directory* named `init` is refused (the name is reserved for the file),
+  reported as a discovery problem rather than silently shadowing it;
+- `opencc mods disable init` is refused: the switch belongs in the file,
+  `export const manifest = { enabled: false }`, where the rest of its
+  configuration already is. A project `init.ts` shadows a user one like every
+  other mod.
 
 ### Slots
 
@@ -562,9 +679,11 @@ export function register(on, options, ctx) {
   pane, or `{ prompt }` to put text in the session's composer. The prompt is
   not sent: the person reads it and sends it. A mod never starts a turn — it
   serialises what it knows, and a person decides whether that is worth one.
-- **Limits.** A contribution must be JSON and at most 256K characters
-  serialised; a prompt is cut at 16K characters and a message at 500. A render that throws quarantines
-  the mod like any other hook.
+- **Limits.** A contribution must be JSON and at most 512K characters
+  serialised; a prompt is cut at 512K characters and a message at 500. The
+  authority is `desktopSlots.ts` (`MAX_CONTRIBUTION_CHARS`, `MAX_PROMPT_CHARS`,
+  `MAX_MESSAGE_CHARS`) — when this paragraph and that file disagree, the file
+  is right. A render that throws quarantines the mod like any other hook.
 
 The desktop shows a session's slots once its engine is running, which is
 after the session's first turn.
@@ -613,26 +732,47 @@ must not keep a second copy of these rules. `opencc mods` is that surface, and
 
 ```
 opencc mods list --json                 every built-in and mod, as a session would load them
+opencc mods commands [--json]           every declared command, with the keys actually bound
+opencc mods describe <name> [--json]    one mod: state, manual, hooks and positions, commands
+opencc mods hooks [event] [--json]      the ordered chain for an event (or every event)
+opencc mods run <mod> <command>         invoke a command; --arg key=value passes values
 opencc mods enable|disable <name>       writes enabled into mod.json, or bundled.json for a bundled mod (--scope user|project|bundled)
 opencc mods install <dir-or-file>       copies a mod into ~/.claude/mods (--scope project, --force)
 opencc mods uninstall <name>            moves it to <mods>/.uninstalled/, which discovery skips
 ```
 
+`describe` answers the four different absences with one word each: `disabled`
+(switched off), `shadowed` (a later root won), `pending` (fine, but a service
+it injects has no loaded provider yet), `error` (threw while loading or
+has no hooks), `quarantined` (loaded, then removed for throwing at dispatch),
+plus `idle` for a mod that registered nothing. `hooks` prints the chain in the
+order it runs — outermost first, position 1 is the hook the event hits first —
+rather than registration order.
+
 `list` brings the chain up through `initEngine()` in the command's working
 directory, so it reports the same thing the next session there will load:
-each mod's `state` (`loaded`, `idle` for no hooks, `disabled`, `shadowed`,
-`error`, `quarantined`), its resolved manifest, the events it hooks and whether
-any of them are `ui.*` (terminal-only), plus `$.plugins.status()` for the
-built-ins. Disabling a one-file mod turns it into `name/mod.<ext>` with a
-mod.json, unless it imports its neighbours by relative path. Changes apply to
-engines started afterwards; a running session keeps the chain it built.
+each mod's `state` (`loaded`, `idle` for no hooks, `pending`, `disabled`,
+`shadowed`, `error`, `quarantined`), its resolved manifest, the events it hooks
+and whether any of them are `ui.*` (terminal-only), plus `$.plugins.status()`
+for the built-ins. Disabling a one-file mod turns it into `name/mod.<ext>` with
+a mod.json, unless it imports its neighbours by relative path. Changes apply to
+engines started afterwards; a running session keeps the chain it built — use
+`opencc mods reload` to change it in place.
 
 ### Reloading
 
-`loadMods()` again re-runs `register()`, and the entry file is imported keyed
-by its mtime — so editing a mod and reloading runs the edit, rather than the
-cached old copy that a plain re-import would return. Reloading also clears the
-quarantine, since trying the fix is the point of it.
+`opencc mods reload [name|all]` reloads in place: no restart, and the next tool
+call uses the new chain. `loadMods()` again re-runs `register()`, and the entry
+file is imported keyed by its mtime — so editing a mod and reloading runs the
+edit, rather than the cached old copy that a plain re-import would return.
+Reloading also clears the quarantine, since trying the fix is the point of it.
+
+A reload is **transactional**: the previous registration set is kept, and if the
+new `register()` throws, the old hooks are restored rather than the mod being
+removed. A broken edit leaves the chain exactly as it was and reports
+`reload-failed`, instead of turning a working session into one with a hole in
+it. Service providers are snapshotted too, so undoing a failed reload restores
+the services it used to offer.
 
 Only the entry file. A mod's own imports are cached under their own paths, so
 editing a helper beside `mod.ts` still needs a restart.

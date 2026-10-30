@@ -39,6 +39,17 @@ export const BUNDLED_MODS_ENV = 'OPENCC_BUNDLED_MODS'
 /** In the user mods root: a person's changes to bundled mods, by name. */
 export const BUNDLED_OVERRIDES_NAME = 'bundled.json'
 
+/**
+ * The reserved name of the config-as-program entry point.
+ *
+ * `<root>/init.ts` is the file a person edits to change the agent itself:
+ * hooks, commands, guards — code, not a settings schema. It is already
+ * discovered as a file mod by its basename, so this constant exists to give
+ * that fact a name: `init` loads first, defaults to `outer`, and a *directory*
+ * called `init` is refused rather than silently shadowing the file.
+ */
+export const INIT_MOD_NAME = 'init'
+
 /** What a person may change about a bundled mod without touching its files. */
 export type BundledOverride = Pick<ModManifest, 'enabled' | 'options'>
 
@@ -88,9 +99,19 @@ export async function entryFor(dir: string): Promise<string | undefined> {
   return undefined
 }
 
+/** Something found on disk that discovery refused, and why. */
+export interface DiscoveryProblem {
+  /** What it would have been called. */
+  name: string
+  path: string
+  scope: ModScope
+  message: string
+}
+
 async function scanRoot(
   root: string,
   scope: ModScope,
+  problems: DiscoveryProblem[] = [],
 ): Promise<ModSource[]> {
   let entries: Awaited<ReturnType<typeof readdir>>
   try {
@@ -105,6 +126,20 @@ async function scanRoot(
 
     if (entry.isDirectory()) {
       const dir = join(root, entry.name)
+      if (entry.name === INIT_MOD_NAME) {
+        // The name is the config entry point's; a directory wearing it would
+        // shadow `init.ts` and turn "my configuration" into "some mod called
+        // init", which is exactly the ambiguity this name is meant to end.
+        problems.push({
+          name: entry.name,
+          path: dir,
+          scope,
+          message:
+            `the name "${INIT_MOD_NAME}" is reserved for ${join(root, INIT_MOD_NAME + '.ts')}` +
+            ` (directory ignored)`,
+        })
+        continue
+      }
       const file = await entryFor(dir)
       if (!file) continue
       const json = await readJsonManifest(dir)
@@ -200,21 +235,22 @@ async function scanBundled(
  */
 export async function discoverMods(
   options: { userDir?: string; projectDir?: string; bundledPaths?: string[] } = {},
-): Promise<{ sources: ModSource[]; shadowed: ModSource[] }> {
+): Promise<{ sources: ModSource[]; shadowed: ModSource[]; problems: DiscoveryProblem[] }> {
   const userDir = options.userDir ?? getUserModsDir()
   const projectDir = options.projectDir ?? getProjectModsDir()
   const bundledPaths = options.bundledPaths ?? getBundledModPaths()
+  const problems: DiscoveryProblem[] = []
 
   const [bundled, user, project] = await Promise.all([
     bundledPaths.length
       ? readBundledOverrides(resolve(userDir)).then(overrides => scanBundled(bundledPaths, overrides))
       : Promise.resolve([] as ModSource[]),
-    scanRoot(resolve(userDir), 'user'),
+    scanRoot(resolve(userDir), 'user', problems),
     // One directory serving as both roots would otherwise load everything in
     // it twice, once per scope.
     resolve(projectDir) === resolve(userDir)
       ? Promise.resolve([] as ModSource[])
-      : scanRoot(resolve(projectDir), 'project'),
+      : scanRoot(resolve(projectDir), 'project', problems),
   ])
 
   const byName = new Map<string, ModSource>()
@@ -225,8 +261,13 @@ export async function discoverMods(
     byName.set(source.manifest.name, source)
   }
 
-  const sources = [...byName.values()].sort((a, b) =>
-    a.manifest.name.localeCompare(b.manifest.name),
-  )
-  return { sources, shadowed }
+  // `init` first: it is the configuration layer, and a config that gets
+  // wrapped by a mod it did not see is not a config. Everything else keeps
+  // name order, so the chain stays reproducible run to run.
+  const sources = [...byName.values()].sort((a, b) => {
+    const ai = a.manifest.name === INIT_MOD_NAME ? 0 : 1
+    const bi = b.manifest.name === INIT_MOD_NAME ? 0 : 1
+    return ai - bi || a.manifest.name.localeCompare(b.manifest.name)
+  })
+  return { sources, shadowed, problems }
 }

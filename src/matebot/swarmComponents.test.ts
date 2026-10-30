@@ -112,9 +112,9 @@ describe('MateBot swarm harness components', () => {
       }).success,
     ).toBe(true)
     expect(getCoordinatorAgents().map(agent => agent.agentType)).toEqual([
+      // researcher/planner were folded into the coordinator's own loop; see
+      // the note above BUILDER in coordinator/workerAgent.ts.
       'worker',
-      'researcher',
-      'planner',
       'builder',
       'evaluator',
     ])

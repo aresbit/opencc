@@ -23,10 +23,11 @@ import {
   getBundledModPaths,
   getProjectModsDir,
   getUserModsDir,
+  INIT_MOD_NAME,
   MANIFEST_NAME,
 } from './discovery.js'
-import { getModResults, getQuarantinedMods, modsDisabled } from './loader.js'
-import type { ModManifest, ModPosition, ModScope, ModSource } from './types.js'
+import { getModResults, getQuarantinedMods, listMods, modsDisabled } from './loader.js'
+import type { ModCommand, ModManifest, ModPosition, ModScope, ModSource } from './types.js'
 import { getPluginStatus, type PluginStatus } from '../plugins/index.js'
 
 export type { ModScope }
@@ -41,6 +42,8 @@ export type ModState =
   | 'idle'
   | 'disabled'
   | 'shadowed'
+  /** Not in the chain: waiting for a service some other mod must provide. */
+  | 'pending'
   /** Threw while importing or registering; never entered the chain. */
   | 'error'
   /** Loaded, then removed for throwing while handling an event. */
@@ -55,15 +58,24 @@ export interface ModStatus {
   dir: string
   state: ModState
   description?: string
+  /** The long-form manual from the manifest. */
+  doc?: string
+  examples?: string[]
   version?: string
   enabled: boolean
   position: ModPosition
   capabilities: string[]
+  /** Commands the mod offers, with the keys actually bound. */
+  commands: ModCommand[]
   /** Events the mod's hooks sit on (empty unless it loaded). */
   events: string[]
   /** Hooks on `ui.*`: rendered by the terminal UI only. */
   uiHooks: boolean
   error?: string
+  /** For `pending` mods: the services no loaded provider could supply. */
+  pendingOn?: string[]
+  /** Parts of the declaration that did not take effect; the mod still loaded. */
+  warnings?: string[]
 }
 
 export interface HooksStatus {
@@ -109,6 +121,17 @@ function shapeOf(entry: string, dir: string, root: string): 'directory' | 'file'
 }
 
 /**
+ * Declared commands for a mod that is not in the chain (disabled, shadowed):
+ * the loader never validated them, so this is the manifest's word, unbound.
+ */
+function declaredCommands(manifest: Partial<ModManifest>): ModCommand[] {
+  if (!Array.isArray(manifest.commands)) return []
+  return manifest.commands.filter(
+    (c): c is ModCommand => !!c && typeof c === 'object' && typeof c.name === 'string',
+  )
+}
+
+/**
  * The engine's view of every hook plugin: built-ins and mods.
  *
  * `load` must bring the chain up exactly as a session does — the default is
@@ -128,6 +151,7 @@ export async function collectHooksStatus(
   }
 
   const quarantined = new Map(getQuarantinedMods().map(q => [q.name, q]))
+  const live = new Map(listMods().map(mod => [mod.manifest.name, mod]))
   const fromResults: ModStatus[] = getModResults().map(result => {
     const manifest: Partial<ModManifest> = result.manifest ?? {}
     const root = rootOf(result.scope, result.dir, dirs)
@@ -135,9 +159,11 @@ export async function collectHooksStatus(
     let state: ModState
     if (result.skipped === 'disabled') state = 'disabled'
     else if (result.skipped === 'shadowed') state = 'shadowed'
+    else if (result.skipped === 'pending') state = 'pending'
     else if (q) state = 'quarantined'
     else if (!result.loaded) state = 'error'
-    else if (result.events.length === 0) state = 'idle'
+    else if (result.events.length === 0 && (live.get(result.name)?.commands.length ?? 0) === 0)
+      state = 'idle'
     else state = 'loaded'
     return {
       name: result.name,
@@ -147,13 +173,19 @@ export async function collectHooksStatus(
       dir: result.dir,
       state,
       description: manifest.description,
+      doc: manifest.doc,
+      examples: manifest.examples,
       version: manifest.version,
       enabled: manifest.enabled !== false,
-      position: manifest.position === 'outer' ? 'outer' : 'inner',
+      position:
+        manifest.position ?? (result.name === INIT_MOD_NAME ? 'outer' : 'inner'),
       capabilities: Array.isArray(manifest.capabilities) ? manifest.capabilities : [],
+      commands: live.get(result.name)?.commands ?? declaredCommands(manifest),
       events: result.events,
       uiHooks: result.events.some(event => event.startsWith('ui.')),
       error: q ? `${q.event}: ${q.error}` : result.error,
+      ...(result.pendingOn ? { pendingOn: result.pendingOn } : {}),
+      ...(result.warnings ? { warnings: result.warnings } : {}),
     }
   })
 
@@ -180,10 +212,15 @@ async function listOnDisk(dirs: Roots): Promise<ModStatus[]> {
     dir: source.dir,
     state,
     description: source.manifest.description,
+    doc: source.manifest.doc,
+    examples: source.manifest.examples,
     version: source.manifest.version,
     enabled: source.manifest.enabled !== false,
-    position: source.manifest.position === 'outer' ? 'outer' : 'inner',
+    position:
+      source.manifest.position ??
+      (source.manifest.name === INIT_MOD_NAME ? 'outer' : 'inner'),
     capabilities: source.manifest.capabilities ?? [],
+    commands: declaredCommands(source.manifest),
     events: [],
     uiHooks: false,
     error: state === 'disabled' ? 'OPENCC_DISABLE_MODS=1' : undefined,
@@ -248,6 +285,15 @@ export async function setModEnabled(
 ): Promise<{ name: string; scope: ModScope; dir: string; enabled: boolean }> {
   const source = await locate(name, options.scope, options)
   const dirs = roots(options)
+  if (source.manifest.name === INIT_MOD_NAME && source.scope !== 'bundled') {
+    // The init file has nowhere to put a mod.json, and turning it into a
+    // directory is exactly what discovery refuses. The switch belongs in the
+    // file itself, where the rest of the configuration already lives.
+    throw new ModManageError(
+      `"${INIT_MOD_NAME}" is the config entry point: set this in ${source.entry} with ` +
+        `\`export const manifest = { enabled: ${enabled} }\` instead`,
+    )
+  }
   if (source.scope === 'bundled') {
     // The host's files are not ours to edit; the person's choice is kept
     // with their own mods and applied over the bundled manifest.

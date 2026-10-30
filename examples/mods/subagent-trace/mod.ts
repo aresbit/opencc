@@ -18,11 +18,17 @@
  * position: 'outer' is load-bearing. The built-in dashboard returns its own
  * node WITHOUT calling next(e), so an inner mod would never run. Outer puts
  * this ahead of it, and calling next(e) is how it falls back.
+ *
+ * order.before quant-lifecycle is the other half: quant-lifecycle denies some
+ * tool calls, and this mod has to sit OUTSIDE it to see the denial come back
+ * up the chain. Chain order used to depend on which outer mod registered last;
+ * stating it here makes the intent explicit and independent of load order.
  */
 
 export const manifest = {
   description: 'Per-subagent live status: current tool, call count, phase.',
   position: 'outer',
+  order: { before: ['quant-lifecycle'] },
   capabilities: [],
 }
 

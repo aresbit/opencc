@@ -45,7 +45,7 @@ describe('the examples load', () => {
     // Asserted as the whole set rather than a subset: an example that stops
     // loading should fail here, and a new one should have to be added
     // deliberately rather than slipping in untested.
-    expect(loaded).toEqual(['desktop-tool-ledger', 'quant-lifecycle', 'subagent-trace', 'tetris', 'token-meter'])
+    expect(loaded).toEqual(['awr-fleet', 'cache-stats', 'desktop-tool-ledger', 'kill-guard', 'quant-lifecycle', 'skill-index', 'subagent-trace', 'swarm-dashboard', 'tetris', 'token-meter'])
   })
 })
 

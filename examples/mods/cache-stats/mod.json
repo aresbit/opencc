@@ -1,0 +1,25 @@
+{
+  "name": "cache-stats",
+  "version": "0.1.0",
+  "description": "Prefix-cache hit rate and context pressure, read from usage.record",
+  "doc": "opencc spends a lot of code placing a stable prefix so the provider can serve it from cache, but nothing measured whether that worked. This mod counts the four token buckets of every API response into a cache-hit ratio (cacheRead / (cacheRead + cacheCreation + input)), keeps the terminal's own context gauge, and publishes both as the `cache.stats` service. A composer badge shows the ratio live; `opencc mods run cache-stats stats` prints the full breakdown. Observer only — it cannot change what was counted.",
+  "position": "inner",
+  "capabilities": ["*"],
+  "provides": ["cache.stats"],
+  "commands": [
+    {
+      "name": "stats",
+      "title": "Show cache and context statistics",
+      "doc": "Prints the day's totals, this session's totals and the live context gauge as JSON."
+    },
+    {
+      "name": "reset",
+      "title": "Clear today's counters",
+      "doc": "Zeroes the day ledger. The current session's counters are separate and unaffected."
+    }
+  ],
+  "options": {
+    "warnBelow": 0.5,
+    "refreshMs": 2000
+  }
+}

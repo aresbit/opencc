@@ -1,0 +1,30 @@
+{
+  "name": "skill-index",
+  "version": "0.1.0",
+  "description": "Indexes every SKILL.md on this machine and recommends the few that match what you just asked",
+  "doc": "There are several hundred skills between <cwd>/skills, <config>/skills and ~/.claude/skills, and the only retrieval is remembering the name. This mod parses each SKILL.md's frontmatter once, scores names and descriptions against the prompt on every prompt.submit, and publishes the index as the `skills.index` service so another mod can retrieve from it without re-walking the disk. Recommendations go to a composer badge by default; set options.inject=true to append the top hits as additional context instead. Read-only: it never writes a skill.",
+  "position": "inner",
+  "capabilities": ["*"],
+  "provides": ["skills.index"],
+  "commands": [
+    {
+      "name": "find",
+      "title": "Find skills for a query",
+      "doc": "opencc mods run skill-index find --arg query=\"翻译 讲义\" — prints the ranked matches."
+    },
+    {
+      "name": "rebuild",
+      "title": "Re-walk the skill roots",
+      "doc": "Drops the cache and scans again; useful after installing a batch of skills."
+    }
+  ],
+  "options": {
+    "inject": false,
+    "limit": 3,
+    "minScore": 2
+  },
+  "examples": [
+    "opencc mods run skill-index find --arg query=\"翻译 讲义 中文\"",
+    "opencc mods run skill-index rebuild"
+  ]
+}

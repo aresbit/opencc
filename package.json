@@ -130,6 +130,7 @@
     "emoji-regex": "^10.6.0",
     "env-paths": "^4.0.0",
     "execa": "^9.6.1",
+    "fast-check": "^4.10.2",
     "fflate": "^0.8.2",
     "figures": "^6.1.0",
     "fuse.js": "^7.1.0",

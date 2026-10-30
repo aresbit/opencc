@@ -37,8 +37,22 @@ import type { EngineInterface } from './types.js'
 import { logError } from '../../utils/log.js'
 
 /** Where a desktop host draws plugin contributions. */
-export const DESKTOP_SLOTS = ['panel', 'composer'] as const
+export const DESKTOP_SLOTS = ['panel', 'composer', 'sessions'] as const
 export type DesktopSlotId = (typeof DESKTOP_SLOTS)[number]
+
+/**
+ * Native panes a host may draw with its own renderer instead of the
+ * declarative tree vocabulary. Allowlisted: a mod names a component the host
+ * already ships, never an arbitrary module to load.
+ */
+export const NATIVE_SLOT_COMPONENTS = ['excalidraw', 'cloud-channels', 'test-panel'] as const
+export type NativeSlotComponent = (typeof NATIVE_SLOT_COMPONENTS)[number]
+
+export interface NativeSlotContribution {
+  component: NativeSlotComponent
+  /** Component-specific payload; JSON-serialisable and size-capped below. */
+  data: unknown
+}
 
 export interface DesktopSlotContribution {
   /** `mod:<name>` for a mod; the host routes actions back to it. */
@@ -47,7 +61,12 @@ export interface DesktopSlotContribution {
   key: string
   title?: string
   /** A declarative pane tree; the host validates it before drawing. */
-  tree: unknown
+  tree?: unknown
+  /**
+   * A host-rendered pane. Takes precedence over `tree` when both are present:
+   * one contribution names one way to draw it.
+   */
+  native?: NativeSlotContribution
 }
 
 export type DesktopSlots = Record<DesktopSlotId, DesktopSlotContribution[]>
@@ -74,15 +93,21 @@ export interface DesktopActionResult {
   message?: string
 }
 
+/**
+ * The three size caps below are the authority: `README.md` (desktop slots) and
+ * the desktop backend's `plugin_slots.py` both quote these numbers, and both
+ * have been wrong about them before. Change the number here first.
+ */
 /** One contribution may not crowd out the session it is drawn beside. */
-export const MAX_CONTRIBUTION_CHARS = 256 * 1024
+export const MAX_CONTRIBUTION_CHARS = 512 * 1024
 const MAX_ACTION_CHARS = 128
-const MAX_PROMPT_CHARS = 16 * 1024
+/** A prompt can carry a selected whiteboard patch plus its instructions. */
+export const MAX_PROMPT_CHARS = 512 * 1024
 const MAX_MESSAGE_CHARS = 500
 const RENDER_DEBOUNCE_MS = 50
 
 function emptySlots(): DesktopSlots {
-  return { panel: [], composer: [] }
+  return { panel: [], composer: [], sessions: [] }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -91,36 +116,78 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Keep what a host can draw: an array of contributions, each with a plugin
- * id, a key and a JSON-serialisable tree under the size cap. Anything else is
- * dropped — a malformed contribution must cost that contribution, never the
- * slot or the session.
+ * id, a key, and either a JSON-serialisable declarative `tree` or an
+ * allowlisted `native` pane, under the size cap. Anything else is dropped — a
+ * malformed contribution must cost that contribution, never the slot or the
+ * session.
+ *
+ * `native` wins when both are present: a contribution names one way to draw
+ * itself, and a mod that supplies an unknown native component is rejected
+ * rather than silently downgraded to a tree the host may not understand.
  */
 export function sanitizeContributions(value: unknown): DesktopSlotContribution[] {
   if (!Array.isArray(value)) return []
   const out: DesktopSlotContribution[] = []
   const seen = new Set<string>()
   value.forEach((item, index) => {
-    if (!isRecord(item) || item.tree === undefined) return
+    if (!isRecord(item)) return
     const pluginId = typeof item.pluginId === 'string' && item.pluginId ? item.pluginId : 'unknown'
     const key = typeof item.key === 'string' && item.key ? item.key : `${pluginId}#${index}`
     const id = `${pluginId}\u0000${key}`
     if (seen.has(id)) return
-    let size: number
-    try {
-      size = JSON.stringify(item.tree)?.length ?? 0
-    } catch {
-      return
+
+    let contribution: DesktopSlotContribution | null = null
+    if (item.native !== undefined) {
+      const native = normalizeNative(item.native)
+      if (native) contribution = { pluginId, key, native }
+    } else if (item.tree !== undefined) {
+      let size: number
+      try {
+        size = JSON.stringify(item.tree)?.length ?? 0
+      } catch {
+        return
+      }
+      if (size === 0 || size > MAX_CONTRIBUTION_CHARS) return
+      contribution = { pluginId, key, tree: item.tree }
     }
-    if (size === 0 || size > MAX_CONTRIBUTION_CHARS) return
+    if (!contribution) return
+
+    if (typeof item.title === 'string' && item.title) {
+      contribution.title = item.title.slice(0, 200)
+    }
     seen.add(id)
-    out.push({
-      pluginId,
-      key,
-      ...(typeof item.title === 'string' && item.title ? { title: item.title.slice(0, 200) } : {}),
-      tree: item.tree,
-    })
+    out.push(contribution)
   })
   return out
+}
+
+/**
+ * Accept only an allowlisted native component whose payload is JSON. Returns
+ * null for anything else so the contribution can be dropped whole.
+ */
+function normalizeNative(value: unknown): NativeSlotContribution | null {
+  if (!isRecord(value)) return null
+  const component = value.component
+  if (
+    typeof component !== 'string' ||
+    !(NATIVE_SLOT_COMPONENTS as readonly string[]).includes(component)
+  ) {
+    return null
+  }
+  if (!('data' in value) || value.data === undefined) return null
+  const native: NativeSlotContribution = {
+    component: component as NativeSlotComponent,
+    data: value.data,
+  }
+  try {
+    const encoded = JSON.stringify(native)
+    if (encoded === undefined || encoded.length === 0 || encoded.length > MAX_CONTRIBUTION_CHARS) {
+      return null
+    }
+  } catch {
+    return null
+  }
+  return native
 }
 
 /** Render every desktop slot through the chain once. */
