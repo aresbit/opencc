@@ -93,6 +93,8 @@ export type CoroutineRecord = {
   subgoalId?: string
   /** Evidence admitted (or rejected) when the coroutine completed. */
   evidence?: CoroutineEvidence
+  /** What the scheduler has tried since this coroutine last looked orphaned. */
+  recovery?: CoroutineRecovery
 }
 
 export type CoroutineEvidence = {
@@ -102,6 +104,40 @@ export type CoroutineEvidence = {
   /** True once the goal's admission gate accepted it. */
   ok: boolean
   error?: string
+}
+
+/**
+ * What the scheduler has tried since this coroutine last looked orphaned.
+ *
+ * A missing heartbeat is evidence, not proof: the process holding the worker
+ * may have restarted, and the worker may be about to be spawned again under
+ * the same address. So the sweep re-issues the task instead of closing the
+ * record — but a crash loop must not re-issue it forever, which is what the
+ * three guards below are for.
+ */
+export type CoroutineRecovery = {
+  /** Recovery attempts made so far, across launches. */
+  attempts: number
+  /** Consecutive attempts that saw no progress; any progress resets it to 0. */
+  noProgress: number
+  /** When the last attempt was made. */
+  lastAttemptAt?: string
+  /** No further attempt before this instant (the cooldown between attempts). */
+  nextAttemptAt?: string
+  /** When this coroutine first looked orphaned. */
+  interruptedAt?: string
+  /** Last observed progress (a reply arrived, the cursor advanced). */
+  lastProgressAt?: string
+  /**
+   * Protocol cursor and history length *after* the last attempt's own note was
+   * written. Anything above it is progress made since, which is what resets
+   * `noProgress`.
+   */
+  mark?: { cursor: number; history: number }
+  /** What the last attempt did. */
+  lastAction?: 'resumed' | 'skipped-cooldown' | 'skipped-launch' | 'exhausted'
+  /** Set when a guard closed the coroutine rather than a worker or a deadline. */
+  stoppedBy?: 'no-progress'
 }
 
 export type CoroutineStoreShape = {

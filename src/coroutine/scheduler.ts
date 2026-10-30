@@ -54,6 +54,24 @@ const POLL_MS = 100
 const PRESENCE_REFRESH_MS = 20_000
 /** History is capped: a coroutine is a handle, not a log store. */
 const MAX_HISTORY = 40
+/**
+ * How many consecutive recovery attempts may see no progress before the
+ * coroutine is closed. Three is the point where "the worker will come back"
+ * has stopped being a better explanation than "the work is gone".
+ */
+const RECOVERY_MAX_NO_PROGRESS = 3
+/** Cooldown after the 1st and 2nd attempt: 10 minutes, then 20. */
+const RECOVERY_COOLDOWN_MS = [10 * 60_000, 20 * 60_000] as const
+
+/**
+ * Coroutines this process has already tried to recover.
+ *
+ * The restart policy is one attempt per coroutine per launch: a process that
+ * keeps sweeping must not spend the whole budget in its first minute, and a
+ * person restarting twice in a row should not burn two attempts on a worker
+ * that simply had not started yet.
+ */
+const recoveredThisLaunch = new Set<string>()
 
 function now(): string {
   return new Date().toISOString()
@@ -910,24 +928,83 @@ export async function failCoroutinesForWorker(
 }
 
 /**
- * Sweep for workers that are gone without having retired.
+ * Sweep for workers that are gone, and decide for each coroutine whether that
+ * means "resume" or "give up".
  *
- * The retire hook in `runAgent` covers a worker that exits cleanly. This covers
- * the other ending: a crashed, killed, or cross-process worker whose presence
- * has gone stale. Presence is a heartbeat, so "stale" means no process is
- * serving that address any more — nobody can finish the coroutine.
+ * The retire hook in `runAgent` covers a worker that exits cleanly — that is a
+ * signal, and `failCoroutinesForWorker` closes the coroutine immediately. This
+ * covers the other ending: a crashed, killed, or restarted process whose
+ * worker's presence has gone stale. That is evidence, not proof — the same
+ * address may be about to be served again by a fresh process — so the default
+ * is to **re-issue the task**, not to close the record.
+ *
+ * Three guards, borrowed from dsh-recovery-resume, keep a crash loop from
+ * spending money forever:
+ *
+ *   1. one attempt per coroutine per launch (in-process);
+ *   2. a cooldown between attempts: 10 minutes after the first, 20 after the
+ *      second;
+ *   3. three consecutive attempts with no progress → `failed`.
+ *
+ * Progress is observable, not asserted: the cursor advanced or the history
+ * grew since the attempt's mark. Any progress resets the streak, so a worker
+ * that limps back and then dies again gets a full budget rather than ending up
+ * closed for a reason it had already disproved.
  *
  * Only local addresses are swept: an unreachable peer says something about the
  * relay, not about the peer, and killing work over a network hiccup is worse
  * than leaving it for its deadline.
  */
-export async function reapDeadWorkers(
-  options: { team?: string; graceMs?: number } = {},
-): Promise<CoroutineRecord[]> {
+export type RecoveryOutcome = {
+  /** The task was re-issued (delivered into the worker's mailbox). */
+  resumed: CoroutineRecord[]
+  /** The streak ran out; these were closed as failed. */
+  exhausted: CoroutineRecord[]
+  /** Left alone this time, and why. */
+  skipped: Array<{ id: string; name: string; reason: string; until?: string }>
+}
+
+/**
+ * What the guards said about one orphan. Tag-only, so the record travels
+ * beside the verdict rather than inside it — a `kind` that can be lost in a
+ * spread is a decision that silently re-delivers.
+ */
+type RecoveryVerdict =
+  | { kind: 'resume' }
+  | { kind: 'exhaust'; reason: string }
+  | { kind: 'skip'; reason: string; until?: string }
+
+/**
+ * Verdict plus the record it was about. Spelled out as a union rather than an
+ * intersection: `(A | B) & C` gives TypeScript no discriminant, so
+ * `decision.kind` stops narrowing, and the obvious workaround — `Exclude<…,
+ * { record: CoroutineRecord }>` — resolves to `never`, because the
+ * intersection *is* assignable to that shape.
+ */
+type RecoveryDecision =
+  | { kind: 'resume'; record: CoroutineRecord }
+  | { kind: 'exhaust'; reason: string; record: CoroutineRecord }
+  | { kind: 'skip'; reason: string; until?: string; record: CoroutineRecord }
+
+export async function recoverInterruptedCoroutines(
+  options: {
+    team?: string
+    /** Clock override for tests. */
+    now?: number
+    /** Do not touch a coroutine younger than this; its worker may be starting. */
+    graceMs?: number
+    /** Per-launch attempt set; the process's own by default. */
+    launch?: Set<string>
+  } = {},
+): Promise<RecoveryOutcome> {
   const team = options.team ?? getCoroutineTeam()
+  const at = options.now ?? Date.now()
   const graceMs = options.graceMs ?? PRESENCE_STALE_MS
+  const launch = options.launch ?? recoveredThisLaunch
   const mailbox = new LocalActorMailbox()
 
+  // Reachability first, outside the lock: a coroutine whose worker is still
+  // served is not orphaned, and probing it must not hold the table.
   const candidates = await withCoroutines(team, store =>
     Object.values(store.coroutines)
       .filter(
@@ -935,32 +1012,170 @@ export async function reapDeadWorkers(
           !isTerminal(record.state) &&
           Boolean(record.worker) &&
           record.worker !== record.address &&
+          // `name@node` is a network question, not a liveness one. Deadlines own it.
           !record.worker!.includes('@') &&
-          Date.now() - Date.parse(record.createdAt) >= graceMs,
+          at - Date.parse(record.createdAt) >= graceMs,
       )
       .map(record => ({ ...record })),
   )
-
-  const byWorker = new Map<string, CoroutineRecord[]>()
+  const orphans: CoroutineRecord[] = []
   for (const record of candidates) {
-    const bucket = byWorker.get(record.worker!) ?? []
-    bucket.push(record)
-    byWorker.set(record.worker!, bucket)
+    if (!(await mailbox.isReachable(record.worker!))) orphans.push(record)
+  }
+  if (orphans.length === 0) {
+    return { resumed: [], exhausted: [], skipped: [] }
   }
 
-  const reaped: CoroutineRecord[] = []
-  for (const [worker, records] of byWorker) {
-    if (await mailbox.isReachable(worker)) continue
-    reaped.push(
-      ...(await failCoroutinesForWorker(worker, {
-        team,
-        reason: `worker ${worker} is gone (presence stale) without completing${
-          records.length > 1 ? ` — ${records.length} coroutines closed` : ''
-        }`,
-      })),
-    )
+  // Decide every orphan inside one lock: two callers must not both spend the
+  // same attempt, and the attempt is spent when the decision is made — not
+  // when the re-delivery returns.
+  const decisions = await withCoroutines(team, store => {
+    const out: RecoveryDecision[] = []
+    for (const candidate of orphans) {
+      const record = store.coroutines[candidate.id]
+      if (!record || isTerminal(record.state)) continue
+
+      const exit = awaitDecision(record, at, launch)
+      if (exit.kind === 'resume') {
+        record.history = [
+          ...record.history,
+          {
+            at: record.recovery!.lastAttemptAt!,
+            kind: 'coroutine.recover',
+            from: 'scheduler',
+            preview: `recovery attempt ${record.recovery!.attempts}/${RECOVERY_MAX_NO_PROGRESS}: worker ${record.worker} not served; task re-issued`,
+          },
+        ].slice(-MAX_HISTORY)
+        // Taken after the note: next time, any growth is somebody else's work.
+        record.recovery!.mark = {
+          cursor: record.cursor,
+          history: record.history.length,
+        }
+      }
+      out.push({ ...exit, record: { ...record } })
+    }
+    return out
+  })
+
+  const resumed: CoroutineRecord[] = []
+  const exhausted: CoroutineRecord[] = []
+  const skipped: RecoveryOutcome['skipped'] = []
+
+  for (const decision of decisions) {
+    if (decision.kind === 'skip') {
+      skipped.push({
+        id: decision.record.id,
+        name: decision.record.name,
+        reason: decision.reason,
+        ...(decision.until ? { until: decision.until } : {}),
+      })
+      continue
+    }
+    if (decision.kind === 'exhaust') {
+      exhausted.push(decision.record)
+      await failSubgoal(decision.record.subgoalId, decision.reason)
+      await reflectCoroutine(decision.record, 'failed').catch(() => {
+        // The record is already terminal; a failed lesson must not resurrect it.
+      })
+      continue
+    }
+
+    // Re-arm. Two things have to happen or the retry is theatre: the inbox must
+    // be served again (or a result has nowhere to land), and the worker must be
+    // re-told the job (after a restart it remembers nothing). The note in the
+    // payload is the part that matters most — it tells the worker to check what
+    // actually happened instead of assuming the previous attempt succeeded or
+    // failed, which is the difference between resuming and repeating.
+    const record = decision.record
+    await mailbox.announce(record.address).catch(() => {})
+    if (record.task) {
+      await deliver({
+        to: record.worker!,
+        payload: {
+          task: record.task,
+          coroutine: record.name,
+          recovery: {
+            attempt: record.recovery?.attempts ?? 1,
+            note:
+              'This coroutine was interrupted by a restart. Check what actually happened before continuing — ' +
+              'do not assume the previous attempt succeeded, and do not assume it failed. Reply to the ' +
+              'coroutine address when you have a result.',
+          },
+        },
+        kind: 'coroutine.task',
+        correlationId: record.id,
+        replyTo: record.address,
+      }).catch(() => {
+        // The mailbox taking it is best-effort: the record is already marked
+        // `waiting`, and the next attempt (or the deadline) will decide.
+      })
+    }
+    resumed.push(record)
   }
-  return reaped
+
+  return { resumed, exhausted, skipped }
+}
+
+/** Apply the guards to one orphan and, when it may proceed, spend the attempt. */
+function awaitDecision(
+  record: CoroutineRecord,
+  at: number,
+  launch: Set<string>,
+): RecoveryVerdict {
+  const recovery = (record.recovery ??= { attempts: 0, noProgress: 0 })
+  const iso = new Date(at).toISOString()
+
+  // Progress since the last attempt resets the streak and the cooldown.
+  if (
+    recovery.mark &&
+    (record.cursor > recovery.mark.cursor ||
+      record.history.length > recovery.mark.history)
+  ) {
+    recovery.noProgress = 0
+    recovery.lastProgressAt = record.updatedAt
+    recovery.nextAttemptAt = undefined
+  }
+
+  if (recovery.noProgress >= RECOVERY_MAX_NO_PROGRESS) {
+    const reason =
+      `no progress after ${recovery.noProgress} recovery attempts; ` +
+      `worker ${record.worker} never came back`
+    record.state = 'failed'
+    record.error = reason
+    record.updatedAt = iso
+    recovery.stoppedBy = 'no-progress'
+    recovery.lastAction = 'exhausted'
+    return { kind: 'exhaust', reason }
+  }
+
+  // The launch cap is checked before the cooldown: both are true at this
+  // point, and "already tried in this launch" is the reason that explains the
+  // sweep the caller just made.
+  if (launch.has(record.id)) {
+    recovery.lastAction = 'skipped-launch'
+    return { kind: 'skip', reason: 'already attempted in this launch' }
+  }
+
+  if (recovery.nextAttemptAt && Date.parse(recovery.nextAttemptAt) > at) {
+    recovery.lastAction = 'skipped-cooldown'
+    return { kind: 'skip', reason: 'cooldown', until: recovery.nextAttemptAt }
+  }
+
+  const attempt = recovery.attempts + 1
+  recovery.attempts = attempt
+  recovery.noProgress += 1
+  recovery.lastAttemptAt = iso
+  recovery.interruptedAt ??= iso
+  recovery.nextAttemptAt = new Date(
+    at + RECOVERY_COOLDOWN_MS[Math.min(attempt, RECOVERY_COOLDOWN_MS.length) - 1],
+  ).toISOString()
+  recovery.lastAction = 'resumed'
+  // Nothing is executing while the worker is gone; the parent's suspension is
+  // the only live thing, and `waiting` is exactly that.
+  record.state = 'waiting'
+  record.updatedAt = iso
+  launch.add(record.id)
+  return { kind: 'resume' }
 }
 
 export type CompleteInput = {

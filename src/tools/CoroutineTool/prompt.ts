@@ -41,6 +41,18 @@ Actions:
 - status: list or show coroutines as a tree (id, state, protocol progress,
   goal/criterion/subgoal/evidence).
 
+Restart recovery: a coroutine is durable, so a crash does not lose it. When a
+later launch finds a coroutine whose worker address is no longer served, it
+re-issues the task instead of guessing an outcome — the worker is told to
+check what actually happened before continuing, and the coroutine's own inbox
+is served again so a late reply has somewhere to land. Three guards keep this
+from becoming a crash loop: at most one attempt per coroutine per launch, a
+10-then-20-minute cooldown between attempts, and after three consecutive
+attempts that produced no observable progress (cursor or history unchanged)
+the coroutine is closed as failed, not retried forever. A clean worker exit is
+not evidence of an interruption — that path fails the coroutine immediately.
+Remote workers (name@node) and self-worker coroutines are never swept.
+
 Every terminal coroutine writes one evolution reflection (id cor-<id>) graded
 by evidence, so evolve recall can reuse what actually worked.
 

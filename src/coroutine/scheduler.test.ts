@@ -10,7 +10,7 @@ import {
   cancelCoroutine,
   failCoroutinesForWorker,
   getCoroutine,
-  reapDeadWorkers,
+  recoverInterruptedCoroutines,
   resumeCoroutine,
   sendToCoroutine,
   spawnCoroutine,
@@ -44,6 +44,23 @@ async function isolate(): Promise<void> {
   process.env.CLAUDE_CONFIG_DIR = root
   delete process.env.OPENCC_COROUTINE_ROOT
   process.env.MATEBOT_ACTOR_ADDRESS = 'actor://test/orchestrator'
+}
+
+/** Age a coroutine past the presence grace window, as a restart would. */
+async function backdate(id: string): Promise<void> {
+  await withCoroutines('test', store => {
+    store.coroutines[id].createdAt = new Date(
+      Date.now() - 10 * 60 * 1000,
+    ).toISOString()
+  })
+}
+
+/** Let the next launch try again without waiting ten real minutes. */
+async function clearCooldown(id: string): Promise<void> {
+  await withCoroutines('test', store => {
+    const recovery = store.coroutines[id].recovery
+    if (recovery) recovery.nextAttemptAt = undefined
+  })
 }
 
 describe('coroutines as durable suspension points', () => {
@@ -236,22 +253,156 @@ describe('coroutines as durable suspension points', () => {
     )
   })
 
-  test('the sweep reaps a worker with no presence and leaves a live one', async () => {
+  test('a sweep re-issues the task instead of closing a coroutine whose worker is gone', async () => {
     await isolate()
     const { record } = await spawnCoroutine({
       task: 'orphaned',
       worker: 'actor://test/ghost',
     })
-    // Pretend the coroutine is older than the presence grace window.
-    await withCoroutines('test', store => {
-      store.coroutines[record.id].createdAt = new Date(
-        Date.now() - 10 * 60 * 1000,
-      ).toISOString()
-    })
+    await backdate(record.id)
 
-    const reaped = await reapDeadWorkers()
-    expect(reaped.map(item => item.id)).toEqual([record.id])
-    expect(reaped[0].error).toContain('presence stale')
+    const launch = new Set<string>()
+    const sweep = await recoverInterruptedCoroutines({ launch })
+
+    expect(sweep.resumed.map(item => item.id)).toEqual([record.id])
+    expect(sweep.exhausted).toEqual([])
+    const after = await getCoroutine(record.id)
+    // Nothing is executing; waiting is the honest state.
+    expect(after?.state).toBe('waiting')
+    expect(after?.recovery?.attempts).toBe(1)
+    expect(after?.recovery?.noProgress).toBe(1)
+    expect(after?.error).toBeUndefined()
+    // The worker is re-told the job, and told to check before continuing.
+    const parked = await new LocalActorMailbox().peek('actor://test/ghost')
+    const task = parked.find(item => item.kind === 'coroutine.task')
+    expect(task).toBeDefined()
+    expect(JSON.stringify(task?.payload)).toContain('Check what actually happened')
+    // The coroutine's own inbox is served again, so a late reply has a home.
+    expect(await new LocalActorMailbox().isReachable(record.address)).toBe(true)
+  })
+
+  test('one attempt per launch: the second sweep in the same process skips', async () => {
+    await isolate()
+    const { record } = await spawnCoroutine({
+      task: 'orphaned',
+      worker: 'actor://test/ghost',
+    })
+    await backdate(record.id)
+    const launch = new Set<string>()
+
+    await recoverInterruptedCoroutines({ launch })
+    const second = await recoverInterruptedCoroutines({ launch })
+
+    expect(second.resumed).toEqual([])
+    expect(second.skipped).toEqual([
+      { id: record.id, name: record.name, reason: 'already attempted in this launch' },
+    ])
+    expect((await getCoroutine(record.id))?.recovery?.attempts).toBe(1)
+  })
+
+  test('a cooldown holds the next launch off, and says until when', async () => {
+    await isolate()
+    const { record } = await spawnCoroutine({
+      task: 'orphaned',
+      worker: 'actor://test/ghost',
+    })
+    await backdate(record.id)
+
+    await recoverInterruptedCoroutines({ launch: new Set() })
+    const nextLaunch = await recoverInterruptedCoroutines({ launch: new Set() })
+
+    expect(nextLaunch.resumed).toEqual([])
+    expect(nextLaunch.skipped).toHaveLength(1)
+    expect(nextLaunch.skipped[0].reason).toBe('cooldown')
+    // 10 minutes after the first attempt, per the restart policy.
+    const first = Date.parse(nextLaunch.skipped[0].until!)
+    expect(first - Date.now()).toBeGreaterThan(9 * 60_000)
+    expect(first - Date.now()).toBeLessThanOrEqual(10 * 60_000 + 1_000)
+  })
+
+  test('progress between attempts resets the streak', async () => {
+    await isolate()
+    const { record } = await spawnCoroutine({
+      task: 'orphaned',
+      worker: 'actor://test/ghost',
+    })
+    await backdate(record.id)
+
+    await recoverInterruptedCoroutines({ launch: new Set() })
+    // A reply arrived after all: the cursor and the history both moved.
+    await withCoroutines('test', store => {
+      const live = store.coroutines[record.id]
+      live.cursor = 1
+      live.history = [...live.history, { at: new Date().toISOString(), kind: 'coroutine.result', from: 'actor://test/ghost', preview: 'done' }]
+      live.updatedAt = new Date().toISOString()
+    })
+    await clearCooldown(record.id)
+
+    const again = await recoverInterruptedCoroutines({ launch: new Set() })
+
+    expect(again.resumed.map(item => item.id)).toEqual([record.id])
+    const after = await getCoroutine(record.id)
+    expect(after?.recovery?.attempts).toBe(2)
+    // Reset to 0 by the progress, then the new attempt adds one.
+    expect(after?.recovery?.noProgress).toBe(1)
+    expect(after?.recovery?.lastProgressAt).toBeTruthy()
+  })
+
+  test('three attempts with no progress close the coroutine, not forever retry it', async () => {
+    await isolate()
+    const { record } = await spawnCoroutine({
+      task: 'orphaned',
+      worker: 'actor://test/ghost',
+    })
+    await backdate(record.id)
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await clearCooldown(record.id)
+      const sweep = await recoverInterruptedCoroutines({ launch: new Set() })
+      expect(sweep.resumed.map(item => item.id)).toEqual([record.id])
+    }
+
+    // The fourth look is where the third attempt's silence is observed.
+    await clearCooldown(record.id)
+    const final = await recoverInterruptedCoroutines({ launch: new Set() })
+
+    expect(final.exhausted.map(item => item.id)).toEqual([record.id])
+    const after = await getCoroutine(record.id)
+    expect(after?.state).toBe('failed')
+    expect(after?.error).toContain('no progress after 3 recovery attempts')
+    expect(after?.recovery?.stoppedBy).toBe('no-progress')
+  })
+
+  test('a live worker and a remote worker are both left alone', async () => {
+    await isolate()
+    const live = await spawnCoroutine({
+      task: 'alive',
+      worker: 'actor://test/lively',
+    })
+    const remote = await spawnCoroutine({
+      task: 'elsewhere',
+      worker: 'actor://test/peer@other-node',
+    })
+    await backdate(live.record.id)
+    await backdate(remote.record.id)
+    await new LocalActorMailbox().announce('actor://test/lively')
+
+    const sweep = await recoverInterruptedCoroutines({ launch: new Set() })
+
+    expect(sweep.resumed).toEqual([])
+    expect(sweep.exhausted).toEqual([])
+    expect(sweep.skipped).toEqual([])
+  })
+
+  test('a self-worker coroutine is never swept: its parent owns the wait', async () => {
+    await isolate()
+    const { record } = await spawnCoroutine({ task: 'wait for a human' })
+    await backdate(record.id)
+
+    const sweep = await recoverInterruptedCoroutines({ launch: new Set() })
+
+    expect(sweep).toEqual({ resumed: [], exhausted: [], skipped: [] })
+    expect((await getCoroutine(record.id))?.state).toBe('running')
   })
 
   test('delivery picks the layer by address, and the env can pin it', async () => {

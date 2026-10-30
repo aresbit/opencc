@@ -116,6 +116,24 @@ function normalizeRecord(raw: unknown): CoroutineRecord | null {
       value.evidence && typeof value.evidence === 'object'
         ? (value.evidence as CoroutineRecord['evidence'])
         : undefined,
+    recovery:
+      value.recovery && typeof value.recovery === 'object'
+        ? {
+            attempts: Number.isFinite(value.recovery.attempts)
+              ? Math.max(0, Number(value.recovery.attempts))
+              : 0,
+            noProgress: Number.isFinite(value.recovery.noProgress)
+              ? Math.max(0, Number(value.recovery.noProgress))
+              : 0,
+            lastAttemptAt: value.recovery.lastAttemptAt,
+            nextAttemptAt: value.recovery.nextAttemptAt,
+            interruptedAt: value.recovery.interruptedAt,
+            lastProgressAt: value.recovery.lastProgressAt,
+            mark: value.recovery.mark,
+            lastAction: value.recovery.lastAction,
+            stoppedBy: value.recovery.stoppedBy,
+          }
+        : undefined,
   }
 }
 

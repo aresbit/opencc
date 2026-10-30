@@ -6,7 +6,7 @@ import {
   getCoroutine,
   joinCoroutines,
   listCoroutines,
-  reapDeadWorkers,
+  recoverInterruptedCoroutines,
   renderTree,
   resumeCoroutine,
   sendToCoroutine,
@@ -421,6 +421,19 @@ export const CoroutineTool = buildTool({
                 (record.task ? `\n  task: ${record.task}` : '') +
                 `\n  protocol ${record.cursor}/${record.protocol.length}, ` +
                 `resumes ${record.resumeCount}, children ${record.children.length}` +
+                (record.recovery && record.recovery.attempts > 0
+                  ? `\n  recovery ${record.recovery.attempts}/3 attempts, ` +
+                    `${record.recovery.noProgress} without progress` +
+                    (record.recovery.nextAttemptAt
+                      ? `, next ${record.recovery.nextAttemptAt}`
+                      : '') +
+                    (record.recovery.lastProgressAt
+                      ? `, last progress ${record.recovery.lastProgressAt}`
+                      : '') +
+                    (record.recovery.stoppedBy
+                      ? `, stopped by ${record.recovery.stoppedBy}`
+                      : '')
+                  : '') +
                 (record.deadlineAt ? `, deadline ${record.deadlineAt}` : '') +
                 (record.goalId
                   ? `\n  goal ${record.goalId}` +
@@ -444,21 +457,37 @@ export const CoroutineTool = buildTool({
             },
           }
         }
-        // A coroutine whose worker exited without retiring would otherwise sit
-        // in `running` forever, so the listing first closes the ones whose
-        // worker is provably gone.
-        await reapDeadWorkers().catch(() => {})
+        // A coroutine whose worker is gone looks exactly like one that is
+        // still working, so the listing first decides which of those orphans
+        // can be re-issued and which have run out of attempts.
+        const recovery = await recoverInterruptedCoroutines().catch(() => null)
         const records = await listCoroutines({
           includeTerminal: input.include_terminal,
         })
+        const recovered = recovery
+          ? [
+              recovery.resumed.length > 0
+                ? `${recovery.resumed.length} re-issued (${recovery.resumed.map(item => item.name).join(', ')})`
+                : '',
+              recovery.exhausted.length > 0
+                ? `${recovery.exhausted.length} closed for no progress (${recovery.exhausted.map(item => item.name).join(', ')})`
+                : '',
+              recovery.skipped.length > 0
+                ? `${recovery.skipped.length} waiting out a cooldown or already tried this launch`
+                : '',
+            ]
+              .filter(Boolean)
+              .join('; ')
+          : ''
         return {
           data: {
             success: true,
             coroutines: records,
             message:
-              records.length === 0
+              (records.length === 0
                 ? 'No coroutines in this team.'
-                : renderTree(records),
+                : renderTree(records)) +
+              (recovered ? `\n\nrecovery: ${recovered}` : ''),
           },
         }
       }
