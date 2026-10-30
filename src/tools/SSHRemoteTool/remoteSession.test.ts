@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm } from 'fs/promises'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -10,6 +10,7 @@ import {
   readRemote,
   resolveRemotePath,
   shellQuote,
+  validatePasswordFile,
   type RemoteSession,
   writeRemote,
 } from './remoteSession.js'
@@ -127,4 +128,65 @@ test('runs command and file operations through the SSH transport', async () => {
     else process.env.OPENCC_SSH_REMOTE_BINARY = previousBinary
     await rm(root, { recursive: true, force: true })
   }
+})
+
+describe('SSH remote password authentication', () => {
+  test('requires a 0600 password file', async () => {
+    if (process.platform === 'win32') return
+    const root = await mkdtemp(join(tmpdir(), 'opencc-ssh-password-mode-'))
+    const file = join(root, 'password')
+    try {
+      await writeFile(file, 'test-password\n', { mode: 0o600 })
+      await chmod(file, 0o600)
+      expect(await validatePasswordFile(file)).toBe(file)
+
+      await chmod(file, 0o644)
+      await expect(validatePasswordFile(file)).rejects.toThrow(
+        'must not be accessible by group or others',
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('uses SSH_ASKPASS instead of BatchMode when password_file is set', async () => {
+    const fixture = join(
+      import.meta.dir,
+      'fixtures',
+      'fake-ssh-password.sh',
+    )
+    const root = await mkdtemp(join(tmpdir(), 'opencc-ssh-password-test-'))
+    const previousBinary = process.env.OPENCC_SSH_REMOTE_BINARY
+    const previousRuntime = process.env.XDG_RUNTIME_DIR
+    const previousTestPassword = process.env.OPENCC_TEST_PASSWORD
+    process.env.OPENCC_SSH_REMOTE_BINARY = fixture
+    process.env.XDG_RUNTIME_DIR = root
+    process.env.OPENCC_TEST_PASSWORD = 'test-password'
+    const passwordFile = join(root, 'password')
+    try {
+      await writeFile(passwordFile, 'test-password\n', { mode: 0o600 })
+      await chmod(passwordFile, 0o600)
+
+      const { session } = await connectSession('password', 'fake-host', undefined, {
+        passwordFile,
+      })
+      expect(session.passwordFile).toBe(passwordFile)
+
+      const command = await execRemote(session, 'printf password-ok', '.', 5_000)
+      expect(command.exitCode).toBe(0)
+      expect(command.stdout).toBe('password-ok')
+
+      await closeSession('password')
+    } finally {
+      if (previousBinary === undefined)
+        delete process.env.OPENCC_SSH_REMOTE_BINARY
+      else process.env.OPENCC_SSH_REMOTE_BINARY = previousBinary
+      if (previousRuntime === undefined) delete process.env.XDG_RUNTIME_DIR
+      else process.env.XDG_RUNTIME_DIR = previousRuntime
+      if (previousTestPassword === undefined)
+        delete process.env.OPENCC_TEST_PASSWORD
+      else process.env.OPENCC_TEST_PASSWORD = previousTestPassword
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 })

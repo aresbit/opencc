@@ -137,8 +137,9 @@ concurrency: 3
 
 安全默认值：
 
-- 只使用系统 SSH 配置、密钥或本机 SSH agent 认证；不要把密码或私钥写进 slash 命令。
-- 强制 `ForwardAgent=no`，并使用 `BatchMode=yes` 避免不可见的密码提示卡住工具调用。
+- 默认使用系统 SSH 配置、密钥或本机 SSH agent 认证；不要把密码正文或私钥写进 slash 命令。
+- 需要密码登录时，把密码存成本机 `0600` 文件，并通过 `password_file` 传入路径；工具用 `SSH_ASKPASS` 读取，密码不进入命令、日志或模型上下文。密钥模式仍使用 `BatchMode=yes`。
+- 强制 `ForwardAgent=no`。
 - SSH 连接通过 `ControlMaster` 复用一小时，`disconnect` 会在没有共享会话时主动关闭。
 - 操作审计记录在 `~/.claude/ssh-remote/<session>.audit.jsonl`；设置 `OPENCC_SSH_REMOTE_NO_AUDIT=1` 可关闭。
 - 可用 `OPENCC_SSH_REMOTE_CONFIG=/path/to/ssh_config` 指定独立 SSH 配置文件。

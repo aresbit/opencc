@@ -1,9 +1,9 @@
 // SSH transport/session design adapted from AgentReach (MIT).
 // See AGENTREACH_LICENSE in this directory.
 import { createHash, randomBytes } from 'crypto'
-import { appendFile, chmod, mkdir } from 'fs/promises'
+import { appendFile, chmod, mkdir, stat, writeFile } from 'fs/promises'
 import { homedir, tmpdir } from 'os'
-import { dirname, join, posix, resolve } from 'path'
+import { dirname, isAbsolute, join, posix, resolve } from 'path'
 
 export type RemoteTarget = {
   raw: string
@@ -17,6 +17,11 @@ export type RemoteSession = RemoteTarget & {
   name: string
   connectedAt: string
   controlPath: string
+  /**
+   * Local path to a 0600 file containing the SSH password. The file is read by
+   * ssh through SSH_ASKPASS; the password itself never enters a tool argument.
+   */
+  passwordFile?: string
 }
 
 export type RemoteResult = {
@@ -115,10 +120,22 @@ function sshArgs(session: RemoteSession): string[] {
   const args: string[] = []
   const config = process.env.OPENCC_SSH_REMOTE_CONFIG
   if (config) args.push('-F', config)
+  args.push('-T')
+  if (session.passwordFile) {
+    args.push(
+      '-o',
+      'BatchMode=no',
+      '-o',
+      'PreferredAuthentications=password,keyboard-interactive',
+      '-o',
+      'PubkeyAuthentication=no',
+      '-o',
+      'NumberOfPasswordPrompts=1',
+    )
+  } else {
+    args.push('-o', 'BatchMode=yes')
+  }
   args.push(
-    '-T',
-    '-o',
-    'BatchMode=yes',
     '-o',
     'ForwardAgent=no',
     '-o',
@@ -142,6 +159,61 @@ function sshArgs(session: RemoteSession): string[] {
 
 function sshBinary(): string {
   return process.env.OPENCC_SSH_REMOTE_BINARY || 'ssh'
+}
+
+function expandHome(path: string): string {
+  if (path === '~') return homedir()
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2))
+  return path
+}
+
+/**
+ * Resolve and validate a local password file. The file must be a regular file
+ * and must not be readable/writable by group or others. Only the path is ever
+ * stored; the password is read by ssh itself through SSH_ASKPASS.
+ */
+export async function validatePasswordFile(path: string): Promise<string> {
+  const expanded = expandHome(path.trim())
+  if (!expanded) throw new Error('password_file must not be empty')
+  const absolute = isAbsolute(expanded) ? expanded : resolve(expanded)
+  const info = await stat(absolute).catch(() => undefined)
+  if (!info) throw new Error(`password_file not found: ${absolute}`)
+  if (!info.isFile())
+    throw new Error(`password_file is not a regular file: ${absolute}`)
+  if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) {
+    throw new Error(
+      `password_file must not be accessible by group or others; run: chmod 600 ${shellQuote(absolute)}`,
+    )
+  }
+  return absolute
+}
+
+function askpassPathFor(session: RemoteSession): string {
+  const digest = createHash('sha256')
+    .update(`${session.passwordFile ?? ''}|${session.controlPath}`)
+    .digest('hex')
+    .slice(0, 16)
+  return join(dirname(session.controlPath), `askpass-${digest}.sh`)
+}
+
+async function ensureAskpassHelper(session: RemoteSession): Promise<void> {
+  if (!session.passwordFile) return
+  const path = askpassPathFor(session)
+  const script = `#!/bin/sh\nexec cat ${shellQuote(session.passwordFile)}\n`
+  await writeFile(path, script, { mode: 0o700 })
+  await chmod(path, 0o700).catch(() => undefined)
+}
+
+function sshEnv(
+  session: RemoteSession,
+): Record<string, string | undefined> | undefined {
+  if (!session.passwordFile) return undefined
+  return {
+    ...process.env,
+    SSH_ASKPASS: askpassPathFor(session),
+    SSH_ASKPASS_REQUIRE: 'force',
+    DISPLAY: process.env.DISPLAY || 'opencc-ssh-remote',
+  }
 }
 
 function makeSentinel(): string {
@@ -190,6 +262,7 @@ async function runSSH(
   } = {},
 ): Promise<RemoteResult> {
   await ensureControlDirectory(session.controlPath)
+  await ensureAskpassHelper(session)
   const sentinel = makeSentinel()
   const argv = [
     sshBinary(),
@@ -215,6 +288,7 @@ async function runSSH(
       stdout: 'pipe',
       stderr: 'pipe',
       signal: controller.signal,
+      env: sshEnv(session),
     })
     if (options.stdin !== undefined) proc.stdin.write(options.stdin)
     proc.stdin.end()
@@ -251,10 +325,20 @@ async function runSSH(
   }
 }
 
+export type ConnectOptions = {
+  /**
+   * Local path to a 0600 password file. The password is consumed by ssh via
+   * SSH_ASKPASS and is never read into this process or written to the audit
+   * log. Falls back to OPENCC_SSH_REMOTE_PASSWORD_FILE when omitted.
+   */
+  passwordFile?: string
+}
+
 export async function connectSession(
   name: string,
   targetSpec: string,
   signal?: AbortSignal,
+  options: ConnectOptions = {},
 ): Promise<{ session: RemoteSession; probe: RemoteResult }> {
   validateSessionName(name)
   const target = parseRemoteTarget(targetSpec)
@@ -264,11 +348,17 @@ export async function connectSession(
       `Session ${JSON.stringify(name)} is already connected to ${existing.raw}. Disconnect it before pointing the name at another target.`,
     )
   }
+  const requestedPasswordFile =
+    options.passwordFile ?? process.env.OPENCC_SSH_REMOTE_PASSWORD_FILE
+  const passwordFile = requestedPasswordFile
+    ? await validatePasswordFile(requestedPasswordFile)
+    : existing?.passwordFile
   const session: RemoteSession = {
     ...target,
     name,
     connectedAt: new Date().toISOString(),
     controlPath: controlPathFor(target),
+    passwordFile,
   }
   const probe = await runSSH(
     session,
@@ -400,12 +490,14 @@ export async function closeSession(name: string): Promise<void> {
     )
   )
     return
+  await ensureAskpassHelper(session)
   const args = sshArgs(session)
   const hostIndex = args.lastIndexOf(session.host)
   const closeArgs = [...args.slice(0, hostIndex), '-O', 'exit', session.host]
   const proc = Bun.spawn([sshBinary(), ...closeArgs], {
     stdout: 'ignore',
     stderr: 'ignore',
+    env: sshEnv(session),
   })
   await proc.exited.catch(() => undefined)
 }

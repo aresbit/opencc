@@ -57,6 +57,12 @@ const inputSchema = lazySchema(() =>
       .describe(
         'For connect: an SSH config alias, ssh://user@host[/absolute/path], or user@host:[/absolute/path]. When path is omitted, use the remote login home.',
       ),
+    password_file: z
+      .string()
+      .optional()
+      .describe(
+        'For connect: local path to a 0600 file containing the SSH password. ssh reads it through SSH_ASKPASS; the password itself is never accepted in tool arguments. Falls back to OPENCC_SSH_REMOTE_PASSWORD_FILE.',
+      ),
     command: z
       .string()
       .optional()
@@ -185,7 +191,9 @@ async function perform(input: Input, signal: AbortSignal): Promise<Output> {
 
   if (action === 'connect') {
     const target = required(input.target, 'target', action)
-    const { session, probe } = await connectSession(name, target, signal)
+    const { session, probe } = await connectSession(name, target, signal, {
+      passwordFile: input.password_file,
+    })
     await appendAudit(session, { action: 'connect', code: 0 })
     return {
       success: true,
@@ -455,10 +463,10 @@ export const SSHRemoteTool = buildTool({
     'ssh remote computer host server directory develop read write edit execute command',
   maxResultSizeChars: 500_000,
   async description() {
-    return 'Develop in a directory on another computer over the system SSH client. Connect a named session, then execute commands and read, write, edit, list or search files relative to its fixed remote workspace. Credentials and the model stay local; SSH agent forwarding is disabled and operations are locally audited.'
+    return 'Develop in a directory on another computer over the system SSH client. Connect a named session, then execute commands and read, write, edit, list or search files relative to its fixed remote workspace. Authentication uses the system SSH config, keys/agent, or an optional 0600 password file read through SSH_ASKPASS. Credentials and the model stay local; SSH agent forwarding is disabled and operations are locally audited.'
   },
   async prompt() {
-    return 'Use SSHRemoteTool for development inside a remote SSH workspace. Call connect once with an SSH config alias, ssh://user@host[/absolute/path], or user@host:[/absolute/path], then reuse the session name. A missing path resolves to the remote login home. Prefer read/edit/search actions over shell equivalents. Paths are workspace-relative and cannot lexically escape it. Never put passwords or private keys in tool arguments.'
+    return 'Use SSHRemoteTool for development inside a remote SSH workspace. Call connect once with an SSH config alias, ssh://user@host[/absolute/path], or user@host:[/absolute/path], then reuse the session name. A missing path resolves to the remote login home. Prefer read/edit/search actions over shell equivalents. Paths are workspace-relative and cannot lexically escape it. For password authentication, pass password_file with a local 0600 file path; never put the password itself or private key material in tool arguments.'
   },
   get inputSchema() {
     return inputSchema()
