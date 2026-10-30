@@ -22,7 +22,7 @@
  */
 import { randomUUID } from 'crypto'
 import { getCurrentActorAddress } from '../actor/currentActor.js'
-import { LocalActorMailbox } from '../actor/LocalActorMailbox.js'
+import { LocalActorMailbox, PRESENCE_STALE_MS } from '../actor/LocalActorMailbox.js'
 import {
   type ActorEnvelope,
   getLocalNodeName,
@@ -840,6 +840,129 @@ export async function cancelCoroutine(
   return { cancelled: records, delivered }
 }
 
+/**
+ * Close the coroutines a departed worker was supposed to finish.
+ *
+ * A coroutine names its worker at spawn. When that worker is another agent, its
+ * session retires the actor address on the way out (see `runAgent`'s finally),
+ * and nothing else connects those two facts — so a worker that reports through
+ * some other channel, or never reports at all, leaves the coroutine `running`
+ * forever. `status` then advertises work nobody will ever pick up, and a parent
+ * that yields on it waits for a reply that cannot come.
+ *
+ * This always closes as `failed`, never `done`: the worker exiting is not the
+ * work being good, and only the goal gate may say otherwise.
+ */
+export async function failCoroutinesForWorker(
+  worker: string,
+  options: { team?: string; reason?: string } = {},
+): Promise<CoroutineRecord[]> {
+  const team = options.team ?? getCoroutineTeam()
+  let canonical: string
+  try {
+    canonical = parseActorAddress(worker, team).canonical
+  } catch {
+    return []
+  }
+  const reason = options.reason ?? `worker ${canonical} exited without completing`
+
+  const closedIds: string[] = []
+  await withCoroutines(team, store => {
+    const roots = Object.values(store.coroutines).filter(
+      record =>
+        !isTerminal(record.state) &&
+        record.worker === canonical &&
+        // A coroutine that is its own worker is closed by whoever owns the
+        // suspension point, not by the address going quiet.
+        record.address !== canonical,
+    )
+    // Structured concurrency, same rule as cancel: children of a gone worker
+    // are work nobody is waiting for.
+    const queue = [...roots]
+    while (queue.length > 0) {
+      const current = queue.shift()!
+      if (isTerminal(current.state)) continue
+      current.state = 'failed'
+      current.error = reason
+      current.updatedAt = now()
+      closedIds.push(current.id)
+      for (const childId of current.children) {
+        const child = store.coroutines[childId]
+        if (child) queue.push(child)
+      }
+    }
+  })
+  if (closedIds.length === 0) return []
+
+  const records = await withCoroutines(team, store =>
+    closedIds
+      .map(id => store.coroutines[id])
+      .filter((item): item is CoroutineRecord => Boolean(item))
+      .map(item => ({ ...item })),
+  )
+  for (const record of records) {
+    await failSubgoal(record.subgoalId, reason)
+    await reflectCoroutine(record, 'failed').catch(() => {
+      // The record is already terminal; a failed lesson must not resurrect it.
+    })
+  }
+  return records
+}
+
+/**
+ * Sweep for workers that are gone without having retired.
+ *
+ * The retire hook in `runAgent` covers a worker that exits cleanly. This covers
+ * the other ending: a crashed, killed, or cross-process worker whose presence
+ * has gone stale. Presence is a heartbeat, so "stale" means no process is
+ * serving that address any more — nobody can finish the coroutine.
+ *
+ * Only local addresses are swept: an unreachable peer says something about the
+ * relay, not about the peer, and killing work over a network hiccup is worse
+ * than leaving it for its deadline.
+ */
+export async function reapDeadWorkers(
+  options: { team?: string; graceMs?: number } = {},
+): Promise<CoroutineRecord[]> {
+  const team = options.team ?? getCoroutineTeam()
+  const graceMs = options.graceMs ?? PRESENCE_STALE_MS
+  const mailbox = new LocalActorMailbox()
+
+  const candidates = await withCoroutines(team, store =>
+    Object.values(store.coroutines)
+      .filter(
+        record =>
+          !isTerminal(record.state) &&
+          Boolean(record.worker) &&
+          record.worker !== record.address &&
+          !record.worker!.includes('@') &&
+          Date.now() - Date.parse(record.createdAt) >= graceMs,
+      )
+      .map(record => ({ ...record })),
+  )
+
+  const byWorker = new Map<string, CoroutineRecord[]>()
+  for (const record of candidates) {
+    const bucket = byWorker.get(record.worker!) ?? []
+    bucket.push(record)
+    byWorker.set(record.worker!, bucket)
+  }
+
+  const reaped: CoroutineRecord[] = []
+  for (const [worker, records] of byWorker) {
+    if (await mailbox.isReachable(worker)) continue
+    reaped.push(
+      ...(await failCoroutinesForWorker(worker, {
+        team,
+        reason: `worker ${worker} is gone (presence stale) without completing${
+          records.length > 1 ? ` — ${records.length} coroutines closed` : ''
+        }`,
+      })),
+    )
+  }
+  return reaped
+}
+
 export type CompleteInput = {
   coroutine: string
   result?: unknown
@@ -857,8 +980,7 @@ export type CompleteInput = {
 
 export type CompleteResult = {
   record: CoroutineRecord
-  /** Present when evidence was supplied, or when a subgoal was resolved. */
-  admission?: { ok: boolean; error?: string; evidence?: { ok: boolean; error?: string } }
+  /** Present when evidence was supplied, or when a subgoal was resolved. */  admission?: { ok: boolean; error?: string; evidence?: { ok: boolean; error?: string } }
   reflection?: string
 }
 

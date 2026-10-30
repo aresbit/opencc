@@ -6,6 +6,7 @@ import {
   getCoroutine,
   joinCoroutines,
   listCoroutines,
+  reapDeadWorkers,
   renderTree,
   resumeCoroutine,
   sendToCoroutine,
@@ -443,6 +444,10 @@ export const CoroutineTool = buildTool({
             },
           }
         }
+        // A coroutine whose worker exited without retiring would otherwise sit
+        // in `running` forever, so the listing first closes the ones whose
+        // worker is provably gone.
+        await reapDeadWorkers().catch(() => {})
         const records = await listCoroutines({
           includeTerminal: input.include_terminal,
         })

@@ -8,11 +8,14 @@ import { getDeliveryMode } from './delivery.js'
 import {
   awaitEvent,
   cancelCoroutine,
+  failCoroutinesForWorker,
   getCoroutine,
+  reapDeadWorkers,
   resumeCoroutine,
   sendToCoroutine,
   spawnCoroutine,
 } from './scheduler.js'
+import { withCoroutines } from './store.js'
 
 const ORIGINAL = {
   config: process.env.CLAUDE_CONFIG_DIR,
@@ -188,6 +191,67 @@ describe('coroutines as durable suspension points', () => {
     const expired = await getCoroutine(record.id)
     expect(expired?.state).toBe('failed')
     expect(expired?.error).toContain('deadline exceeded')
+  })
+
+  test('a worker that exits closes the coroutines it owed', async () => {
+    await isolate()
+    const { record } = await spawnCoroutine({
+      task: 'backend work',
+      worker: 'actor://test/backend-events',
+    })
+    expect(record.state).toBe('running')
+
+    const closed = await failCoroutinesForWorker('actor://test/backend-events')
+    expect(closed.map(item => item.id)).toEqual([record.id])
+    expect(closed[0].state).toBe('failed')
+    // Exiting is not completing: the gate, not the worker's absence, decides.
+    expect(closed[0].error).toContain('exited without completing')
+
+    const after = await failCoroutinesForWorker('actor://test/backend-events')
+    expect(after).toEqual([])
+  })
+
+  test('a self-worker coroutine is not closed by its own address going quiet', async () => {
+    await isolate()
+    const { record } = await spawnCoroutine({ task: 'wait for a human' })
+    const closed = await failCoroutinesForWorker(record.address)
+    expect(closed).toEqual([])
+    expect((await getCoroutine(record.id))?.state).toBe('running')
+  })
+
+  test('children of a departed worker are closed with it', async () => {
+    await isolate()
+    const { record: parent } = await spawnCoroutine({
+      task: 'parent',
+      worker: 'actor://test/dead-worker',
+    })
+    const { record: child } = await spawnCoroutine({
+      task: 'child',
+      parentId: parent.id,
+      worker: 'actor://test/other-worker',
+    })
+    const closed = await failCoroutinesForWorker('actor://test/dead-worker')
+    expect(closed.map(item => item.id).sort()).toEqual(
+      [parent.id, child.id].sort(),
+    )
+  })
+
+  test('the sweep reaps a worker with no presence and leaves a live one', async () => {
+    await isolate()
+    const { record } = await spawnCoroutine({
+      task: 'orphaned',
+      worker: 'actor://test/ghost',
+    })
+    // Pretend the coroutine is older than the presence grace window.
+    await withCoroutines('test', store => {
+      store.coroutines[record.id].createdAt = new Date(
+        Date.now() - 10 * 60 * 1000,
+      ).toISOString()
+    })
+
+    const reaped = await reapDeadWorkers()
+    expect(reaped.map(item => item.id)).toEqual([record.id])
+    expect(reaped[0].error).toContain('presence stale')
   })
 
   test('delivery picks the layer by address, and the env can pin it', async () => {

@@ -42,6 +42,7 @@ import type {
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { LocalActorMailbox } from '../../actor/LocalActorMailbox.js'
+import { failCoroutinesForWorker } from '../../coroutine/scheduler.js'
 import { isActorNetworkingEnabled, subagentActorAddress } from '../../actor/currentActor.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
@@ -838,6 +839,12 @@ export async function* runAgent({
       await new LocalActorMailbox()
         .retire(actorAddress)
         .catch(err => logForDebugging(`[Actor] retire failed: ${err}`))
+      // Coroutines this agent was the worker for can no longer be finished by
+      // it. Closing them here is what stops `status` from advertising work
+      // whose owner has exited; it is a failure, not an implicit success.
+      await failCoroutinesForWorker(actorAddress).catch(err =>
+        logForDebugging(`[Coroutine] worker reap failed: ${err}`),
+      )
     }
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
