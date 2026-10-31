@@ -2337,6 +2337,11 @@ export const AutoresearchTool = buildTool({
   renderToolUseProgressMessage,
   renderToolResultMessage,
   async call(input, context, canUseTool, parentMessage, onProgress) {
+    // toolExecution reads the tool's value from `result.data` (ToolResult<T>).
+    // Returning the bare Output here made every action map to the generic
+    // "Autoresearch failed before producing a structured result." text even
+    // though the action itself had already run and written its files.
+    const run = async (): Promise<Output> => {
     const action: AutoresearchAction = input.action ?? 'start'
     const resolved = await resolveWorkingDir(input)
     if (!resolved.ok) {
@@ -2638,5 +2643,7 @@ export const AutoresearchTool = buildTool({
         session: await buildSessionSnapshot(cwd, workDir),
       }
     }
+    }
+    return { data: await run() }
   },
 })
