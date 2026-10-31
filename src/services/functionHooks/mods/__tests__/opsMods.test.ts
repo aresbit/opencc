@@ -153,6 +153,16 @@ describe('cache-stats', () => {
     expect(text).toContain('59% used')
   })
 
+  test('omits the write share when the provider never reports creation', async () => {
+    await load()
+    // A hit-only provider: creation stays 0 for every call.
+    await usage(700, 0, 300)
+    const [badge] = slot('cache-stats', 'composer')
+    const text = JSON.stringify(badge)
+    expect(text).toContain('cache hit')
+    expect(text).not.toContain('"written"')
+  })
+
   test('reset clears the day ledger and says so', async () => {
     await load()
     await usage(800, 100, 100)

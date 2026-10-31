@@ -13,6 +13,12 @@
  * by input alone, is what keeps a first turn (all creation, no read) at 0
  * instead of undefined.
  *
+ * Not every provider reports cache creation. Anthropic's API does; an
+ * OpenAI-compatible proxy may only report hits, leaving cacheCreation at 0
+ * forever — which would show a permanent, misleading "written 0%". The
+ * composer therefore omits the write share when the ledger has never seen a
+ * creation token, instead of claiming the cache was never written.
+ *
  * This is an observer: the chain's answer is ignored and nothing here changes
  * what was counted. The service is what other mods consume — a budget mod
  * that wants "spend per cached token" reads it instead of re-deriving.
@@ -144,8 +150,12 @@ export function register(on: any, options: any, ctx: any) {
     const { hitRate, writeShare } = ratio(ledger.counts)
     const items = [
       { label: 'cache hit', value: `${Math.round(hitRate * 100)}%`, tone: hitRate >= warnBelow ? 'success' : 'warn' },
-      { label: 'written', value: `${Math.round(writeShare * 100)}%` },
     ]
+    // A provider that never reports creation tokens would otherwise show a
+    // permanent "written 0%"; omit the metric rather than misreport it.
+    if (ledger.counts.cacheCreate > 0) {
+      items.push({ label: 'written', value: `${Math.round(writeShare * 100)}%` })
+    }
     if (gauge) {
       items.push({
         label: 'context',
