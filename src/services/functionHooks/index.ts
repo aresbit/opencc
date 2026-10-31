@@ -23,6 +23,13 @@ export {
   oneShotContinuation,
   HookChainBottomError,
 } from './dispatcher.js'
+export {
+  createEffectScope,
+  withEffectScope,
+  cancelEffectScope,
+  EffectScopeCancelledError,
+} from './effectScope.js'
+export type { EffectScope } from './effectScope.js'
 export { buildEngineInterface, buildCoreNouns } from './engine.js'
 export {
   loadHooksModule,

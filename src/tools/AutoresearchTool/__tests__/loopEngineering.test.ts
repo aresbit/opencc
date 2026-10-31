@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { AutoresearchTool } from '../AutoresearchTool.js'
 import {
   improvementFraction,
   evaluatorLockError,
@@ -53,5 +57,22 @@ describe('autoresearch loop engineering', () => {
         currentFingerprint: 'same',
       }),
     ).toBeUndefined()
+  })
+
+  test('call returns ToolResult<Output> so the executor can map the result', async () => {
+    const workDir = await mkdtemp(join(tmpdir(), 'autoresearch-wrap-'))
+    try {
+      const result: any = await AutoresearchTool.call(
+        { action: 'status', workingDir: workDir } as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      )
+      expect(result).toHaveProperty('data')
+      expect(result.data.success).toBe(true)
+      expect(typeof result.data.message).toBe('string')
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+    }
   })
 })
